@@ -8,6 +8,7 @@ AI 短剧改编网站，包含聊天式建档与总编剧工作流。
 - [网站计划书](./网站计划书.md)、[项目书](./项目书.md) 和 [原始计划](./计划书_v1.md)：项目目标与已拍板决定。
 - [界面验收契约](./界面验收契约.md) 与 [设计审查](./设计审查.md)：本轮交互检查依据。
 - [版本记录](./versions/2026-11-17-frontend-design-direction/)：每轮调整建立独立目录。
+- [frontend-design-direction 技能包](./frontend-design-direction.zip)：解压后保持 `frontend-design-direction/SKILL.md` 原名及目录结构，放入所用智能体支持的技能目录；在任务中写 `$frontend-design-direction` 调用。不同工具的技能安装路径以各自说明为准。
 
 在线预览：https://director-studio-ayin.ayinx.chatgpt.site/
 
