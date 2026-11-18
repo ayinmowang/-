@@ -177,44 +177,18 @@ function buildPreChatDirectorReply(text: string, files: File[], preferredKind: K
   const lockNum = lockMatch ? Number(lockMatch[1]) : null;
 
   const fileNote = files.length
-    ? `已收到你拖进来的 ${files.length} 份文件（${files.map((f) => f.name).join('、')}）`
-    : '目前还没挂附件（随时可拖入原稿或视频）';
+    ? `已收到你添加的 ${files.length} 份素材（${files.map((f) => f.name).join('、')}）。`
+    : '已收到你的创作说明。';
 
-  const recapLines = [
-    `1. 推荐流程：根据你的描述，我建议归入「★ ${labels[preferredKind]}」（你也可以在下方卡片切换其他三类流程或弹窗建档）。`,
-    `2. 集数与范围：${totalNum ? `全剧 ${totalNum} 集` : preferredKind === 'original' ? '集数我们留到前四层推理后的「停点 A」一起拍板' : '全剧集数待确认'}${lockNum ? `；前 ${lockNum} 集作为只读锁定稿（一字不动），本轮从第 ${lockNum + 1} 集写到末尾` : ''}。`,
-    `3. 材料与要点：${fileNote}${text ? `；核心交代：“${text.slice(0, 70)}${text.length > 70 ? '…' : ''}”` : ''}。`,
-  ];
-
-  const suggestions =
-    preferredKind === 'transcribe'
-      ? [
-          '★ 建议 A：先核对每个视频的集号（认不出集号的文件我会单独列卡让你填），再选「快速模式」或「详细模式」。',
-          '建议 B：扒完交付繁简双版 Word 后，如果觉得底子好，可以一键转入「国外迭代」或「国内迭代」。',
-        ]
-      : preferredKind === 'domestic'
-      ? [
-          '★ 建议 A（桥段出海四级诊断）：先把原稿里的中式家庭伦理/彩礼/口舌之争，替换成欧美契约条款（Prenup）、信托冻结或晚宴除名。',
-          '建议 B（逐道过三道门）：我们先按「世界观 → 人设 → 替换要点」逐道确认，全部过关再进梗概和细纲。',
-          '建议 C（美式幽默加持）：正文精修时给闺蜜/路人加上美式自嘲与 Caught in 4K 实锤反转，去掉说教感。',
-        ]
-      : preferredKind === 'foreign'
-      ? [
-          lockNum
-            ? `★ 建议 A（锁集无缝接力）：前 ${lockNum} 集锁死一字不动，第 ${lockNum + 1} 集开场前 3 秒直接承接第 ${lockNum} 集尾钩做高能反击。`
-            : '★ 建议 A（情绪曲线 1:1 对位）：先让原稿分析师跑出事件映射和逐集情绪曲线，把最高爽点精准对位。',
-          '建议 B（主线 3 选 1 + 看得懂关）：主线与对手方案我会给你出 2–3 套，附上简化主线单，必须你觉得「看得懂、立得住」才开细纲。',
-          '建议 C（拉扯感强化）：每集保证「事件危机线 + 男女主情感推拉线」各推进一格，杜绝站桩纯聊。',
-        ]
-      : [
-          '★ 建议 A（前 3 秒冲突开场）：采用「开场 B：绝境危机冲突前置」，第 1 集第 1 场直接亮出核心矛盾与身份反差。',
-          '建议 B（单一破局引擎 + 中期反转）：设计一个好记的破局底牌（视觉锤），在第 25–30 集左右让底牌面临一次反噬或失效，拉高追剧留存。',
-          '建议 C（停点 A 拍板）：我们先跑前四层推理，然后在「停点 A」卡片上把方向、开场 A/B/C、破局引擎、总集数和男女频一次定准。',
-        ];
+  const summaryParts = [
+    `推荐进入「${labels[preferredKind]}」流程`,
+    totalNum ? `全剧 ${totalNum} 集` : null,
+    lockNum ? `前 ${lockNum} 集锁定不改` : null,
+  ].filter(Boolean);
 
   return {
-    recapText: `我先按总编剧的视角把你的意思复述一遍，并给你提几条切入建议：\n\n${recapLines.join('\n')}`,
-    suggestions,
+    recapText: `${fileNote}\n${summaryParts.join(' · ')}。请核对下方卡片中的项目名称与流程，点击按钮即可进入第 1 步（我们一步步来，每一步完成后再进下一步）。`,
+    suggestions: [],
   };
 }
 
@@ -462,11 +436,28 @@ export default function Studio() {
   const [queued, setQueued] = useState<File[]>([]);
   const [tab, setTab] = useState<'overview' | 'files' | 'outputs' | 'requirements'>('overview');
   const [uploadStatus, setUploadStatus] = useState('');
+  const [busyStageText, setBusyStageText] = useState('');
+  const [elapsedSec, setElapsedSec] = useState(0);
+  const [inlineTotalInput, setInlineTotalInput] = useState('');
 
   const fileRef = useRef<HTMLInputElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const activeRef = useRef(active);
+
+  useEffect(() => {
+    const isWorking = busy || Boolean(uploadStatus) || active?.remote?.status === 'running' || active?.remote?.status === 'ready';
+    if (!isWorking) {
+      setElapsedSec(0);
+      return;
+    }
+    const startTs = Date.now();
+    setElapsedSec(0);
+    const timer = setInterval(() => {
+      setElapsedSec(Math.max(1, Math.floor((Date.now() - startTs) / 1000)));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [busy, uploadStatus, active?.remote?.status]);
 
   useEffect(() => {
     activeRef.current = active;
@@ -605,9 +596,21 @@ export default function Studio() {
     setProjects((prev) => [p, ...prev.filter((x) => x.id !== p.id)]);
   }
 
-  async function mutate(operation: string, extra: any = {}) {
+  async function mutate(operation: string, extra: any = {}, customBusyText?: string) {
     if (!active) return;
     setBusy(true);
+    setBusyStageText(
+      customBusyText ||
+        (operation === 'connect'
+          ? active.kind === 'transcribe'
+            ? '正在核对视频清单并准备「第 2 步：选择扒剧模式」卡片…'
+            : '正在连接创作工位并执行首轮原稿/脑洞分析，请稍候…'
+          : operation === 'confirm'
+          ? '正在确认第 1 步信息…'
+          : operation === 'message'
+          ? '总编剧正在思考并更新要求台账…'
+          : '正在同步项目状态…')
+    );
     setError('');
     try {
       const p = await api('/api/studio', { operation, id: active.id, version: active.version, ...extra });
@@ -623,6 +626,105 @@ export default function Studio() {
       }
     } finally {
       setBusy(false);
+      setBusyStageText('');
+    }
+  }
+
+  async function proceedFromStep1() {
+    if (!active || busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      let currentProj: any = active;
+
+      // 1. Save any pending episode numbers entered in the inputs
+      if (currentProj.kind === 'transcribe') {
+        for (const att of currentProj.attachments) {
+          const pendingVal = episodes[att.id];
+          if (pendingVal !== undefined && pendingVal.trim() !== '') {
+            const n = Number(pendingVal);
+            if (!Number.isInteger(n) || n < 1 || n > (currentProj.total ?? 300)) {
+              setError(`素材「${att.name}」的集号无效，请输入 1-${currentProj.total ?? 300} 之间的整数。`);
+              return;
+            }
+            setBusyStageText(`正在保存「${att.name}」的集号（第 ${n} 集）…`);
+            currentProj = await api('/api/studio', {
+              operation: 'set_episode',
+              id: currentProj.id,
+              version: currentProj.version,
+              attachment_id: att.id,
+              episode: n,
+            });
+            update(currentProj);
+          }
+        }
+        setEpisodes({});
+        setEditingEpisode(null);
+
+        const stillMissing = currentProj.attachments.some(
+          (a) => !a.episode || (currentProj.total !== null && a.episode > currentProj.total)
+        );
+        if (stillMissing) {
+          setError('还有视频素材未填写集号，请先在上方输入框填好集号后再进入下一步。');
+          return;
+        }
+      }
+
+      // 2. Save inline total episodes if needed for foreign / domestic
+      if ((currentProj.kind === 'foreign' || currentProj.kind === 'domestic') && currentProj.total === null) {
+        const parsedTotal = Number(inlineTotalInput.trim());
+        if (!Number.isInteger(parsedTotal) || parsedTotal < 1 || parsedTotal > 300) {
+          setError('请先填写全剧总集数（1–300 集），再进入下一步。');
+          return;
+        }
+        setBusyStageText(`正在登记全剧总集数（${parsedTotal} 集）…`);
+        currentProj = await api('/api/studio', {
+          operation: 'message',
+          id: currentProj.id,
+          version: currentProj.version,
+          text: `全剧 ${parsedTotal} 集`,
+          client_id: crypto.randomUUID(),
+        });
+        update(currentProj);
+        setInlineTotalInput('');
+      }
+
+      // 3. Confirm Step 1 if not yet confirmed
+      if (!currentProj.confirmed) {
+        setBusyStageText('正在确认第 1 步信息…');
+        currentProj = await api('/api/studio', {
+          operation: 'confirm',
+          id: currentProj.id,
+          version: currentProj.version,
+        });
+        update(currentProj);
+      }
+
+      // 4. Immediately connect to advance to Step 2 so the user doesn't have to click twice
+      if (serviceReady && !currentProj.remoteId) {
+        setBusyStageText(
+          currentProj.kind === 'transcribe'
+            ? '正在准备「第 2 步：选择扒剧模式（快速 / 详细）」卡片…'
+            : '正在调用创作工位执行第 2 步分析，请稍候（约需 10–30 秒）…'
+        );
+        currentProj = await api('/api/studio', {
+          operation: 'connect',
+          id: currentProj.id,
+          version: currentProj.version,
+        });
+        if (currentProj.promptCatalog) setPromptCatalog(currentProj.promptCatalog);
+        update(currentProj);
+        setToast(
+          currentProj.kind === 'transcribe'
+            ? '已进入第 2 步：请选择「快速模式」或「详细模式」'
+            : '第 1 步已完成，已进入下一阶段拍板卡'
+        );
+      }
+    } catch (e: any) {
+      setError(errors[e.message] || '进入下一步未完成，请重试。');
+    } finally {
+      setBusy(false);
+      setBusyStageText('');
     }
   }
 
@@ -773,6 +875,11 @@ export default function Studio() {
         : undefined;
     let created = false;
     setBusy(true);
+    setBusyStageText(
+      queued.length > 0
+        ? `正在建立「${fallbackTitle}」项目并上传 ${queued.length} 份素材…`
+        : `正在建立「${fallbackTitle}」项目并初始化第 1 步…`
+    );
     setError('');
     try {
       let p = await api('/api/studio', {
@@ -796,7 +903,7 @@ export default function Studio() {
       safeSetStorage('studio_draft_kind', '');
       if (queued.length) p = await uploadFiles(p, queued);
       setQueued([]);
-      setToast('项目已建立，总编剧建议与确认单已就绪');
+      setToast('项目已建立，请按下方第 1 步卡片指引继续');
     } catch (e: any) {
       if (created) {
         setQueued(e.remaining || queued);
@@ -806,6 +913,7 @@ export default function Studio() {
       }
     } finally {
       setBusy(false);
+      setBusyStageText('');
     }
   }
 
@@ -861,14 +969,27 @@ export default function Studio() {
   async function act(action: string, extra: any = {}) {
     const remote = active?.remote;
     if (!remote) return;
-    await mutate('action', {
-      action: {
-        version: remote.version,
-        action_id: crypto.randomUUID(),
-        action,
-        answers: { ...answers, ...extra },
+    const isTranscribeMode = Boolean(remote.card?.fields?.includes('mode'));
+    const nextBusyLabel =
+      action === 'revise'
+        ? '编剧工位正在根据你的修改意见重新生成当前阶段内容，请稍候…'
+        : isTranscribeMode
+        ? `扒剧工位正在按「${answers.mode === 'detailed' ? '详细模式（逐帧拆解）' : '快速模式（整集还原+抽查）'}」生成分集场次、动作（▲）与台词，请稍候…`
+        : active?.kind === 'transcribe'
+        ? '总编剧与精修工位正在汇总全剧故事梗概、人物小传与繁简双版剧本交付包，请稍候…'
+        : '智能编剧团队正在生成下一阶段内容，请稍候（约需 15–40 秒）…';
+    await mutate(
+      'action',
+      {
+        action: {
+          version: remote.version,
+          action_id: crypto.randomUUID(),
+          action,
+          answers: { ...answers, ...extra },
+        },
       },
-    });
+      nextBusyLabel
+    );
   }
 
   async function saveEpisode(id: string) {
@@ -1238,7 +1359,7 @@ export default function Studio() {
               </div>
             </div>
 
-            {/* Pre-creation back-and-forth turns where Director Bot gives proactive suggestions & triage card */}
+            {/* Pre-creation back-and-forth turns where Director Bot confirms flow & project creation */}
             {preChat.map((turn, idx) => (
               <div className={'message ' + (turn.role === 'user' ? 'user' : 'director')} key={turn.id}>
                 {turn.role !== 'user' && (
@@ -1249,28 +1370,10 @@ export default function Studio() {
                 <div className="message-body">
                   {turn.role !== 'user' && (
                     <div className="message-meta">
-                      总编剧<span>{time(turn.time)} · 复述与参谋建议</span>
+                      总编剧<span>{time(turn.time)} · 准备启动</span>
                     </div>
                   )}
                   <div className="message-text">{turn.text}</div>
-
-                  {turn.suggestions && turn.suggestions.length > 0 && (
-                    <div className="suggestion-box">
-                      <span className="suggestion-title">✦ 总编剧建议（点击即可采纳进确认单，也可在下方打字反驳或补充）：</span>
-                      <div className="preset-chips">
-                        {turn.suggestions.map((sug, sIdx) => (
-                          <button
-                            key={sIdx}
-                            type="button"
-                            className="preset-chip"
-                            onClick={() => adoptSuggestion(sug)}
-                          >
-                            ＋ 采纳：{sug}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
 
                   {turn.role === 'director' && idx === preChat.length - 1 && (
                     <div className="decision inline-bot-card" role="region" aria-label="确认四项分流并建档">
@@ -1279,8 +1382,8 @@ export default function Studio() {
                           <Check size={16} />
                         </span>
                         <div>
-                          拍板四项分流与建档（★ 推荐项已排第一）
-                          <small>可在此直接点选流程并建档，或点击「弹窗修改详情」，也可继续在底部打字聊</small>
+                          准备启动 · 核对项目名称与流程（★ 推荐项已高亮）
+                          <small>确认下方流程与名称后，点击主按钮即可进入第 1 步</small>
                         </div>
                       </div>
                       <div className="preset-chips" style={{ marginTop: '12px' }}>
@@ -1301,11 +1404,11 @@ export default function Studio() {
                       </div>
                       <div className="card-fields" style={{ margin: '12px 0' }}>
                         <label>
-                          项目暂定名称（可直接修改）
+                          项目名称（可直接修改）
                           <input
                             value={title}
                             onChange={(e) => setTitle(e.target.value)}
-                            placeholder="输入项目名称，如：豪门闪婚第11-62集续写"
+                            placeholder="输入项目名称，如：天降神運重生致富_1"
                           />
                         </label>
                       </div>
@@ -1327,26 +1430,18 @@ export default function Studio() {
                           disabled={busy}
                           onClick={() => create(kind || turn.recommendedKind || 'foreign', title, pendingBrief)}
                         >
-                          ★ 对，按「{labels[kind || turn.recommendedKind || 'foreign']}」建档开始
+                          🚀 确认建档，按「{labels[kind || turn.recommendedKind || 'foreign']}」进入第 1 步
                           <ArrowUpRight size={14} />
                         </button>
                         <button
                           className="secondary"
+                          disabled={busy}
                           onClick={() => {
                             if (!kind && turn.recommendedKind) setKind(turn.recommendedKind);
                             setModal('create');
                           }}
                         >
-                          弹窗核对四项与建档
-                        </button>
-                        <button
-                          className="secondary"
-                          onClick={() => {
-                            setText('我补充一下：');
-                            composerRef.current?.focus();
-                          }}
-                        >
-                          不对，我再补充几句
+                          弹窗修改详情
                         </button>
                       </div>
                     </div>
@@ -1361,6 +1456,31 @@ export default function Studio() {
                 </div>
               </div>
             ))}
+
+            {(busy || Boolean(uploadStatus)) && (
+              <div
+                className="progress-card"
+                role="status"
+                style={{
+                  border: '1.5px solid #2563eb',
+                  background: 'rgba(37, 99, 235, 0.08)',
+                  padding: '16px 18px',
+                  borderRadius: '14px',
+                  marginTop: '12px',
+                }}
+              >
+                <LoaderCircle className="spin" size={20} />
+                <div>
+                  <strong style={{ fontSize: '14px', color: '#1d4ed8' }}>
+                    ⏳ 正在处理中 · 已用时 {elapsedSec} 秒
+                  </strong>
+                  <p style={{ marginTop: '4px' }}>
+                    {uploadStatus || busyStageText || '正在建立项目并上传素材，请稍候…'}
+                  </p>
+                </div>
+              </div>
+            )}
+
             <div ref={endRef} />
           </div>
         ) : (
@@ -1407,6 +1527,54 @@ export default function Studio() {
               </div>
             </div>
 
+            {/* Clear Step-by-Step Progress Bar so the user never gets confused */}
+            <div
+              role="region"
+              aria-label="当前创作步骤进度"
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: '8px',
+                padding: '10px 14px',
+                marginBottom: '12px',
+                borderRadius: '12px',
+                background: 'rgba(15, 23, 42, 0.04)',
+                border: '1px solid rgba(15, 23, 42, 0.08)',
+                alignItems: 'center',
+              }}
+            >
+              <span style={{ fontSize: '12px', fontWeight: 700, opacity: 0.75, marginRight: '4px' }}>
+                当前流程进度：
+              </span>
+              {timelineSteps.map((stepLabel, idx) => {
+                const isDone = idx < currentStepIdx || (idx === 0 && Boolean(active.remoteId));
+                const isCurrent = idx === currentStepIdx;
+                return (
+                  <span
+                    key={stepLabel}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      padding: '4px 10px',
+                      borderRadius: '999px',
+                      fontSize: '12px',
+                      fontWeight: isCurrent ? 700 : 500,
+                      background: isCurrent
+                        ? '#2563eb'
+                        : isDone
+                        ? 'rgba(22, 163, 74, 0.12)'
+                        : 'rgba(148, 163, 184, 0.14)',
+                      color: isCurrent ? '#ffffff' : isDone ? '#15803d' : 'inherit',
+                      opacity: isCurrent || isDone ? 1 : 0.65,
+                    }}
+                  >
+                    {isDone ? '✓' : `${idx + 1}.`} {stepLabel}
+                  </span>
+                );
+              })}
+            </div>
+
             <div className="date-divider">
               {new Date(active.createdAt).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })} · 项目建立
             </div>
@@ -1416,7 +1584,6 @@ export default function Studio() {
               const expanded = expandedMsgs[m.id] ?? false;
               const displayText = isLong && !expanded ? m.text.slice(0, 420) + '…' : m.text;
               const speakerLabel = m.speaker || (m.role === 'report' ? '专项角色汇报' : '总编剧');
-              const inlineSuggestions = m.role !== 'user' ? extractSuggestionsFromMessage(m.text) : [];
               return (
                 <div className={'message ' + (m.role === 'user' ? 'user' : 'director')} key={m.id}>
                   {m.role !== 'user' && (
@@ -1440,25 +1607,6 @@ export default function Studio() {
                         {expanded ? '收起长文' : `展开完整内容（共 ${m.text.length} 字）`}
                       </button>
                     )}
-                    {inlineSuggestions.length > 0 && (
-                      <div className="suggestion-box">
-                        <span className="suggestion-title">✦ 一键采纳总编剧建议（点击直接写入确认单台账）：</span>
-                        <div className="preset-chips">
-                          {inlineSuggestions.map((sug, i) => (
-                            <button
-                              key={i}
-                              type="button"
-                              className="preset-chip"
-                              disabled={busy}
-                              onClick={() => adoptSuggestion(sug)}
-                            >
-                              ＋ 采纳：{sug.slice(0, 38)}
-                              {sug.length > 38 ? '…' : ''}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
                     {m.file && (
                       <a className="inline-file-card" href={m.file.url}>
                         <FileText size={18} />
@@ -1480,90 +1628,175 @@ export default function Studio() {
               );
             })}
 
-            {active.kind === 'transcribe' && !active.remoteId && (needsEpisode || editingEpisode) && (
-              <div className="decision" role="region" aria-label="补录或核对素材集号">
-                <div className="decision-title">
-                  <span>
-                    <FileText size={16} />
-                  </span>
-                  <div>
-                    {needsEpisode ? '补录或核对素材集号' : '调整素材集号'}
-                    <small>已识别且正确的集号无需重填；补齐后不会自动误触发开工</small>
-                  </div>
-                </div>
-                <div className="card-fields">
-                  {active.attachments
-                    .filter(
-                      (a) =>
-                        !a.episode ||
-                        (active.total !== null && a.episode > active.total) ||
-                        a.id === editingEpisode
-                    )
-                    .map((a) => (
-                      <div className="episode-field" key={a.id}>
-                        <label htmlFor={'episode-' + a.id}>{a.name}</label>
-                        <input
-                          id={'episode-' + a.id}
-                          type="number"
-                          min={1}
-                          max={active.total ?? 300}
-                          value={episodes[a.id] ?? String(a.episode ?? '')}
-                          onChange={(e) => setEpisodes({ ...episodes, [a.id]: e.target.value })}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault();
-                              saveEpisode(a.id);
-                            }
-                          }}
-                          placeholder={`这份素材是第几集？（1-${active.total ?? 300}）`}
-                        />
-                        <button
-                          className="secondary"
-                          disabled={busy || !(episodes[a.id] ?? a.episode)}
-                          onClick={() => saveEpisode(a.id)}
-                        >
-                          保存集号
-                        </button>
-                      </div>
-                    ))}
-                </div>
-              </div>
-            )}
-
-            {!active.remoteId && !active.confirmed && (
-              <div className="decision" role="region" aria-label="复述确认与四项切换">
+            {/* Unified Step 1 Card (!active.remoteId): One clear card at a time, auto-chains confirm + connect */}
+            {!active.remoteId && (
+              <div
+                className="decision"
+                role="region"
+                aria-label={active.kind === 'transcribe' ? '补录或核对素材集号' : '复述确认与四项切换'}
+              >
                 <div className="decision-title">
                   <span>
                     <Check size={16} />
                   </span>
                   <div>
-                    总编剧复述确认卡（可在此拍板开始，也可切换四项流程或继续打字聊）
-                    <small>★ 推荐先采纳上方合适的建议，再点击「对，开始」</small>
+                    {active.kind === 'transcribe'
+                      ? '第 1 步（共 3 步）：核对视频素材与集号'
+                      : '第 1 步：核对项目信息与启动分析'}
+                    <small>
+                      {active.kind === 'transcribe'
+                        ? '已根据文件名自动识别集号；核对无误后点击下方主按钮，直接进入「第 2 步：选择扒剧模式」'
+                        : '核对下方流程、集数与提示词后，点击下方主按钮直接进入下一阶段'}
+                    </small>
                   </div>
                 </div>
-                <div className="recap-grid">
-                  <div>
-                    创作流程<strong>{labels[active.kind]}</strong>
+
+                {active.kind === 'transcribe' ? (
+                  <div className="card-fields" style={{ marginBottom: '14px' }}>
+                    {active.attachments.length === 0 ? (
+                      <div
+                        style={{
+                          padding: '12px 14px',
+                          borderRadius: '10px',
+                          background: 'rgba(245, 158, 11, 0.1)',
+                          border: '1px solid rgba(245, 158, 11, 0.3)',
+                          fontSize: '13px',
+                        }}
+                      >
+                        当前尚未上传视频或字幕素材，请点击下方「＋ 添加视频素材」按钮或直接将文件拖入页面。
+                      </div>
+                    ) : (
+                      active.attachments.map((a) => {
+                        const isMissingOrInvalid =
+                          !a.episode || (active.total !== null && a.episode > active.total);
+                        const isEditing = isMissingOrInvalid || editingEpisode === a.id;
+                        return (
+                          <div
+                            className="episode-field"
+                            key={a.id}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              gap: '10px',
+                              padding: '10px 12px',
+                              borderRadius: '10px',
+                              background: 'rgba(15, 23, 42, 0.03)',
+                              border: '1px solid rgba(15, 23, 42, 0.08)',
+                            }}
+                          >
+                            <label htmlFor={'episode-' + a.id} style={{ flex: 1, margin: 0, fontWeight: 600 }}>
+                              🎬 {a.name} <small style={{ opacity: 0.65 }}>({bytes(a.size)})</small>
+                            </label>
+                            {isEditing ? (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <input
+                                  id={'episode-' + a.id}
+                                  type="number"
+                                  min={1}
+                                  max={active.total ?? 300}
+                                  style={{ width: '140px' }}
+                                  value={episodes[a.id] ?? String(a.episode ?? '')}
+                                  onChange={(e) => setEpisodes({ ...episodes, [a.id]: e.target.value })}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault();
+                                      saveEpisode(a.id);
+                                    }
+                                  }}
+                                  placeholder={`第几集？(1-${active.total ?? 300})`}
+                                />
+                                <button
+                                  className="secondary"
+                                  disabled={busy || !(episodes[a.id] ?? a.episode)}
+                                  onClick={() => saveEpisode(a.id)}
+                                >
+                                  保存集号
+                                </button>
+                              </div>
+                            ) : (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                <span
+                                  style={{
+                                    padding: '4px 10px',
+                                    borderRadius: '999px',
+                                    background: 'rgba(22, 163, 74, 0.12)',
+                                    color: '#15803d',
+                                    fontSize: '12px',
+                                    fontWeight: 700,
+                                  }}
+                                >
+                                  ✓ 已识别：第 {a.episode} 集
+                                </span>
+                                <button
+                                  type="button"
+                                  className="secondary"
+                                  style={{ padding: '4px 10px', fontSize: '12px' }}
+                                  onClick={() => setEditingEpisode(a.id)}
+                                >
+                                  修改集号
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })
+                    )}
+                    <div>
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={busy || Boolean(uploadStatus)}
+                        onClick={() => fileRef.current?.click()}
+                      >
+                        <Plus size={14} />
+                        继续添加分集视频 / 字幕素材
+                      </button>
+                    </div>
                   </div>
-                  <div>
-                    全剧集数
-                    <strong>
-                      {active.total === null
-                        ? active.kind === 'original'
-                          ? '停点 A 拍板'
-                          : '待确认'
-                        : `${active.total} 集`}
-                    </strong>
-                  </div>
-                  <div>
-                    锁定与素材
-                    <strong>
-                      {active.lockedEpisodes
-                        ? `锁前 ${active.lockedEpisodes} 集 · ${active.attachments.length} 份素材`
-                        : `${active.attachments.length} 份素材`}
-                    </strong>
-                  </div>
-                </div>
+                ) : (
+                  <>
+                    <div className="recap-grid">
+                      <div>
+                        创作流程<strong>{labels[active.kind]}</strong>
+                      </div>
+                      <div>
+                        全剧集数
+                        <strong>
+                          {active.total === null
+                            ? active.kind === 'original'
+                              ? '停点 A 拍板'
+                              : '待填写'
+                            : `${active.total} 集`}
+                        </strong>
+                      </div>
+                      <div>
+                        锁定与素材
+                        <strong>
+                          {active.lockedEpisodes
+                            ? `锁前 ${active.lockedEpisodes} 集 · ${active.attachments.length} 份素材`
+                            : `${active.attachments.length} 份素材`}
+                        </strong>
+                      </div>
+                    </div>
+                    {(active.kind === 'foreign' || active.kind === 'domestic') && active.total === null && (
+                      <div className="card-fields" style={{ marginBottom: '12px' }}>
+                        <label>
+                          全剧总集数（1–300 集，必填后即可启动分析）
+                          <input
+                            type="number"
+                            min={1}
+                            max={300}
+                            value={inlineTotalInput}
+                            onChange={(e) => setInlineTotalInput(e.target.value)}
+                            placeholder="例如：60（代表全剧共 60 集）"
+                          />
+                        </label>
+                      </div>
+                    )}
+                  </>
+                )}
+
                 <div className="preset-chips" style={{ marginBottom: '14px' }}>
                   {(['foreign', 'domestic', 'transcribe', 'original'] as Kind[]).map((k) => (
                     <button
@@ -1580,6 +1813,7 @@ export default function Studio() {
                     </button>
                   ))}
                 </div>
+
                 <PromptSlotControls
                   kind={active.kind}
                   catalog={promptCatalog}
@@ -1589,56 +1823,21 @@ export default function Studio() {
                   idPrefix="recap-prompt"
                   onChange={(next) => saveProjectPrompts(active.kind, next)}
                 />
+
                 <div className="decision-actions">
-                  <button className="primary" disabled={busy} onClick={() => mutate('confirm')}>
-                    ★ 对，开始下一步
+                  <button
+                    className="primary"
+                    disabled={busy || Boolean(uploadStatus)}
+                    onClick={proceedFromStep1}
+                  >
+                    {active.kind === 'transcribe'
+                      ? '🚀 第 1 步完成：集号无误，进入第 2 步（选择扒剧模式）'
+                      : active.kind === 'original'
+                      ? '🚀 第 1 步完成：启动原创前四层推理'
+                      : '🚀 第 1 步完成：确认信息并开始原稿分析'}
                     <ArrowUpRight size={14} />
                   </button>
-                  <button
-                    className="secondary"
-                    onClick={() => {
-                      setText('关于你提的建议，我想调整一下：');
-                      composerRef.current?.focus();
-                    }}
-                  >
-                    不对，我补充/聊建议
-                  </button>
                 </div>
-              </div>
-            )}
-
-            {active.confirmed && !active.remoteId && (
-              <div className="service-card" role="status">
-                <Cloud size={20} />
-                <div>
-                  <strong>
-                    {needsEpisode
-                      ? '请先在上方补齐或核对素材集号'
-                      : !serviceReady
-                      ? '复述与建议已确认，可随时继续跟总编剧聊细节'
-                      : requiresTotalBeforeConnect && active.total === null
-                      ? '请在下方聊天框告诉我全剧集数'
-                      : active.kind === 'original'
-                      ? '可以启动原创前四层推理了'
-                      : active.kind === 'transcribe'
-                      ? '素材集号已核对，可以启动扒剧流程了'
-                      : '可以派给原稿分析师开始分析了'}
-                  </strong>
-                  <p>
-                    {needsEpisode
-                      ? '在上方卡片中补录未识别集号或修正超出总集数的文件后，即可启动流程。'
-                      : !serviceReady
-                      ? '你在聊天框发的任何想法，总编剧都会继续给你出落地建议并记入右侧台账；接入生成服务后即可一键派活。'
-                      : requiresTotalBeforeConnect && active.total === null
-                      ? '直接发一句“全剧 62 集”或“全剧 62 集，前 10 集已锁定”即可。'
-                      : '点击右侧按钮同步材料、锁定范围与要求台账，进入下一阶段拍板卡。'}
-                  </p>
-                </div>
-                {canConnect && (
-                  <button className="primary" disabled={busy} onClick={() => mutate('connect')}>
-                    {active.kind === 'original' ? '★ 开始推理' : '★ 开始分析'}
-                  </button>
-                )}
               </div>
             )}
 
@@ -1685,8 +1884,16 @@ export default function Studio() {
                     <NotebookPen size={17} />
                   </span>
                   <div>
-                    {currentCard.title}
-                    <small>★ 为推荐项（排首位），每步均支持点选或自由打字输入；未答卡时下方聊天框仍可正常发消息</small>
+                    {currentCard.fields.includes('mode')
+                      ? '第 2 步（共 3 步）：请选择扒剧还原模式'
+                      : active.kind === 'transcribe'
+                      ? '第 3 步（共 3 步）：核对分集还原稿并生成繁简双版交付包'
+                      : currentCard.title}
+                    <small>
+                      {currentCard.fields.includes('mode')
+                        ? '请点选下方「快速模式」或「详细模式」，然后点击主按钮立即开始扒剧还原'
+                        : '★ 为推荐项，每步完成后点击主按钮进入下一步'}
+                    </small>
                   </div>
                 </div>
                 <div className="card-fields">
@@ -1696,14 +1903,76 @@ export default function Studio() {
                       <label key={field}>
                         {fieldLabels[field] || field}
                         {field === 'mode' ? (
-                          <select
-                            value={answers[field] || ''}
-                            onChange={(e) => setAnswers({ ...answers, [field]: e.target.value })}
-                          >
-                            <option value="">请选择扒剧模式（无默认值，必选）</option>
-                            <option value="fast">快速模式（按整集看写并抽查几集）</option>
-                            <option value="detailed">详细模式（按每秒一帧逐格看完再写）</option>
-                          </select>
+                          <>
+                            <div
+                              style={{
+                                display: 'grid',
+                                gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                                gap: '10px',
+                                marginTop: '8px',
+                                marginBottom: '8px',
+                              }}
+                            >
+                              <button
+                                type="button"
+                                onClick={() => setAnswers({ ...answers, [field]: 'fast' })}
+                                style={{
+                                  textAlign: 'left',
+                                  padding: '12px 14px',
+                                  borderRadius: '12px',
+                                  border:
+                                    answers[field] === 'fast'
+                                      ? '2px solid #2563eb'
+                                      : '1px solid rgba(15, 23, 42, 0.15)',
+                                  background:
+                                    answers[field] === 'fast'
+                                      ? 'rgba(37, 99, 235, 0.08)'
+                                      : 'rgba(15, 23, 42, 0.02)',
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                <div style={{ fontWeight: 700, fontSize: '14px', marginBottom: '4px' }}>
+                                  ⚡ 快速模式（推荐）
+                                </div>
+                                <div style={{ fontSize: '12px', opacity: 0.78, lineHeight: 1.45 }}>
+                                  按整集快速还原场次、动作（▲）与台词，并自动抽查关键集，速度快、适合快速出底稿。
+                                </div>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setAnswers({ ...answers, [field]: 'detailed' })}
+                                style={{
+                                  textAlign: 'left',
+                                  padding: '12px 14px',
+                                  borderRadius: '12px',
+                                  border:
+                                    answers[field] === 'detailed'
+                                      ? '2px solid #2563eb'
+                                      : '1px solid rgba(15, 23, 42, 0.15)',
+                                  background:
+                                    answers[field] === 'detailed'
+                                      ? 'rgba(37, 99, 235, 0.08)'
+                                      : 'rgba(15, 23, 42, 0.02)',
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                <div style={{ fontWeight: 700, fontSize: '14px', marginBottom: '4px' }}>
+                                  🔍 详细模式（逐帧拆解）
+                                </div>
+                                <div style={{ fontSize: '12px', opacity: 0.78, lineHeight: 1.45 }}>
+                                  按每秒一帧逐格拆解画面细节、微表情、走位与台词，还原颗粒度最细。
+                                </div>
+                              </button>
+                            </div>
+                            <select
+                              value={answers[field] || ''}
+                              onChange={(e) => setAnswers({ ...answers, [field]: e.target.value })}
+                            >
+                              <option value="">请选择扒剧模式（无默认值，必选）</option>
+                              <option value="fast">快速模式（按整集看写并抽查几集）</option>
+                              <option value="detailed">详细模式（按每秒一帧逐格看完再写）</option>
+                            </select>
+                          </>
                         ) : field === 'understood' ? (
                           <select
                             value={answers[field] === true ? 'yes' : answers[field] === false ? 'no' : ''}
@@ -1762,11 +2031,11 @@ export default function Studio() {
                   )}
 
                   <label>
-                    补充或修改意见
+                    补充或修改意见（选填）
                     <textarea
                       value={feedback}
                       onChange={(e) => setFeedback(e.target.value)}
-                      placeholder="如有需要调整的地方请写在这里…"
+                      placeholder="如有需要调整的地方请写在这里，无修改可直接点击下方确认按钮…"
                     />
                   </label>
                 </div>
@@ -1778,7 +2047,7 @@ export default function Studio() {
                 )}
                 {requiresModeSelection && (
                   <p className="gate-hint">
-                    提示：扒剧每部剧均需明确选择「快速模式」或「详细模式」，不设默认项。
+                    提示：请先在上方点击选择「⚡ 快速模式」或「🔍 详细模式」，选好后下方按钮即会自动亮起。
                   </p>
                 )}
 
@@ -1788,7 +2057,11 @@ export default function Studio() {
                     className="primary"
                     onClick={() => act('confirm', feedback ? { resolution: feedback } : {})}
                   >
-                    ★ 确认，继续下一步
+                    {currentCard.fields.includes('mode')
+                      ? '🚀 第 2 步完成：确认模式并立即开始扒剧'
+                      : active.kind === 'transcribe'
+                      ? '🚀 第 3 步完成：确认无误，生成繁简双版交付包'
+                      : '★ 确认，继续下一步'}
                     <ArrowUpRight size={14} />
                   </button>
                   <button
@@ -1815,16 +2088,34 @@ export default function Studio() {
               </div>
             )}
 
-            {running && (
-              <div className="progress-card" role="status">
-                <LoaderCircle className="spin" size={18} />
-                <div>
-                  <strong>{active.remote?.stage?.title || '正在执行任务'}</strong>
-                  <p>
-                    已完成 {active.remote?.progress?.completed_steps ?? 0} /{' '}
-                    {active.remote?.progress?.total_steps ?? 1} 个步骤 ·{' '}
-                    {active.remote?.progress?.eta ? `预计剩余 ${active.remote.progress.eta}` : '暂无可靠预计时间（实时刷新中）'}
+            {/* Prominent Live Waiting Banner so the user always knows what is happening during API calls & uploads */}
+            {(busy || Boolean(uploadStatus) || running) && (
+              <div
+                className="progress-card"
+                role="status"
+                style={{
+                  border: '1.5px solid #2563eb',
+                  background: 'rgba(37, 99, 235, 0.08)',
+                  padding: '16px 18px',
+                  borderRadius: '14px',
+                  marginTop: '14px',
+                  marginBottom: '10px',
+                }}
+              >
+                <LoaderCircle className="spin" size={22} />
+                <div style={{ flex: 1 }}>
+                  <strong style={{ fontSize: '14px', color: '#1d4ed8', display: 'block' }}>
+                    ⏳ 正在处理当前步骤 · 已用时 {elapsedSec} 秒
+                  </strong>
+                  <p style={{ marginTop: '4px', fontSize: '13px' }}>
+                    {uploadStatus ||
+                      busyStageText ||
+                      active.remote?.stage?.title ||
+                      '智能编剧工位正在通过 API 中转接口生成内容，请稍候…'}
                   </p>
+                  <small style={{ display: 'block', marginTop: '4px', opacity: 0.75 }}>
+                    真实调用大模型生成剧本内容通常需要 10–40 秒，请耐心等待，无需重复点击按钮。
+                  </small>
                 </div>
               </div>
             )}
@@ -1856,7 +2147,7 @@ export default function Studio() {
               </div>
             )}
 
-            {(active.remote?.stage?.key === 'delivery' || state === 'delivered' || active.confirmed) && (
+            {(active.remote?.stage?.key === 'delivery' || state === 'delivered') && (
               <div className="delivery-block">
                 <a className="download-card" href={'/api/upload?id=' + active.id + '&export=1'}>
                   <span>
@@ -1864,7 +2155,7 @@ export default function Studio() {
                   </span>
                   <div>
                     <strong>
-                      {active.title} · {active.kind === 'transcribe' ? '扒剧繁简双版与还原稿' : '完整剧本交付包'}
+                      {active.title} · {active.kind === 'transcribe' ? '扒剧繁简双版与还原稿（点击下载）' : '完整剧本交付包（点击下载）'}
                     </strong>
                     <small>
                       按「故事梗概 → 人物小传 → 正文」结构导出

@@ -1281,6 +1281,12 @@ export function normalizeRelayModelName(rawModel: string): string {
  * Executes an LLM chat request against a provider's Primary Base URL (`baseUrl`),
  * automatically failing over to `backupBaseUrl1` and `backupBaseUrl2` if configured!
  */
+export interface MultimodalAttachmentInput {
+  name: string;
+  mimeType: string;
+  base64: string;
+}
+
 export async function executeProviderChat(params: {
   provider: ApiProviderConfig;
   apiKey: string;
@@ -1289,6 +1295,7 @@ export async function executeProviderChat(params: {
   userPrompt: string;
   temperature: number;
   maxTokens: number;
+  mediaAttachments?: MultimodalAttachmentInput[];
 }): Promise<{ reply: string; totalTokens: number; resolvedModel?: string }> {
   const candidateUrls = [
     params.provider.baseUrl,
@@ -1346,8 +1353,26 @@ export async function executeProviderChat(params: {
 
       // Try exact model first, then normalized model, then auto-discovered model from /models if model_not_found
       const modelsToTry = Array.from(new Set([rawRequested, normalizedRequested]));
+      const isCustomRelay =
+        !baseUrl.includes('api.openai.com') && !baseUrl.includes('generativelanguage.googleapis.com');
+
       for (let mIdx = 0; mIdx < modelsToTry.length; mIdx++) {
         const currentModel = modelsToTry[mIdx];
+        const canSendMultimodal =
+          Array.isArray(params.mediaAttachments) &&
+          params.mediaAttachments.length > 0 &&
+          /gemini/i.test(currentModel);
+
+        const userContent: any = canSendMultimodal
+          ? [
+              { type: 'text', text: params.userPrompt },
+              ...params.mediaAttachments!.map((m) => ({
+                type: 'image_url',
+                image_url: { url: `data:${m.mimeType};base64,${m.base64}` },
+              })),
+            ]
+          : params.userPrompt;
+
         const res = await fetch(`${baseUrl}/chat/completions`, {
           method: 'POST',
           headers: {
@@ -1358,20 +1383,47 @@ export async function executeProviderChat(params: {
             model: currentModel,
             temperature: params.temperature,
             max_tokens: params.maxTokens,
+            ...(isCustomRelay ? { tool_choice: 'none' } : {}),
             messages: [
               ...(params.sysPrompt ? [{ role: 'system', content: params.sysPrompt }] : []),
-              { role: 'user', content: params.userPrompt },
+              { role: 'user', content: userContent },
             ],
           }),
         });
 
         if (res.ok) {
           const data: any = await res.json();
-          const reply = data?.choices?.[0]?.message?.content || '';
+          let reply = data?.choices?.[0]?.message?.content || '';
           const totalTokens = Number(
             data?.usage?.total_tokens ||
               Math.ceil((params.sysPrompt.length + params.userPrompt.length + reply.length) / 3)
           );
+          if (!reply.trim() && data?.choices?.[0]?.finish_reason === 'tool_calls') {
+            // Retry once explicitly forcing plain text without tools
+            const retryRes = await fetch(`${baseUrl}/chat/completions`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${params.apiKey}`,
+              },
+              body: JSON.stringify({
+                model: currentModel,
+                temperature: params.temperature,
+                max_tokens: params.maxTokens,
+                tool_choice: 'none',
+                messages: [
+                  ...(params.sysPrompt
+                    ? [{ role: 'system', content: params.sysPrompt + '\n请直接输出完整正文，严禁调用任何工具。' }]
+                    : []),
+                  { role: 'user', content: userContent },
+                ],
+              }),
+            });
+            if (retryRes.ok) {
+              const retryData: any = await retryRes.json();
+              reply = retryData?.choices?.[0]?.message?.content || '';
+            }
+          }
           return { reply, totalTokens, resolvedModel: currentModel };
         }
 
@@ -1393,10 +1445,16 @@ export async function executeProviderChat(params: {
               if (availableIds.length > 0) {
                 const strip = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
                 const targetStripped = strip(rawRequested);
+                const wantGeminiFamily = /gemini/i.test(rawRequested);
+                const sameFamilyIds = availableIds.filter((id) =>
+                  wantGeminiFamily ? /gemini/i.test(id) : !/gemini/i.test(id)
+                );
+                const hasMultipleKeys = (params.provider.apiKeys || []).filter((k) => k.trim()).length > 1;
                 const fuzzyMatch =
                   availableIds.find((id) => strip(id) === targetStripped) ||
                   availableIds.find((id) => strip(id).includes(targetStripped) || targetStripped.includes(strip(id))) ||
-                  availableIds[0];
+                  sameFamilyIds[0] ||
+                  (!hasMultipleKeys ? availableIds[0] : undefined);
                 if (fuzzyMatch && !modelsToTry.includes(fuzzyMatch)) {
                   modelsToTry.push(fuzzyMatch);
                   continue;
@@ -1429,6 +1487,7 @@ export async function callStationLLM(params: {
   projectId?: string;
   project?: Pick<Project, 'kind' | 'promptSelections'>;
   skillKind?: Kind;
+  mediaAttachments?: MultimodalAttachmentInput[];
 }): Promise<{ ok: boolean; text: string | null; error?: string }> {
   const store = loadPersistentStore();
   const route = store.systemConfig.routes[params.station];
@@ -1541,36 +1600,80 @@ export async function callStationLLM(params: {
     const validKeys = target.provider.apiKeys.map((k) => k.trim()).filter(Boolean);
     if (!validKeys.length) continue;
 
-    const cursor = (target.provider.keyCursor || 0) % validKeys.length;
-    const apiKey = validKeys[cursor];
-    target.provider.keyCursor = cursor + 1;
+    const startCursor = (target.provider.keyCursor || 0) % validKeys.length;
+    target.provider.keyCursor = startCursor + 1;
 
-    const t0 = Date.now();
-    try {
-      const { reply, totalTokens } = await executeProviderChat({
-        provider: target.provider,
-        apiKey,
-        model: target.model,
-        sysPrompt,
-        userPrompt: params.userPrompt,
-        temperature,
-        maxTokens,
-      });
+    for (let kOffset = 0; kOffset < validKeys.length; kOffset++) {
+      const apiKey = validKeys[(startCursor + kOffset) % validKeys.length];
+      const t0 = Date.now();
+      try {
+        const { reply, totalTokens, resolvedModel } = await executeProviderChat({
+          provider: target.provider,
+          apiKey,
+          model: target.model,
+          sysPrompt,
+          userPrompt: params.userPrompt,
+          temperature,
+          maxTokens,
+          mediaAttachments: params.mediaAttachments,
+        });
 
-      const latencyMs = Date.now() - t0;
-      const estimatedCostUsd = Number(((totalTokens / 1000) * 0.002).toFixed(5));
+        const latencyMs = Date.now() - t0;
+        const estimatedCostUsd = Number(((totalTokens / 1000) * 0.002).toFixed(5));
 
-      if (typeof reply === 'string' && reply.trim()) {
-        target.provider.lastTestStatus = 'ok';
-        target.provider.lastLatencyMs = latencyMs;
-        target.provider.lastTestedAt = new Date().toISOString();
+        if (typeof reply === 'string' && reply.trim()) {
+          target.provider.lastTestStatus = 'ok';
+          target.provider.lastLatencyMs = latencyMs;
+          target.provider.lastTestedAt = new Date().toISOString();
 
-        if (acc) {
-          acc.tokensUsed = (acc.tokensUsed || 0) + totalTokens;
-          acc.budgetUsedUsd = Number(((acc.budgetUsedUsd || 0) + estimatedCostUsd).toFixed(5));
+          if (acc) {
+            acc.tokensUsed = (acc.tokensUsed || 0) + totalTokens;
+            acc.budgetUsedUsd = Number(((acc.budgetUsedUsd || 0) + estimatedCostUsd).toFixed(5));
+          }
+
+          const logEntry: ApiAuditLog = {
+            id: 'log-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+            time: new Date().toISOString(),
+            accountId: acc?.id || 'system',
+            username: acc?.username || 'ayin',
+            projectId: params.projectId,
+            station: params.station,
+            stationTitle: route?.title || params.station,
+            providerId: target.provider.id,
+            providerName: target.provider.name,
+            model: resolvedModel || target.model,
+            latencyMs,
+            tokens: totalTokens,
+            estimatedCostUsd,
+            status: target.isFallback ? 'fallback' : 'success',
+          };
+          store.auditLogs.unshift(logEntry);
+          if (store.auditLogs.length > 200) store.auditLogs.length = 200;
+          flushPersistentStore();
+
+          const extraSensitive: string[] = [];
+          if (resolvedSkills?.primary?.content) extraSensitive.push(resolvedSkills.primary.content);
+          if (resolvedSkills?.secondary?.content) extraSensitive.push(resolvedSkills.secondary.content);
+          if (baseSysPrompt) extraSensitive.push(baseSysPrompt);
+          if (params.systemPromptOverride) extraSensitive.push(params.systemPromptOverride);
+          return { ok: true, text: sanitizeForClient(reply.trim(), extraSensitive) };
+        }
+      } catch (err: any) {
+        const latencyMs = Date.now() - t0;
+        const errMsg = String(err?.message || 'Unknown error');
+        const isGroupModelMismatch =
+          errMsg.includes('model_not_found') || errMsg.includes('No available channel for model');
+
+        // If this provider has another key and the failure was due to key-group model mismatch, try the next key!
+        if (isGroupModelMismatch && kOffset < validKeys.length - 1) {
+          continue;
         }
 
-        const logEntry: ApiAuditLog = {
+        target.provider.lastTestStatus = 'error';
+        target.provider.lastErrorMsg = errMsg;
+        target.provider.lastTestedAt = new Date().toISOString();
+
+        store.auditLogs.unshift({
           id: 'log-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
           time: new Date().toISOString(),
           accountId: acc?.id || 'system',
@@ -1582,45 +1685,14 @@ export async function callStationLLM(params: {
           providerName: target.provider.name,
           model: target.model,
           latencyMs,
-          tokens: totalTokens,
-          estimatedCostUsd,
-          status: target.isFallback ? 'fallback' : 'success',
-        };
-        store.auditLogs.unshift(logEntry);
-        if (store.auditLogs.length > 200) store.auditLogs.length = 200;
+          tokens: 0,
+          estimatedCostUsd: 0,
+          status: 'failed',
+          error: errMsg.slice(0, 160),
+        });
         flushPersistentStore();
-
-        const extraSensitive: string[] = [];
-        if (resolvedSkills?.primary?.content) extraSensitive.push(resolvedSkills.primary.content);
-        if (resolvedSkills?.secondary?.content) extraSensitive.push(resolvedSkills.secondary.content);
-        if (baseSysPrompt) extraSensitive.push(baseSysPrompt);
-        if (params.systemPromptOverride) extraSensitive.push(params.systemPromptOverride);
-        return { ok: true, text: sanitizeForClient(reply.trim(), extraSensitive) };
+        break;
       }
-    } catch (err: any) {
-      const latencyMs = Date.now() - t0;
-      target.provider.lastTestStatus = 'error';
-      target.provider.lastErrorMsg = err?.message || 'Request failed';
-      target.provider.lastTestedAt = new Date().toISOString();
-
-      store.auditLogs.unshift({
-        id: 'log-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
-        time: new Date().toISOString(),
-        accountId: acc?.id || 'system',
-        username: acc?.username || 'ayin',
-        projectId: params.projectId,
-        station: params.station,
-        stationTitle: route?.title || params.station,
-        providerId: target.provider.id,
-        providerName: target.provider.name,
-        model: target.model,
-        latencyMs,
-        tokens: 0,
-        estimatedCostUsd: 0,
-        status: 'failed',
-        error: String(err?.message || 'Unknown error').slice(0, 160),
-      });
-      flushPersistentStore();
     }
   }
 

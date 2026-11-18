@@ -1,3 +1,4 @@
+import zlib from 'node:zlib';
 import {
   bindings,
   owner,
@@ -18,6 +19,7 @@ import {
   getAllowedSlotsForKind,
   isValidKind,
   getMaxUploadBytes,
+  type MultimodalAttachmentInput,
 } from '../../../lib/server';
 import type {
   Project,
@@ -119,6 +121,111 @@ function normalizeCreatePromptSelections(
   return result;
 }
 
+function extractTextFromZipXmlBuffer(buf: Buffer): string {
+  try {
+    // Minimal ZIP local file header parser to extract XML text from .docx (word/document.xml) or .xlsx (xl/sharedStrings.xml)
+    const texts: string[] = [];
+    let offset = 0;
+    while (offset + 30 <= buf.length) {
+      if (buf.readUInt32LE(offset) !== 0x04034b50) break;
+      const compression = buf.readUInt16LE(offset + 8);
+      const compSize = buf.readUInt32LE(offset + 18);
+      const nameLen = buf.readUInt16LE(offset + 26);
+      const extraLen = buf.readUInt16LE(offset + 28);
+      const entryName = buf.subarray(offset + 30, offset + 30 + nameLen).toString('utf8');
+      const dataStart = offset + 30 + nameLen + extraLen;
+      const dataEnd = dataStart + compSize;
+      if (dataEnd > buf.length) break;
+      if (
+        (entryName === 'word/document.xml' || entryName === 'xl/sharedStrings.xml' || entryName.startsWith('xl/worksheets/sheet')) &&
+        compSize > 0
+      ) {
+        const slice = buf.subarray(dataStart, dataEnd);
+        const rawXml =
+          compression === 8
+            ? zlib.inflateRawSync(slice).toString('utf8')
+            : compression === 0
+            ? slice.toString('utf8')
+            : '';
+        if (rawXml) {
+          const clean = rawXml
+            .replace(/<\/w:p>|<\/row>|<\/si>/g, '\n')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/[ \t]+/g, ' ')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+          if (clean) texts.push(clean.slice(0, 12000));
+        }
+      }
+      offset = dataEnd;
+    }
+    return texts.join('\n\n').slice(0, 15000);
+  } catch {
+    return '';
+  }
+}
+
+async function extractProjectAttachmentsForLLM(
+  project: Project,
+  user: string,
+  includeVideoMultimodal: boolean
+): Promise<{ textSnippets: string[]; mediaAttachments: MultimodalAttachmentInput[] }> {
+  const textSnippets: string[] = [];
+  const mediaAttachments: MultimodalAttachmentInput[] = [];
+  const bucket = bindings().BUCKET;
+
+  for (const att of project.attachments || []) {
+    try {
+      const obj = await bucket.get(`${user}/${project.id}/${att.id}`);
+      if (!obj) continue;
+      const ab = await obj.arrayBuffer();
+      const buf = Buffer.from(ab);
+      const lowerName = String(att.name || '').toLowerCase();
+
+      if (/\.(txt|md|srt|ass|vtt|csv|json)$/i.test(lowerName)) {
+        const txt = buf.toString('utf8').replace(/^\uFEFF/, '').trim();
+        if (txt) {
+          textSnippets.push(
+            `【附件《${att.name}》${att.episode ? `（第 ${att.episode} 集）` : ''}内容摘录】：\n${txt.slice(0, 12000)}`
+          );
+        }
+      } else if (/\.(docx|xlsx)$/i.test(lowerName) && buf.length >= 64) {
+        const xmlText = extractTextFromZipXmlBuffer(buf);
+        if (xmlText) {
+          textSnippets.push(
+            `【文档附件《${att.name}》${att.episode ? `（第 ${att.episode} 集）` : ''}内容摘录】：\n${xmlText.slice(0, 12000)}`
+          );
+        }
+      } else if (
+        includeVideoMultimodal &&
+        /\.(mp4|mov|webm|mkv|avi|png|jpg|jpeg|webp)$/i.test(lowerName) &&
+        buf.length >= 4096 &&
+        buf.length <= 28 * 1024 * 1024 &&
+        mediaAttachments.length < 3
+      ) {
+        const mimeType = lowerName.endsWith('.mov')
+          ? 'video/quicktime'
+          : lowerName.endsWith('.webm')
+          ? 'video/webm'
+          : lowerName.endsWith('.png')
+          ? 'image/png'
+          : lowerName.endsWith('.jpg') || lowerName.endsWith('.jpeg')
+          ? 'image/jpeg'
+          : lowerName.endsWith('.webp')
+          ? 'image/webp'
+          : 'video/mp4';
+        mediaAttachments.push({
+          name: att.name,
+          mimeType,
+          base64: buf.toString('base64'),
+        });
+      }
+    } catch {}
+  }
+
+  return { textSnippets, mediaAttachments };
+}
+
 async function callProjectStation(params: {
   project: Project;
   station: StationRoleKey;
@@ -128,13 +235,26 @@ async function callProjectStation(params: {
   const store = getStore();
   const basePrompt = store.systemConfig.routes?.[params.station]?.systemPrompt || '';
   const { composedSystemPrompt } = resolveWorkflowSkillPrompts(store.systemConfig, params.project);
+  const user = params.account?.username || 'ayin';
+  const { textSnippets, mediaAttachments } = await extractProjectAttachmentsForLLM(
+    params.project,
+    user,
+    params.station === 'vision'
+  );
+
+  const enrichedUserPrompt =
+    textSnippets.length > 0
+      ? `${params.userPrompt}\n\n${textSnippets.join('\n\n')}`
+      : params.userPrompt;
+
   return callStationLLM({
     station: params.station,
     account: params.account,
     projectId: params.project.id,
     project: params.project,
     systemPromptOverride: composedSystemPrompt(basePrompt),
-    userPrompt: params.userPrompt,
+    userPrompt: enrichedUserPrompt,
+    ...(mediaAttachments.length > 0 ? { mediaAttachments } : {}),
   });
 }
 
@@ -391,12 +511,23 @@ export async function POST(request: Request) {
         ? `\n• 续写锁定范围：前 ${locked} 集作为锁定稿保护（一字不动），本轮只写第 ${locked + 1} 集到最后一集。`
         : '';
 
-      const suggestions = buildDirectorSuggestions(p.kind as Kind, brief, total, locked);
+      const stepGuideByKind: Record<Kind, string> = {
+        transcribe:
+          '第一步：请先核对下方视频素材的集号（或继续上传视频），核对无误后点击下方按钮进入「第 2 步：选择扒剧模式（快速/详细）」。',
+        foreign:
+          '第一步：请核对下方的集数与锁定范围，确认无误后点击按钮启动「原稿分析与情绪曲线对位」。',
+        domestic:
+          '第一步：请核对下方的集数与范围，确认无误后点击按钮启动「桥段出海四级诊断与三道门」。',
+        original:
+          '第一步：请核对你的创意简述，点击下方按钮立即启动「前四层推理与停点 A」。',
+      };
 
       message(
         p,
         'director',
-        `收到！我先把你的要求复述一遍，顺便给你提几条总编剧建议：\n\n【我的复述】\n• 创作流程：「${KIND_LABELS[p.kind as Kind]}」\n• 集数与范围：${scopeSummary}${lockSummary}${p.brief ? '\n• 你的原话重点：' + p.brief : ''}\n\n【总编剧初步建议】\n${suggestions.map((s) => '• ' + s).join('\n')}\n\n你看我理解得对不对？如果觉得建议可行，直接点下方卡片「对，开始」；或者直接在聊天框打字跟我聊你的调整想法。`
+        `项目「${p.title}」（${KIND_LABELS[p.kind as Kind]}）已建立！我们一步步推进：\n\n• 集数与范围：${scopeSummary}${lockSummary}${
+          p.brief ? '\n• 你的任务说明：' + p.brief : ''
+        }\n\n👉 ${stepGuideByKind[p.kind as Kind]}`
       );
 
       await bindings()
@@ -488,13 +619,12 @@ export async function POST(request: Request) {
         const scopeTag = p.remoteId ? '下一可更新批次生效' : '全剧及首轮分析生效';
         p.requirements.push(`[补充要求 · ${scopeTag} · v${p.version + 1}] ${cleanText}`);
 
-        const followUpSuggestions = buildDirectorSuggestions(p.kind, cleanText, p.total, p.lockedEpisodes);
         const headLine = notes.length > 0 ? `记下了：${notes.join('；')}。` : `记下了，这条要求已写进右侧「要求台账」（${scopeTag}）。`;
 
         message(
           p,
           'director',
-          `${headLine}\n\n结合你刚才说的「${cleanText.slice(0, 48)}${cleanText.length > 48 ? '…' : ''}」，我给你提两条落地方案供你参考：\n• ${followUpSuggestions[0]}\n• ${followUpSuggestions[1] || followUpSuggestions[0]}\n\n你更倾向按哪种感觉走？可以直接回我，或者点卡片上的选项拍板。`
+          `${headLine}\n你可以直接点击下方当前步骤卡片的按钮继续下一步，或者继续发消息补充其他要求。`
         );
       } else {
         p.requirements.push(`[运行中追加 · 下一可更新节点生效 · v${p.version + 1}] ${cleanText}`);
@@ -512,11 +642,10 @@ export async function POST(request: Request) {
       if (p.kind === 'transcribe' && p.promptSelections.transcribe) {
         delete p.promptSelections.transcribe.secondary;
       }
-      const suggestions = buildDirectorSuggestions(p.kind, p.brief || '', p.total, p.lockedEpisodes);
       message(
         p,
         'director',
-        `已将本项目流程切换为「${KIND_LABELS[p.kind as Kind]}」。针对这个流程，我的建议是：\n${suggestions.map((s) => '• ' + s).join('\n')}`
+        `已将本项目流程切换为「${KIND_LABELS[p.kind as Kind]}」。请核对下方第 1 步卡片中的信息，确认无误后点击按钮进入下一步。`
       );
     } else if (body.operation === 'set_prompts') {
       const targetKind = (
@@ -723,33 +852,41 @@ export async function POST(request: Request) {
           // Advance workflow stages by kind & cursor
           if (p.kind === 'transcribe') {
             if (nextCursor === 2) {
+              const epListDesc =
+                p.attachments.length > 0
+                  ? p.attachments
+                      .map((a: any) => `第 ${a.episode || 1} 集《${a.name}》`)
+                      .join('、')
+                  : `《${p.title}》第 1 集`;
               const llm = await callProjectStation({
                 project: p,
                 station: 'vision',
                 account: acc,
-                userPrompt: `请对扒剧项目《${p.title}》（共 ${p.attachments.length} 份视频，模式：${
-                  p.transcribeMode === 'detailed' ? '详细模式逐帧还原' : '快速模式整集还原'
-                }）生成全剧人物译名锚定表、故事梗概与前2集还原样稿。`,
+                userPrompt: `请直接观看并拆解本次上传的短剧视频/字幕素材（${epListDesc}，模式：${
+                  p.transcribeMode === 'detailed'
+                    ? '详细模式（每秒一帧逐格拆解画面动作与台词）'
+                    : '快速模式（按整集还原场次、动作与台词并抽查）'
+                }）。请直接输出完整的结构化扒剧结果（不要索要文件或调用外部工具）：\n1. 【全剧人物标准人名锚定表】（角色名、身份定位、外貌/声线特征）\n2. 【本集核心剧情梗概】\n3. 【分集分场次还原剧本】（严格按“第X集 场次1-1 内/外景 地点 日/夜”格式，动作与神态以 ▲ 标示，逐句还原人物台词；对看不清的特写或字幕标注【待人工補寫】）。`,
               });
               const content =
                 llm.ok && llm.text
                   ? llm.text
                   : `【扒剧还原初稿】已按${p.transcribeMode === 'detailed' ? '详细模式' : '快速模式'}完成分集场次与台词还原。`;
               p.remote.outputs.synopsis = {
-                title: '故事梗概与主角标准人名表',
+                title: '故事梗概与分集扒剧还原稿',
                 content,
                 updatedAt: new Date().toISOString(),
                 version: 1,
               };
-              p.remote.stage = { key: 'transcribe_review', title: '核对人名表与待补写镜头' };
+              p.remote.stage = { key: 'transcribe_review', title: '第 3 步：核对分集还原稿与人名表' };
               p.remote.card = {
                 id: 'card-transcribe-verify-' + nextCursor,
                 step: 'verify',
                 title: '核对扒剧主角译名表与【待人工補寫】镜头校准',
                 fields: ['boundaries'],
-                questions: [{ question: '请确认主角标准人名表与特写镜头补写内容是否无误：' }],
+                questions: [{ question: '请确认上方还原的人物表、分场动作（▲）与台词是否无误（可直接点击确认生成交付包，或填写修改意见）：' }],
               };
-              message(p, 'director', `扒剧小能手已完成分集还原：\n\n${content}\n\n请在下方卡片确认并合成繁简双版交付包。`);
+              message(p, 'director', `✅ 扒剧小能手已完成分集还原！结果如下：\n\n${content}\n\n👉 现在进入第 3 步（最后一步）：请核对上方还原内容，无误后直接点击下方卡片按钮生成完整交付包。`);
             } else {
               p.remote.stage = { key: 'delivery', title: '繁简双版 Word 交付包已就绪' };
               p.remote.status = 'delivered';
@@ -902,6 +1039,17 @@ export async function POST(request: Request) {
       }
     } else if (body.operation === 'connect') {
       if (!connected() && !hasGptKey()) throw new Error('SERVICE_NOT_CONNECTED');
+      if (
+        p.kind === 'transcribe' &&
+        p.total === null &&
+        p.attachments.length > 0 &&
+        p.attachments.every((a: any) => Number.isInteger(a.episode) && a.episode >= 1)
+      ) {
+        p.total = Math.min(
+          300,
+          Math.max(p.attachments.length, ...p.attachments.map((a: any) => Number(a.episode) || 1))
+        );
+      }
       const requiresTotalUpfront = p.kind !== 'original';
       if (
         !p.confirmed ||
@@ -962,9 +1110,18 @@ export async function POST(request: Request) {
         p.remote = sanitizeForClient(await (await backend('/api/projects/' + p.remoteId)).json());
         message(p, 'director', '已连接创作后端，材料、锁定范围与要求台账已同步。请查看当前确认卡。');
       } else {
-        const recapRes = await runGptRecapIfConfigured(p, request);
-        if (!recapRes.text) throw new Error(recapRes.error || 'BACKEND_REQUEST_FAILED');
-        const gptRecap = recapRes.text;
+        const acc = getActiveAccountOrDefault(request);
+        if (acc && acc.status === 'disabled') throw new Error('ACCOUNT_DISABLED');
+        if (acc && acc.budgetCapUsd > 0 && acc.budgetUsedUsd >= acc.budgetCapUsd) throw new Error('BUDGET_EXCEEDED');
+
+        let gptRecap = '';
+        if (p.kind === 'transcribe') {
+          gptRecap = `第 1 步已完成：已核对 ${p.attachments.length} 份视频/字幕素材（全剧共 ${p.total ?? 1} 集）。\n👉 现在进入第 2 步：请在下方卡片选择「⚡ 快速模式」或「🔍 详细模式」，点击确认后将立即启动分集扒剧还原。`;
+        } else {
+          const recapRes = await runGptRecapIfConfigured(p, request);
+          if (!recapRes.text) throw new Error(recapRes.error || 'BACKEND_REQUEST_FAILED');
+          gptRecap = recapRes.text;
+        }
         p.remoteId = 'test-channel-' + p.id;
         const firstCardByKind: Record<Kind, any> = {
           transcribe: {
@@ -1032,7 +1189,7 @@ export async function POST(request: Request) {
           card: firstCardByKind[p.kind as Kind],
           outputs: {
             recap: {
-              title: '总编剧复述与建议（智能创作测试通道）',
+              title: p.kind === 'transcribe' ? '扒剧素材与集号核对清单' : '总编剧复述与建议',
               content: gptRecap,
               updatedAt: new Date().toISOString(),
               version: 1,
@@ -1040,7 +1197,13 @@ export async function POST(request: Request) {
           },
           messages: [],
         };
-        message(p, 'director', `【智能创作测试通道 · 总编剧复述与建议】\n${gptRecap}\n\n请在下方卡片拍板继续。`);
+        message(
+          p,
+          'director',
+          p.kind === 'transcribe'
+            ? gptRecap
+            : `${gptRecap}\n\n请在下方当前阶段卡片拍板继续。`
+        );
       }
     } else if (body.operation === 'transfer_iteration') {
       const targetKind = body.target_kind as Kind;

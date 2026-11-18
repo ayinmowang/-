@@ -18,9 +18,10 @@ function detectEpisodeFromName(name: string): number | undefined {
     return undefined;
   }
   const match =
-    base.match(/(?:第|^|[_\-\s])0*(\d{1,3})\s*集/) ||
+    base.match(/(?:第|^|[_\-\s])0*(\d{1,3})\s*[集话期]/) ||
     base.match(/(?:^|[_\-\s])(?:ep|episode)\s*0*(\d{1,3})(?:$|[_\-\s])/i) ||
-    base.match(/^0*(\d{1,3})$/);
+    base.match(/^0*(\d{1,3})$/) ||
+    base.match(/[\u4e00-\u9fa5a-zA-Z][_\-\s]0*(\d{1,3})$/);
   const n = Number(match?.[1]);
   return Number.isInteger(n) && n >= 1 && n <= 300 ? n : undefined;
 }
