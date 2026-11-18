@@ -261,7 +261,9 @@ export interface ApiProviderConfig {
   id: string;
   name: string;
   vendor: 'openai' | 'anthropic' | 'gemini' | 'deepseek' | 'openrouter' | 'grok' | 'custom';
-  baseUrl: string;
+  baseUrl: string; // 1. 主中转接口地址
+  backupBaseUrl1?: string; // 2. 备用中转接口地址 1
+  backupBaseUrl2?: string; // 3. 备用中转接口地址 2
   apiKeys: string[]; // Multiple keys for rotation & failover
   models: string[];
   enabled: boolean;
@@ -283,6 +285,8 @@ export interface StationRouteConfig {
   primaryModel: string;
   fallbackProviderId: string;
   fallbackModel: string;
+  fallbackProvider2Id?: string;
+  fallbackModel2?: string;
   temperature: number;
   maxTokens: number;
   systemPrompt: string;

@@ -66,58 +66,51 @@ function createDefaultSystemConfig(): AdminSystemConfig {
   const providers: ApiProviderConfig[] = [
     {
       id: 'prov-openai',
-      name: 'OpenAI 官方 / 兼容主线',
-      vendor: 'openai',
+      name: '① 主 API 中转接口 (Primary Relay · 支持 GPT / Gemini)',
+      vendor: 'custom',
       baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
+      backupBaseUrl1: '',
+      backupBaseUrl2: '',
       apiKeys: process.env.OPENAI_API_KEY ? [process.env.OPENAI_API_KEY] : [],
-      models: ['gpt-4o', 'gpt-4o-mini', 'o3-mini'],
+      models: ['gpt-4o', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gpt-4o-mini', 'gpt-4.1', 'o3-mini'],
       enabled: true,
       priority: 1,
       keyCursor: 0,
       lastTestStatus: process.env.OPENAI_API_KEY ? 'ok' : 'untested',
-      note: '主力综合推理与总编剧复述线路（支持多 Key 轮询）',
-    },
-    {
-      id: 'prov-claude',
-      name: 'Claude 剧本创作专线 (OpenRouter/中转)',
-      vendor: 'openrouter',
-      baseUrl: 'https://openrouter.ai/api/v1',
-      apiKeys: [],
-      models: ['anthropic/claude-3.5-sonnet', 'anthropic/claude-3.7-sonnet', 'openai/gpt-4o'],
-      enabled: true,
-      priority: 2,
-      keyCursor: 0,
-      lastTestStatus: 'untested',
-      note: '用于分集编剧、美式幽默精修与人物小传高质感生成',
+      note: '主力 API 中转站（支持配置 1主+2备中转地址与多 Key 轮询，全工位通用 GPT 与 Gemini）',
     },
     {
       id: 'prov-gemini',
-      name: 'Google Gemini 官方通道 (支持免费/付费额度)',
+      name: '② 备用 API 中转接口 1 (Backup Relay 1 · 支持 Gemini / GPT)',
       vendor: 'gemini',
       baseUrl: process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/openai',
+      backupBaseUrl1: '',
+      backupBaseUrl2: '',
       apiKeys:
         process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY
           ? [String(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY)]
           : [],
-      models: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'],
+      models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gpt-4o', 'gpt-4o-mini', 'gpt-4.1'],
       enabled: true,
-      priority: 1,
+      priority: 2,
       keyCursor: 0,
       lastTestStatus: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY ? 'ok' : 'untested',
-      note: '支持直接填入 Google AI Studio (AIzaSy...) 密钥，全工位通用且支持视觉扒剧',
+      note: '第一备用 API 中转站（主接口超时或报错时自动切入，兼容中转站与 Gemini 地址）',
     },
     {
-      id: 'prov-deepseek',
-      name: 'DeepSeek 高性价比备用线',
-      vendor: 'deepseek',
-      baseUrl: 'https://api.deepseek.com/v1',
+      id: 'prov-relay-backup2',
+      name: '③ 备用 API 中转接口 2 (Backup Relay 2 · 二级兜底中转)',
+      vendor: 'custom',
+      baseUrl: 'https://api.openai.com/v1',
+      backupBaseUrl1: '',
+      backupBaseUrl2: '',
       apiKeys: [],
-      models: ['deepseek-chat', 'deepseek-reasoner'],
+      models: ['gpt-4o', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gpt-4o-mini'],
       enabled: true,
-      priority: 4,
+      priority: 3,
       keyCursor: 0,
       lastTestStatus: 'untested',
-      note: '主线超时或超额时的自动容灾备用线路',
+      note: '第二备用 API 中转站（当主接口与备用接口 1 均不可用时自动兜底）',
     },
   ];
 
@@ -125,12 +118,14 @@ function createDefaultSystemConfig(): AdminSystemConfig {
     director: {
       roleKey: 'director',
       title: '01 · 总编剧（Chief Director Bot）',
-      badge: '核心入口',
+      badge: '核心入口 · GPT/Gemini',
       description: '负责接待创作者、1–4条大白话复述需求、指出矛盾、主动提供改编建议、发起停点拍板与真实进度汇报。',
       primaryProviderId: 'prov-openai',
       primaryModel: 'gpt-4o',
-      fallbackProviderId: 'prov-deepseek',
-      fallbackModel: 'deepseek-chat',
+      fallbackProviderId: 'prov-gemini',
+      fallbackModel: 'gemini-2.5-pro',
+      fallbackProvider2Id: 'prov-relay-backup2',
+      fallbackModel2: 'gpt-4o',
       temperature: 0.35,
       maxTokens: 2048,
       enabled: true,
@@ -140,12 +135,14 @@ function createDefaultSystemConfig(): AdminSystemConfig {
     analyst: {
       roleKey: 'analyst',
       title: '02 · 原稿分析师（Source Analyst）',
-      badge: '拆剧诊断',
+      badge: '拆剧诊断 · GPT/Gemini',
       description: '负责原稿五问、事件映射表、错名清单、逐集情绪曲线生成，以及国内改海外的「桥段出海四级诊断」。',
       primaryProviderId: 'prov-openai',
       primaryModel: 'gpt-4o',
-      fallbackProviderId: 'prov-deepseek',
-      fallbackModel: 'deepseek-reasoner',
+      fallbackProviderId: 'prov-gemini',
+      fallbackModel: 'gemini-2.5-pro',
+      fallbackProvider2Id: 'prov-relay-backup2',
+      fallbackModel2: 'gpt-4o',
       temperature: 0.2,
       maxTokens: 4096,
       enabled: true,
@@ -155,12 +152,14 @@ function createDefaultSystemConfig(): AdminSystemConfig {
     vision: {
       roleKey: 'vision',
       title: '03 · 扒剧小能手（Video Transcriber）',
-      badge: '视觉还原',
+      badge: '视觉还原 · Gemini/GPT',
       description: '负责按快速模式（整集看写+抽查）或详细模式（每秒一帧逐格看写）还原分集剧本、锚定标准人名并标记待补写镜头。',
       primaryProviderId: 'prov-gemini',
       primaryModel: 'gemini-2.5-pro',
       fallbackProviderId: 'prov-openai',
       fallbackModel: 'gpt-4o',
+      fallbackProvider2Id: 'prov-relay-backup2',
+      fallbackModel2: 'gemini-2.5-flash',
       temperature: 0.15,
       maxTokens: 4096,
       enabled: true,
@@ -170,12 +169,14 @@ function createDefaultSystemConfig(): AdminSystemConfig {
     planner: {
       roleKey: 'planner',
       title: '04 · 故事策划师（Story Planner）',
-      badge: '主线与三道门',
+      badge: '主线与三道门 · Gemini/GPT',
       description: '负责产出 2–3 套主线与对手方案、过「看得懂关」的简化主线单、国内三道门（世界观/人设/替换）及原创前四层推理。',
-      primaryProviderId: 'prov-claude',
-      primaryModel: 'anthropic/claude-3.5-sonnet',
-      fallbackProviderId: 'prov-openai',
+      primaryProviderId: 'prov-openai',
+      primaryModel: 'gemini-2.5-pro',
+      fallbackProviderId: 'prov-gemini',
       fallbackModel: 'gpt-4o',
+      fallbackProvider2Id: 'prov-relay-backup2',
+      fallbackModel2: 'gemini-2.5-pro',
       temperature: 0.5,
       maxTokens: 4096,
       enabled: true,
@@ -185,12 +186,14 @@ function createDefaultSystemConfig(): AdminSystemConfig {
     writer: {
       roleKey: 'writer',
       title: '05 · 分集编剧（Episode Writer）',
-      badge: '细纲与正文',
+      badge: '细纲与正文 · Gemini/GPT',
       description: '负责每 10 集分批细纲、正文前 3 集逐集打磨、放开停点后的整批正文写作，并严格执行前 N 集锁定稿一字不动保护。',
-      primaryProviderId: 'prov-claude',
-      primaryModel: 'anthropic/claude-3.5-sonnet',
-      fallbackProviderId: 'prov-deepseek',
-      fallbackModel: 'deepseek-chat',
+      primaryProviderId: 'prov-openai',
+      primaryModel: 'gemini-2.5-pro',
+      fallbackProviderId: 'prov-gemini',
+      fallbackModel: 'gpt-4o',
+      fallbackProvider2Id: 'prov-relay-backup2',
+      fallbackModel2: 'gpt-4o',
       temperature: 0.65,
       maxTokens: 8192,
       enabled: true,
@@ -200,12 +203,14 @@ function createDefaultSystemConfig(): AdminSystemConfig {
     polisher: {
       roleKey: 'polisher',
       title: '06 · 审稿官 & 剧本精修师（Script Polisher）',
-      badge: '终审与本土化',
+      badge: '终审与本土化 · GPT/Gemini',
       description: '负责自动执行初审、裁定、返修、复核、北美语感与美式幽默精修（Caught in 4K / 冷面自嘲）、终复核及 Word 交付包合成。',
-      primaryProviderId: 'prov-claude',
-      primaryModel: 'anthropic/claude-3.5-sonnet',
-      fallbackProviderId: 'prov-openai',
-      fallbackModel: 'gpt-4o',
+      primaryProviderId: 'prov-openai',
+      primaryModel: 'gpt-4o',
+      fallbackProviderId: 'prov-gemini',
+      fallbackModel: 'gemini-2.5-pro',
+      fallbackProvider2Id: 'prov-relay-backup2',
+      fallbackModel2: 'gpt-4o',
       temperature: 0.4,
       maxTokens: 4096,
       enabled: true,
@@ -1242,8 +1247,8 @@ export function sanitizeForClient<T>(input: T, extraSensitiveTexts?: string[]): 
 }
 
 /**
- * Executes an LLM chat request against either an OpenAI-compatible `/chat/completions` endpoint
- * OR Google Gemini's native `generateContent` endpoint automatically when a Gemini URL/Key is used.
+ * Executes an LLM chat request against a provider's Primary Base URL (`baseUrl`),
+ * automatically failing over to `backupBaseUrl1` and `backupBaseUrl2` if configured!
  */
 export async function executeProviderChat(params: {
   provider: ApiProviderConfig;
@@ -1254,68 +1259,87 @@ export async function executeProviderChat(params: {
   temperature: number;
   maxTokens: number;
 }): Promise<{ reply: string; totalTokens: number }> {
-  const baseUrl = params.provider.baseUrl.replace(/\/+$/, '');
-  const isGeminiNativeUrl =
-    baseUrl.includes('generativelanguage.googleapis.com') && !baseUrl.endsWith('/openai');
+  const candidateUrls = [
+    params.provider.baseUrl,
+    params.provider.backupBaseUrl1,
+    params.provider.backupBaseUrl2,
+  ]
+    .map((u) => String(u || '').trim().replace(/\/+$/, ''))
+    .filter(Boolean);
 
-  if (isGeminiNativeUrl) {
-    const cleanModel = params.model.replace(/^models\//, '');
-    const geminiUrl = `${baseUrl}/models/${cleanModel}:generateContent?key=${encodeURIComponent(params.apiKey)}`;
-    const res = await fetch(geminiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ...(params.sysPrompt
-          ? { systemInstruction: { parts: [{ text: params.sysPrompt }] } }
-          : {}),
-        contents: [{ role: 'user', parts: [{ text: params.userPrompt }] }],
-        generationConfig: {
-          temperature: params.temperature,
-          maxOutputTokens: params.maxTokens,
+  if (candidateUrls.length === 0) {
+    throw new Error('NO_BASE_URL_CONFIGURED');
+  }
+
+  let lastError: any = null;
+  for (const baseUrl of candidateUrls) {
+    try {
+      const isGeminiNativeUrl =
+        baseUrl.includes('generativelanguage.googleapis.com') && !baseUrl.endsWith('/openai');
+
+      if (isGeminiNativeUrl) {
+        const cleanModel = params.model.replace(/^models\//, '');
+        const geminiUrl = `${baseUrl}/models/${cleanModel}:generateContent?key=${encodeURIComponent(params.apiKey)}`;
+        const res = await fetch(geminiUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...(params.sysPrompt
+              ? { systemInstruction: { parts: [{ text: params.sysPrompt }] } }
+              : {}),
+            contents: [{ role: 'user', parts: [{ text: params.userPrompt }] }],
+            generationConfig: {
+              temperature: params.temperature,
+              maxOutputTokens: params.maxTokens,
+            },
+          }),
+        });
+        if (!res.ok) {
+          const errText = await res.text().catch(() => `HTTP ${res.status}`);
+          throw new Error(`HTTP ${res.status}: ${errText.slice(0, 140)}`);
+        }
+        const data: any = await res.json();
+        const reply = data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text || '').join('') || '';
+        const totalTokens = Number(
+          data?.usageMetadata?.totalTokenCount ||
+            Math.ceil((params.sysPrompt.length + params.userPrompt.length + reply.length) / 3)
+        );
+        return { reply, totalTokens };
+      }
+
+      const res = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${params.apiKey}`,
         },
-      }),
-    });
-    if (!res.ok) {
-      const errText = await res.text().catch(() => `HTTP ${res.status}`);
-      throw new Error(`HTTP ${res.status}: ${errText.slice(0, 140)}`);
+        body: JSON.stringify({
+          model: params.model,
+          temperature: params.temperature,
+          max_tokens: params.maxTokens,
+          messages: [
+            ...(params.sysPrompt ? [{ role: 'system', content: params.sysPrompt }] : []),
+            { role: 'user', content: params.userPrompt },
+          ],
+        }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => `HTTP ${res.status}`);
+        throw new Error(`HTTP ${res.status}: ${errText.slice(0, 140)}`);
+      }
+      const data: any = await res.json();
+      const reply = data?.choices?.[0]?.message?.content || '';
+      const totalTokens = Number(
+        data?.usage?.total_tokens ||
+          Math.ceil((params.sysPrompt.length + params.userPrompt.length + reply.length) / 3)
+      );
+      return { reply, totalTokens };
+    } catch (err) {
+      lastError = err;
     }
-    const data: any = await res.json();
-    const reply = data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text || '').join('') || '';
-    const totalTokens = Number(
-      data?.usageMetadata?.totalTokenCount ||
-        Math.ceil((params.sysPrompt.length + params.userPrompt.length + reply.length) / 3)
-    );
-    return { reply, totalTokens };
   }
-
-  const res = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${params.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: params.model,
-      temperature: params.temperature,
-      max_tokens: params.maxTokens,
-      messages: [
-        ...(params.sysPrompt ? [{ role: 'system', content: params.sysPrompt }] : []),
-        { role: 'user', content: params.userPrompt },
-      ],
-    }),
-  });
-
-  if (!res.ok) {
-    const errText = await res.text().catch(() => `HTTP ${res.status}`);
-    throw new Error(`HTTP ${res.status}: ${errText.slice(0, 140)}`);
-  }
-  const data: any = await res.json();
-  const reply = data?.choices?.[0]?.message?.content || '';
-  const totalTokens = Number(
-    data?.usage?.total_tokens ||
-      Math.ceil((params.sysPrompt.length + params.userPrompt.length + reply.length) / 3)
-  );
-  return { reply, totalTokens };
+  throw lastError || new Error('REQUEST_FAILED');
 }
 /**
  * Calls a specific AI Station (e.g. 'director', 'analyst', 'vision', 'planner', 'writer', 'polisher')
@@ -1360,7 +1384,19 @@ export async function callStationLLM(params: {
       if (fallbackProv) {
         candidateTargets.push({
           provider: fallbackProv,
-          model: route.fallbackModel || fallbackProv.models[0] || 'gpt-4o-mini',
+          model: route.fallbackModel || fallbackProv.models[0] || 'gemini-2.5-pro',
+          isFallback: true,
+        });
+      }
+    }
+    if (route.fallbackProvider2Id) {
+      const fallbackProv2 = store.systemConfig.providers.find(
+        (p) => p.id === route.fallbackProvider2Id && p.enabled && p.apiKeys.some((k) => k.trim())
+      );
+      if (fallbackProv2) {
+        candidateTargets.push({
+          provider: fallbackProv2,
+          model: route.fallbackModel2 || fallbackProv2.models[0] || 'gpt-4o',
           isFallback: true,
         });
       }

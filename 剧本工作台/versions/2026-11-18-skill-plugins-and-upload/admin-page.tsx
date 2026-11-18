@@ -471,53 +471,47 @@ export default function AdminConsolePage() {
     copyText(cardText, `邀请码 ${inv.code} 分发卡片`);
   }
 
-  function addPresetProvider(preset: 'openai' | 'openrouter' | 'gemini' | 'deepseek' | 'custom') {
+  function addPresetProvider(preset: 'primary_relay' | 'backup_relay_1' | 'backup_relay_2') {
     if (!systemConfig) return;
     const templates: Record<string, Partial<ApiProviderConfig>> = {
-      openai: {
-        name: 'OpenAI 官方 / 兼容线路',
-        vendor: 'openai',
-        baseUrl: 'https://api.openai.com/v1',
-        models: ['gpt-4o', 'gpt-4o-mini'],
-        note: '支持多 Key 自动轮询',
-      },
-      openrouter: {
-        name: 'OpenRouter 聚合渠道 (Claude/GPT)',
-        vendor: 'openrouter',
-        baseUrl: 'https://openrouter.ai/api/v1',
-        models: ['anthropic/claude-3.5-sonnet', 'anthropic/claude-3.7-sonnet', 'openai/gpt-4o'],
-        note: '推荐用于分集编剧与北美本土化精修',
-      },
-      gemini: {
-        name: 'Google Gemini 视觉专线',
-        vendor: 'gemini',
-        baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-        models: ['gemini-2.5-pro', 'gemini-2.5-flash'],
-        note: '推荐用于扒剧小能手视频/字幕还原',
-      },
-      deepseek: {
-        name: 'DeepSeek 官方渠道',
-        vendor: 'deepseek',
-        baseUrl: 'https://api.deepseek.com/v1',
-        models: ['deepseek-chat', 'deepseek-reasoner'],
-        note: '高性价比主力或容灾备用线路',
-      },
-      custom: {
-        name: '自建 API 中转站 / OneAPI / NewAPI',
+      primary_relay: {
+        name: '① 主 API 中转接口 (Primary Relay · GPT / Gemini)',
         vendor: 'custom',
-        baseUrl: 'https://your-relay-api.example.com/v1',
-        models: ['gpt-4o', 'claude-3-5-sonnet-latest', 'gemini-2.5-pro'],
-        note: '兼容一切标准 OpenAI /v1/chat/completions 中转接口',
+        baseUrl: 'https://your-primary-relay.example.com/v1',
+        backupBaseUrl1: 'https://your-backup-relay-1.example.com/v1',
+        backupBaseUrl2: 'https://your-backup-relay-2.example.com/v1',
+        models: ['gpt-4o', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gpt-4o-mini', 'gpt-4.1'],
+        note: '主力中转接口（内置 1主+2备接口地址自动切换与多 Key 轮询，支持 GPT 与 Gemini）',
+      },
+      backup_relay_1: {
+        name: '② 备用 API 中转接口 1 (Backup Relay 1 · Gemini / GPT)',
+        vendor: 'custom',
+        baseUrl: 'https://your-backup-relay-1.example.com/v1',
+        backupBaseUrl1: '',
+        backupBaseUrl2: '',
+        models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gpt-4o', 'gpt-4o-mini'],
+        note: '第一备用中转接口（主接口超时或报错时自动切入）',
+      },
+      backup_relay_2: {
+        name: '③ 备用 API 中转接口 2 (Backup Relay 2 · GPT / Gemini)',
+        vendor: 'custom',
+        baseUrl: 'https://your-backup-relay-2.example.com/v1',
+        backupBaseUrl1: '',
+        backupBaseUrl2: '',
+        models: ['gpt-4o', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gpt-4o-mini'],
+        note: '第二备用中转接口（二级兜底中转站）',
       },
     };
     const tpl = templates[preset];
     const newProv: ApiProviderConfig = {
       id: 'prov-' + Date.now(),
-      name: tpl.name || '新 API 渠道',
-      vendor: (tpl.vendor as any) || 'custom',
+      name: tpl.name || '新 API 中转接口',
+      vendor: 'custom',
       baseUrl: tpl.baseUrl || 'https://api.openai.com/v1',
+      backupBaseUrl1: tpl.backupBaseUrl1 || '',
+      backupBaseUrl2: tpl.backupBaseUrl2 || '',
       apiKeys: [],
-      models: tpl.models || ['gpt-4o'],
+      models: tpl.models || ['gpt-4o', 'gemini-2.5-pro'],
       enabled: true,
       priority: systemConfig.providers.length + 1,
       lastTestStatus: 'untested',
@@ -527,7 +521,7 @@ export default function AdminConsolePage() {
       ...systemConfig,
       providers: [...systemConfig.providers, newProv],
     });
-    showToast(`已添加「${newProv.name}」卡片，请填写 API Key 后点击保存`);
+    showToast(`已添加「${newProv.name}」卡片，请填写中转地址与 API Key 后点击保存`);
   }
 
   function updateLocalProvider(id: string, patch: Partial<ApiProviderConfig>) {
@@ -1266,27 +1260,21 @@ export default function AdminConsolePage() {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
                 <div>
                   <h2 style={{ margin: '0 0 4px', fontSize: 17 }}>
-                    🔌 多渠道 API 供应商池（支持多 Key 负载均衡轮询与主备容灾）
+                    🔌 API 中转接口池配置（1 个主接口 + 2 个备用接口 · 全工位使用 GPT / Gemini）
                   </h2>
                   <p style={{ margin: 0, color: '#939db0', fontSize: 13 }}>
-                    所有 API Key 均加密保存在服务端（`.data/studio-store.json`），创作者前台完全不可见。同一渠道可填写多个 Key（每行一个）实现自动轮询。
+                    全部采用 API 中转接口（已全面弃用 Claude，由 Gemini 与 GPT 承担全流程工位）。支持配置 **1 个主中转接口地址 + 2 个备用中转接口地址**，主接口异常时自动切入备用接口 1 → 备用接口 2。
                   </p>
                 </div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <button type="button" style={styles.secondaryBtn} onClick={() => addPresetProvider('openai')}>
-                    ＋ 新增 OpenAI 渠道
+                  <button type="button" style={styles.primaryBtn} onClick={() => addPresetProvider('primary_relay')}>
+                    ＋ 新增主 API 中转接口 (1主+2备地址)
                   </button>
-                  <button type="button" style={styles.secondaryBtn} onClick={() => addPresetProvider('openrouter')}>
-                    ＋ 新增 Claude / OpenRouter
+                  <button type="button" style={styles.secondaryBtn} onClick={() => addPresetProvider('backup_relay_1')}>
+                    ＋ 新增备用中转接口 1
                   </button>
-                  <button type="button" style={styles.secondaryBtn} onClick={() => addPresetProvider('gemini')}>
-                    ＋ 新增 Gemini 视觉渠道
-                  </button>
-                  <button type="button" style={styles.secondaryBtn} onClick={() => addPresetProvider('deepseek')}>
-                    ＋ 新增 DeepSeek
-                  </button>
-                  <button type="button" style={styles.primaryBtn} onClick={() => addPresetProvider('custom')}>
-                    ＋ 新增自定义中转站
+                  <button type="button" style={styles.secondaryBtn} onClick={() => addPresetProvider('backup_relay_2')}>
+                    ＋ 新增备用中转接口 2
                   </button>
                 </div>
               </div>
@@ -1393,22 +1381,13 @@ export default function AdminConsolePage() {
                       </div>
                     </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
                       <label style={styles.label}>
-                        渠道名称
+                        中转渠道名称
                         <input
                           style={styles.input}
                           value={prov.name}
                           onChange={(e) => updateLocalProvider(prov.id, { name: e.target.value })}
-                        />
-                      </label>
-                      <label style={styles.label}>
-                        接口地址 (API Base URL · 兼容 /v1/chat/completions)
-                        <input
-                          style={styles.input}
-                          value={prov.baseUrl}
-                          onChange={(e) => updateLocalProvider(prov.id, { baseUrl: e.target.value })}
-                          placeholder="https://api.openai.com/v1"
                         />
                       </label>
                       <label style={styles.label}>
@@ -1421,9 +1400,39 @@ export default function AdminConsolePage() {
                       </label>
                     </div>
 
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12, marginTop: 12 }}>
+                      <label style={styles.label}>
+                        1. 主中转接口地址 (Primary Base URL · 必填)
+                        <input
+                          style={styles.input}
+                          value={prov.baseUrl}
+                          onChange={(e) => updateLocalProvider(prov.id, { baseUrl: e.target.value })}
+                          placeholder="https://主中转站域名/v1"
+                        />
+                      </label>
+                      <label style={styles.label}>
+                        2. 备用中转接口地址 1 (Backup Base URL 1 · 主地址超时自动切换)
+                        <input
+                          style={styles.input}
+                          value={prov.backupBaseUrl1 || ''}
+                          onChange={(e) => updateLocalProvider(prov.id, { backupBaseUrl1: e.target.value })}
+                          placeholder="https://备用中转站1域名/v1（可选）"
+                        />
+                      </label>
+                      <label style={styles.label}>
+                        3. 备用中转接口地址 2 (Backup Base URL 2 · 二级兜底地址)
+                        <input
+                          style={styles.input}
+                          value={prov.backupBaseUrl2 || ''}
+                          onChange={(e) => updateLocalProvider(prov.id, { backupBaseUrl2: e.target.value })}
+                          placeholder="https://备用中转站2域名/v1（可选）"
+                        />
+                      </label>
+                    </div>
+
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12, marginTop: 12 }}>
                       <label style={styles.label}>
-                        API Key 列表（支持填入多个 Key，每行一个，服务端自动轮询容灾）
+                        中转 API Key 列表（支持填入多个 Key，每行一个，服务端自动轮询容灾）
                         <textarea
                           rows={3}
                           style={{ ...styles.input, fontFamily: 'monospace' }}
@@ -1436,11 +1445,11 @@ export default function AdminConsolePage() {
                                 .filter(Boolean),
                             })
                           }
-                          placeholder="sk-proj-xxxxxxxxxxxx&#10;sk-proj-yyyyyyyyyyyy (可选第2个Key轮询)"
+                          placeholder="sk-xxxxxxxxxxxx&#10;sk-yyyyyyyyyyyy (可选多个中转Key自动轮询)"
                         />
                       </label>
                       <label style={styles.label}>
-                        该渠道支持的模型列表（逗号或换行分隔，供六大工位下拉选择）
+                        该中转站支持的 GPT / Gemini 模型列表（逗号或换行分隔，供六大工位下拉选择）
                         <textarea
                           rows={3}
                           style={{ ...styles.input, fontFamily: 'monospace' }}
@@ -1453,7 +1462,7 @@ export default function AdminConsolePage() {
                                 .filter(Boolean),
                             })
                           }
-                          placeholder="gpt-4o, claude-3-5-sonnet-latest, gemini-2.5-pro"
+                          placeholder="gpt-4o, gemini-2.5-pro, gemini-2.5-flash, gpt-4o-mini, gpt-4.1"
                         />
                       </label>
                     </div>
@@ -1638,7 +1647,7 @@ export default function AdminConsolePage() {
                         </div>
 
                         <label style={styles.label}>
-                          3. 备用容灾渠道 (Fallback Provider)
+                          3. 备用中转接口 1 (Fallback Relay 1)
                           <select
                             style={styles.input}
                             value={route.fallbackProviderId}
@@ -1650,7 +1659,7 @@ export default function AdminConsolePage() {
                               });
                             }}
                           >
-                            <option value="">不启用备用渠道</option>
+                            <option value="">不启用备用接口 1</option>
                             {systemConfig.providers.map((p) => (
                               <option key={p.id} value={p.id}>
                                 {p.name}
@@ -1660,7 +1669,7 @@ export default function AdminConsolePage() {
                         </label>
 
                         <label style={styles.label}>
-                          4. 备用容灾模型 (Fallback Model)
+                          4. 备用接口 1 模型 (GPT / Gemini)
                           <input
                             style={styles.input}
                             list={`models-fallback-${roleKey}`}
@@ -1673,6 +1682,39 @@ export default function AdminConsolePage() {
                             ))}
                           </datalist>
                         </label>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                          <label style={styles.label}>
+                            5. 备用中转接口 2 (Fallback Relay 2)
+                            <select
+                              style={styles.input}
+                              value={route.fallbackProvider2Id || ''}
+                              onChange={(e) => {
+                                const nextProv = systemConfig.providers.find((p) => p.id === e.target.value);
+                                updateLocalRoute(roleKey, {
+                                  fallbackProvider2Id: e.target.value,
+                                  fallbackModel2: nextProv?.models[0] || route.fallbackModel2 || 'gpt-4o',
+                                });
+                              }}
+                            >
+                              <option value="">不启用备用接口 2</option>
+                              {systemConfig.providers.map((p) => (
+                                <option key={p.id} value={p.id}>
+                                  {p.name}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label style={styles.label}>
+                            6. 备用接口 2 模型
+                            <input
+                              style={styles.input}
+                              value={route.fallbackModel2 || ''}
+                              onChange={(e) => updateLocalRoute(roleKey, { fallbackModel2: e.target.value })}
+                              placeholder="gpt-4o / gemini-2.5-pro"
+                            />
+                          </label>
+                        </div>
                       </div>
 
                       <label style={{ ...styles.label, marginTop: 12 }}>
