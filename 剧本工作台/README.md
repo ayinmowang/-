@@ -1,20 +1,20 @@
-# 剧本工作台
+# 剧本工作台（总编剧 Story Studio）
 
-AI 短剧改编网站，包含聊天式建档与总编剧工作流。
+> **⚠️ 部署与智能体读取指引（最新主版本）**：
+> 本项目的最新完整代码位于 [`versions/2026-11-18-step-by-step-and-grok-bot/`](./versions/2026-11-18-step-by-step-and-grok-bot/)。任何自动部署工具或其他智能体在拉取本仓库部署时，**请直接读取并使用 `versions/2026-11-18-step-by-step-and-grok-bot/` 目录下的最新文件**（不要读取旧版 `2026-11-17` 目录或旧版 `source.zip`）：
+> - 创作者纯享前台（`/`）：[`versions/2026-11-18-step-by-step-and-grok-bot/page.tsx`](./versions/2026-11-18-step-by-step-and-grok-bot/page.tsx)
+> - 独立管理后台（`/admin`）：[`versions/2026-11-18-step-by-step-and-grok-bot/admin-page.tsx`](./versions/2026-11-18-step-by-step-and-grok-bot/admin-page.tsx)
+> - 全局样式表：[`versions/2026-11-18-step-by-step-and-grok-bot/globals.css`](./versions/2026-11-18-step-by-step-and-grok-bot/globals.css)
+> - 后端接口路由（`/api/studio`）：[`versions/2026-11-18-step-by-step-and-grok-bot/route.ts`](./versions/2026-11-18-step-by-step-and-grok-bot/route.ts)
+> - 类型契约：[`versions/2026-11-18-step-by-step-and-grok-bot/types.ts`](./versions/2026-11-18-step-by-step-and-grok-bot/types.ts)
 
-## 下载和协作
+## 2026-11-18 核心特性
+1. **前后台彻底分离**：创作者前台（`/`）无任何后台入口与模型名暴露；管理后台独立在 `/admin` 路由配置六大 AI 编剧工位与接口。
+2. **极简空白画布 + 正在输入动效 + 逐字打字机流式输出**：默认收起右侧栏与顶部冗余横幅，先展示 `● ● ● 总编剧正在输入…` 圆点动效，再逐字打出引导语并浮现当前单步卡片。
+3. **严格逐项展开（一项项来）**：扒剧（`transcribe`）按「上传视频 → 1.核对集号 → 2.选快速/详细模式（无默认） → 3.锁主角人名表 → 4.校准【待人工補寫】 → 5.下载繁简双版 Word 或转迭代」逐项推进，已完成项自动折叠为顶部绿色 `✓` 胶囊。
 
-- [完整源码压缩包](./source.zip)：下载并解压，包含前端、后端、测试和 `docs/`；在解压目录按 `README.md` 与 `AGENTS.md` 开始协作。
-- [网站计划书](./网站计划书.md)、[项目书](./项目书.md) 和 [原始计划](./计划书_v1.md)：项目目标与已拍板决定。
-- [界面验收契约](./界面验收契约.md) 与 [设计审查](./设计审查.md)：本轮交互检查依据。
-- [PRO 实时工作台](./versions/2026-11-17-pro-workspace/) · [单集提取与逐集交付](./versions/2026-11-17-episode-delivery/) · [前一版交互归档](./versions/2026-11-17-frontend-design-direction/)。
-- [frontend-design-direction 技能包](./frontend-design-direction.zip)：解压后保持 `frontend-design-direction/SKILL.md` 原名及目录结构，放入所用智能体支持的技能目录；在任务中写 `$frontend-design-direction` 调用。不同工具的技能安装路径以各自说明为准。
-
-在线预览：https://director-studio-ayin.ayinx.chatgpt.site/
-
-部署时在解压目录参照 `README.md` 配置环境变量；不要提交真实密钥、素材或数据库。
 ## 版本记录
-| 日期 | 归档目录 | 更新内容 |
-| --- | --- | --- |
-| 2026-11-18 | [第 8 版 · 建档与交付修复](./versions/2026-11-18-workflow-contracts/) | 续写锁定稿、原创停点 A、管理员预算与重试、文字试写和 Word 交付 |
-| 2026-11-18 | `versions/2026-11-18-step-by-step-and-grok-bot/` | 升级极简空白对话流、正在输入与打字机动效、逐项单步向导（一项项来）、移除前端费用审批卡、新增 Grok Bot 参谋建议、Apple HIG 实时工作页面与 `/admin` 后台 |
+| 日期 | 归档目录 | 状态 | 更新内容 |
+| --- | --- | --- | --- |
+| **2026-11-18** | [`versions/2026-11-18-step-by-step-and-grok-bot/`](./versions/2026-11-18-step-by-step-and-grok-bot/) | **★ 当前最新主版本** | 极简空白对话流、正在输入与打字机动效、五步逐项向导（一项项来）、前后台路由彻底分离（`/` 与 `/admin`）、实时工作台与输出 |
+| 2026-11-17 | `versions/2026-11-17-frontend-design-direction/` | 历史归档（已弃用） | 初版三栏布局与基础设计审查 |
