@@ -312,19 +312,15 @@ export async function POST(request: Request) {
       const name = String(pData.name || '').trim();
       if (!name || !baseUrl) throw new Error('INVALID_INPUT');
 
-      const rawKeys = Array.isArray(pData.apiKeys)
-        ? pData.apiKeys
-        : String(pData.apiKeys || '')
-            .split(/[\n,]/)
-            .map((s: string) => s.trim())
-            .filter(Boolean);
+      const rawKeys = (Array.isArray(pData.apiKeys) ? pData.apiKeys.join('\n') : String(pData.apiKeys || ''))
+        .split(/[\n,，;；]+/)
+        .map((s: string) => s.trim())
+        .filter(Boolean);
 
-      const rawModels = Array.isArray(pData.models)
-        ? pData.models
-        : String(pData.models || '')
-            .split(/[\n,]/)
-            .map((s: string) => s.trim())
-            .filter(Boolean);
+      const rawModels = (Array.isArray(pData.models) ? pData.models.join(',') : String(pData.models || ''))
+        .split(/[\n,，、;；]+/)
+        .map((s: string) => s.trim())
+        .filter(Boolean);
 
       const existingIdx = store.systemConfig.providers.findIndex((p) => p.id === pData.id);
       const updatedProvider: ApiProviderConfig = {
@@ -380,7 +376,7 @@ export async function POST(request: Request) {
       const testModel = body.model || prov.models[0] || 'gemini-2.5-flash';
       const t0 = Date.now();
       try {
-        const { reply } = await executeProviderChat({
+        const { reply, resolvedModel } = await executeProviderChat({
           provider: prov,
           apiKey: validKeys[0],
           model: testModel,
@@ -390,6 +386,10 @@ export async function POST(request: Request) {
           maxTokens: 48,
         });
         const latencyMs = Date.now() - t0;
+        const actualModel = resolvedModel || testModel;
+        if (resolvedModel && !prov.models.includes(resolvedModel)) {
+          prov.models = [resolvedModel, ...prov.models];
+        }
         prov.lastTestStatus = 'ok';
         prov.lastLatencyMs = latencyMs;
         prov.lastTestedAt = new Date().toISOString();
@@ -400,7 +400,7 @@ export async function POST(request: Request) {
           testResult: {
             ok: true,
             latencyMs,
-            model: testModel,
+            model: actualModel,
             reply: String(reply).slice(0, 120),
           },
         });
@@ -420,6 +420,48 @@ export async function POST(request: Request) {
           },
         });
       }
+    }
+
+    // 9b. Auto-fetch available models from Relay's GET /models endpoint
+    if (op === 'fetch_provider_models') {
+      const prov = store.systemConfig.providers.find((p) => p.id === body.id);
+      if (!prov) throw new Error('NOT_FOUND');
+      const validKeys = prov.apiKeys.map((k) => k.trim()).filter(Boolean);
+      if (!validKeys.length) {
+        return Response.json({
+          ...buildAdminSnapshot(adminAcc),
+          fetchModelsResult: { ok: false, error: '请先填写至少一个中转 API Key 并保存。' },
+        });
+      }
+      const urls = [prov.baseUrl, prov.backupBaseUrl1, prov.backupBaseUrl2]
+        .map((u) => String(u || '').trim().replace(/\/+$/, ''))
+        .filter(Boolean);
+
+      for (const u of urls) {
+        try {
+          const res = await fetch(`${u}/models`, {
+            headers: { Authorization: `Bearer ${validKeys[0]}` },
+          });
+          if (res.ok) {
+            const data: any = await res.json();
+            const ids: string[] = Array.isArray(data?.data)
+              ? data.data.map((m: any) => String(m?.id || '').trim()).filter(Boolean)
+              : [];
+            if (ids.length > 0) {
+              prov.models = ids;
+              flushPersistentStore();
+              return Response.json({
+                ...buildAdminSnapshot(adminAcc),
+                fetchModelsResult: { ok: true, count: ids.length, models: ids },
+              });
+            }
+          }
+        } catch {}
+      }
+      return Response.json({
+        ...buildAdminSnapshot(adminAcc),
+        fetchModelsResult: { ok: false, error: '未能从该中转站的 /models 接口拉取到模型列表，请检查地址与 Key。' },
+      });
     }
 
     // 10. Save 6-Station Agent Routes & System Prompts

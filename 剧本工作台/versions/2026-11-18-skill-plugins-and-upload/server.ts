@@ -1247,6 +1247,31 @@ export function sanitizeForClient<T>(input: T, extraSensitiveTexts?: string[]): 
 }
 
 /**
+ * Normalizes shorthand or case-variant model names (e.g. "GPT6.1sol" -> "gpt-6.1-sol")
+ * and can match against a relay's `/models` list if the exact string returns `model_not_found`.
+ */
+export function normalizeRelayModelName(rawModel: string): string {
+  const first = String(rawModel || '')
+    .split(/[\n,，、;；]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)[0] || 'gpt-4o';
+
+  // Common relay shorthand normalization: e.g. GPT6.1sol -> gpt-6.1-sol, GPT5.6terra -> gpt-5.6-terra
+  const m = first.match(/^(gpt|gemini)[\s_-]*([0-9]+(?:\.[0-9]+)?)[\s_-]*([a-zA-Z0-9]*)$/i);
+  if (m) {
+    const prefix = m[1].toLowerCase();
+    const ver = m[2];
+    const suffix = m[3] ? `-${m[3].toLowerCase()}` : '';
+    // Keep standard names like gpt-4o intact
+    if (first.toLowerCase() === 'gpt-4o' || first.toLowerCase() === 'gpt-4o-mini') {
+      return first.toLowerCase();
+    }
+    return `${prefix}-${ver}${suffix}`;
+  }
+  return first;
+}
+
+/**
  * Executes an LLM chat request against a provider's Primary Base URL (`baseUrl`),
  * automatically failing over to `backupBaseUrl1` and `backupBaseUrl2` if configured!
  */
@@ -1258,7 +1283,7 @@ export async function executeProviderChat(params: {
   userPrompt: string;
   temperature: number;
   maxTokens: number;
-}): Promise<{ reply: string; totalTokens: number }> {
+}): Promise<{ reply: string; totalTokens: number; resolvedModel?: string }> {
   const candidateUrls = [
     params.provider.baseUrl,
     params.provider.backupBaseUrl1,
@@ -1271,6 +1296,12 @@ export async function executeProviderChat(params: {
     throw new Error('NO_BASE_URL_CONFIGURED');
   }
 
+  const rawRequested = String(params.model || '')
+    .split(/[\n,，、;；]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)[0] || 'gpt-4o';
+  const normalizedRequested = normalizeRelayModelName(rawRequested);
+
   let lastError: any = null;
   for (const baseUrl of candidateUrls) {
     try {
@@ -1278,7 +1309,7 @@ export async function executeProviderChat(params: {
         baseUrl.includes('generativelanguage.googleapis.com') && !baseUrl.endsWith('/openai');
 
       if (isGeminiNativeUrl) {
-        const cleanModel = params.model.replace(/^models\//, '');
+        const cleanModel = rawRequested.replace(/^models\//, '');
         const geminiUrl = `${baseUrl}/models/${cleanModel}:generateContent?key=${encodeURIComponent(params.apiKey)}`;
         const res = await fetch(geminiUrl, {
           method: 'POST',
@@ -1304,37 +1335,75 @@ export async function executeProviderChat(params: {
           data?.usageMetadata?.totalTokenCount ||
             Math.ceil((params.sysPrompt.length + params.userPrompt.length + reply.length) / 3)
         );
-        return { reply, totalTokens };
+        return { reply, totalTokens, resolvedModel: cleanModel };
       }
 
-      const res = await fetch(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${params.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: params.model,
-          temperature: params.temperature,
-          max_tokens: params.maxTokens,
-          messages: [
-            ...(params.sysPrompt ? [{ role: 'system', content: params.sysPrompt }] : []),
-            { role: 'user', content: params.userPrompt },
-          ],
-        }),
-      });
+      // Try exact model first, then normalized model, then auto-discovered model from /models if model_not_found
+      const modelsToTry = Array.from(new Set([rawRequested, normalizedRequested]));
+      for (let mIdx = 0; mIdx < modelsToTry.length; mIdx++) {
+        const currentModel = modelsToTry[mIdx];
+        const res = await fetch(`${baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${params.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: currentModel,
+            temperature: params.temperature,
+            max_tokens: params.maxTokens,
+            messages: [
+              ...(params.sysPrompt ? [{ role: 'system', content: params.sysPrompt }] : []),
+              { role: 'user', content: params.userPrompt },
+            ],
+          }),
+        });
 
-      if (!res.ok) {
+        if (res.ok) {
+          const data: any = await res.json();
+          const reply = data?.choices?.[0]?.message?.content || '';
+          const totalTokens = Number(
+            data?.usage?.total_tokens ||
+              Math.ceil((params.sysPrompt.length + params.userPrompt.length + reply.length) / 3)
+          );
+          return { reply, totalTokens, resolvedModel: currentModel };
+        }
+
         const errText = await res.text().catch(() => `HTTP ${res.status}`);
-        throw new Error(`HTTP ${res.status}: ${errText.slice(0, 140)}`);
+        const isModelNotFound =
+          errText.includes('model_not_found') || errText.includes('No available channel for model');
+
+        // If on last candidate and it's model_not_found, query GET /models on the relay to match or pick available model
+        if (isModelNotFound && mIdx === modelsToTry.length - 1 && modelsToTry.length < 4) {
+          try {
+            const modelsRes = await fetch(`${baseUrl}/models`, {
+              headers: { Authorization: `Bearer ${params.apiKey}` },
+            });
+            if (modelsRes.ok) {
+              const modelsData: any = await modelsRes.json();
+              const availableIds: string[] = Array.isArray(modelsData?.data)
+                ? modelsData.data.map((x: any) => String(x?.id || '')).filter(Boolean)
+                : [];
+              if (availableIds.length > 0) {
+                const strip = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+                const targetStripped = strip(rawRequested);
+                const fuzzyMatch =
+                  availableIds.find((id) => strip(id) === targetStripped) ||
+                  availableIds.find((id) => strip(id).includes(targetStripped) || targetStripped.includes(strip(id))) ||
+                  availableIds[0];
+                if (fuzzyMatch && !modelsToTry.includes(fuzzyMatch)) {
+                  modelsToTry.push(fuzzyMatch);
+                  continue;
+                }
+              }
+            }
+          } catch {}
+        }
+
+        if (mIdx === modelsToTry.length - 1) {
+          throw new Error(`HTTP ${res.status}: ${errText.slice(0, 140)}`);
+        }
       }
-      const data: any = await res.json();
-      const reply = data?.choices?.[0]?.message?.content || '';
-      const totalTokens = Number(
-        data?.usage?.total_tokens ||
-          Math.ceil((params.sysPrompt.length + params.userPrompt.length + reply.length) / 3)
-      );
-      return { reply, totalTokens };
     } catch (err) {
       lastError = err;
     }

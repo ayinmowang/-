@@ -139,6 +139,8 @@ export default function AdminConsolePage() {
   // Provider test & Station test feedbacks
   const [providerTestMsg, setProviderTestMsg] = useState<Record<string, string>>({});
   const [stationTestMsg, setStationTestMsg] = useState<Record<string, string>>({});
+  const [modelDrafts, setModelDrafts] = useState<Record<string, string>>({});
+  const [keyDrafts, setKeyDrafts] = useState<Record<string, string>>({});
   const [editingPassId, setEditingPassId] = useState<string | null>(null);
   const [editingPassVal, setEditingPassVal] = useState('');
 
@@ -1327,20 +1329,58 @@ export default function AdminConsolePage() {
                         </span>
                       </div>
 
-                      <div style={{ display: 'flex', gap: 8 }}>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                         <button
                           type="button"
                           disabled={busy}
                           style={styles.smallPrimaryBtn}
-                          onClick={() =>
-                            adminAction(
+                          onClick={async () => {
+                            await adminAction(
                               'save_provider',
                               { provider: prov },
                               `✓ 已保存渠道「${prov.name}」`
-                            )
-                          }
+                            );
+                            setModelDrafts((prev) => {
+                              const next = { ...prev };
+                              delete next[prov.id];
+                              return next;
+                            });
+                          }}
                         >
                           💾 保存此渠道
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          style={styles.smallSecondaryBtn}
+                          onClick={async () => {
+                            await adminAction('save_provider', { provider: prov });
+                            setProviderTestMsg((prev) => ({
+                              ...prev,
+                              [prov.id]: '◐ 正在从中转站 /v1/models 拉取真实支持的模型列表…',
+                            }));
+                            const res = await adminAction('fetch_provider_models', { id: prov.id });
+                            if (res?.fetchModelsResult) {
+                              const fm = res.fetchModelsResult;
+                              if (fm.ok) {
+                                setModelDrafts((prev) => ({
+                                  ...prev,
+                                  [prov.id]: (fm.models || []).join(', '),
+                                }));
+                                setProviderTestMsg((prev) => ({
+                                  ...prev,
+                                  [prov.id]: `✓ 已自动拉取到该 Key 下的 ${fm.count} 个可用模型：${(fm.models || []).slice(0, 8).join(', ')}`,
+                                }));
+                              } else {
+                                setProviderTestMsg((prev) => ({
+                                  ...prev,
+                                  [prov.id]: `⚠ 拉取模型列表提示：${fm.error}`,
+                                }));
+                              }
+                            }
+                          }}
+                        >
+                          🔍 自动拉取可用模型
                         </button>
                         <button
                           type="button"
@@ -1358,7 +1398,7 @@ export default function AdminConsolePage() {
                               setProviderTestMsg((prev) => ({
                                 ...prev,
                                 [prov.id]: tr.ok
-                                  ? `✓ 测速成功（耗时 ${tr.latencyMs} ms · 模型 ${tr.model}）：${tr.reply}`
+                                  ? `✓ 测速成功（耗时 ${tr.latencyMs} ms · 实际连通模型 ${tr.model}）：${tr.reply}`
                                   : `⚠ 测速失败：${tr.error}`,
                               }));
                             }
@@ -1436,33 +1476,49 @@ export default function AdminConsolePage() {
                         <textarea
                           rows={3}
                           style={{ ...styles.input, fontFamily: 'monospace' }}
-                          value={Array.isArray(prov.apiKeys) ? prov.apiKeys.join('\n') : ''}
-                          onChange={(e) =>
+                          value={
+                            keyDrafts[prov.id] !== undefined
+                              ? keyDrafts[prov.id]
+                              : Array.isArray(prov.apiKeys)
+                              ? prov.apiKeys.join('\n')
+                              : ''
+                          }
+                          onChange={(e) => {
+                            const raw = e.target.value;
+                            setKeyDrafts((prev) => ({ ...prev, [prov.id]: raw }));
                             updateLocalProvider(prov.id, {
-                              apiKeys: e.target.value
-                                .split('\n')
+                              apiKeys: raw
+                                .split(/[\n,，;；]+/)
                                 .map((s) => s.trim())
                                 .filter(Boolean),
-                            })
-                          }
+                            });
+                          }}
                           placeholder="sk-xxxxxxxxxxxx&#10;sk-yyyyyyyyyyyy (可选多个中转Key自动轮询)"
                         />
                       </label>
                       <label style={styles.label}>
-                        该中转站支持的 GPT / Gemini 模型列表（逗号或换行分隔，供六大工位下拉选择）
+                        该中转站支持的 GPT / Gemini 模型列表（支持中英文逗号或换行分隔，也可点上方「🔍 自动拉取可用模型」）
                         <textarea
                           rows={3}
                           style={{ ...styles.input, fontFamily: 'monospace' }}
-                          value={Array.isArray(prov.models) ? prov.models.join(', ') : ''}
-                          onChange={(e) =>
+                          value={
+                            modelDrafts[prov.id] !== undefined
+                              ? modelDrafts[prov.id]
+                              : Array.isArray(prov.models)
+                              ? prov.models.join(', ')
+                              : ''
+                          }
+                          onChange={(e) => {
+                            const raw = e.target.value;
+                            setModelDrafts((prev) => ({ ...prev, [prov.id]: raw }));
                             updateLocalProvider(prov.id, {
-                              models: e.target.value
-                                .split(/[\n,]/)
+                              models: raw
+                                .split(/[\n,，、;；]+/)
                                 .map((s) => s.trim())
                                 .filter(Boolean),
-                            })
-                          }
-                          placeholder="gpt-4o, gemini-2.5-pro, gemini-2.5-flash, gpt-4o-mini, gpt-4.1"
+                            });
+                          }}
+                          placeholder="gpt-6.1-sol, gpt-6.2-sol, gemini-2.5-pro, gemini-2.5-flash, gpt-4o"
                         />
                       </label>
                     </div>
