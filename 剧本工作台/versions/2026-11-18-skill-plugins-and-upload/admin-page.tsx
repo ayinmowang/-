@@ -1942,23 +1942,51 @@ export default function AdminConsolePage() {
                     🎭 六大 AI 编剧工位模型路由与 System Prompt 配置中心
                   </h2>
                   <p style={{ margin: 0, color: '#939db0', fontSize: 13 }}>
-                    为每个短剧编剧工位单独指定「主用渠道+模型」、「备用容灾渠道+模型」、温度参数及系统提示词。前台创作者调用时自动按此路由执行。
+                    API 渠道配置完成后，在此直接通过下拉框为每个编剧工位选择「主用模型」、「备用模型 1」、「备用模型 2」（已按 ✨ Gemini 系列 与 🤖 GPT 系列分组）。
                   </p>
                 </div>
-                <button
-                  type="button"
-                  disabled={busy}
-                  style={styles.primaryBtn}
-                  onClick={() =>
-                    adminAction(
-                      'save_routes',
-                      { routes: systemConfig.routes },
-                      '✓ 已保存全部六大工位的模型路由与提示词配置'
-                    )
-                  }
-                >
-                  💾 一键保存全部六大工位配置
-                </button>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    style={styles.secondaryBtn}
+                    onClick={async () => {
+                      const p0 = systemConfig.providers[0];
+                      if (!p0) return;
+                      const res = await adminAction(
+                        'fetch_provider_models',
+                        { id: p0.id, families: ['gemini', 'gpt'] },
+                        '✓ 已从主中转站同步最新 Gemini / GPT 模型列表到下拉框！'
+                      );
+                      if (res?.fetchModelsResult?.ok) {
+                        setDiscoveredCatalog((prev) => ({
+                          ...prev,
+                          [p0.id]: {
+                            geminiModels: res.fetchModelsResult.geminiModels || [],
+                            gptModels: res.fetchModelsResult.gptModels || [],
+                            keySupportedModels: res.fetchModelsResult.keySupportedModels || [],
+                          },
+                        }));
+                      }
+                    }}
+                  >
+                    🔄 同步中转站最新模型至下拉框
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    style={styles.primaryBtn}
+                    onClick={() =>
+                      adminAction(
+                        'save_routes',
+                        { routes: systemConfig.routes },
+                        '✓ 已保存全部六大工位的模型路由与提示词配置'
+                      )
+                    }
+                  >
+                    💾 一键保存全部六大工位配置
+                  </button>
+                </div>
               </div>
 
               <div style={{ display: 'grid', gap: 16 }}>
@@ -1967,6 +1995,44 @@ export default function AdminConsolePage() {
                   if (!route) return null;
                   const primaryProv = systemConfig.providers.find((p) => p.id === route.primaryProviderId);
                   const fallbackProv = systemConfig.providers.find((p) => p.id === route.fallbackProviderId);
+                  const fallbackProv2 = systemConfig.providers.find((p) => p.id === route.fallbackProvider2Id);
+
+                  // Build model options from selected provider (falling back to all providers' models)
+                  const allGlobalModels = Array.from(
+                    new Set(systemConfig.providers.flatMap((p) => p.models || []))
+                  );
+                  const buildGroupedOptions = (provModels: string[] | undefined, currentVal: string) => {
+                    const pool = Array.from(
+                      new Set([...(provModels && provModels.length ? provModels : []), ...allGlobalModels])
+                    );
+                    const geminiList = pool.filter((m) => /gemini/i.test(m));
+                    const gptList = pool.filter((m) => !/gemini/i.test(m));
+                    return (
+                      <>
+                        {currentVal && !pool.includes(currentVal) && (
+                          <option value={currentVal}>{currentVal}（当前已存）</option>
+                        )}
+                        {geminiList.length > 0 && (
+                          <optgroup label="✨ Gemini 系列模型">
+                            {geminiList.map((m) => (
+                              <option key={m} value={m}>
+                                ✨ {m}
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
+                        {gptList.length > 0 && (
+                          <optgroup label="🤖 GPT 系列模型">
+                            {gptList.map((m) => (
+                              <option key={m} value={m}>
+                                🤖 {m}
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
+                      </>
+                    );
+                  };
 
                   return (
                     <div
@@ -1999,7 +2065,7 @@ export default function AdminConsolePage() {
                                 setStationTestMsg((prev) => ({
                                   ...prev,
                                   [roleKey]: st.ok
-                                    ? `✓ 工位试跑成功：${st.reply}`
+                                    ? `✓ 工位试跑成功 (${route.primaryModel})：${st.reply}`
                                     : `⚠ 工位试跑失败：${st.error}（请确认绑定渠道已填有效 API Key）`,
                                 }));
                               }
@@ -2028,7 +2094,7 @@ export default function AdminConsolePage() {
 
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12 }}>
                         <label style={styles.label}>
-                          1. 主用 API 渠道 (Primary Provider)
+                          1. 主用 API 中转接口 (Primary Relay)
                           <select
                             style={styles.input}
                             value={route.primaryProviderId}
@@ -2049,18 +2115,14 @@ export default function AdminConsolePage() {
                         </label>
 
                         <label style={styles.label}>
-                          2. 主用模型名称 (Primary Model)
-                          <input
-                            style={styles.input}
-                            list={`models-primary-${roleKey}`}
+                          2. 主用模型选择 (直接下拉选择 Gemini / GPT)
+                          <select
+                            style={{ ...styles.input, fontFamily: 'monospace', color: '#7cc0ff', fontWeight: 600 }}
                             value={route.primaryModel}
                             onChange={(e) => updateLocalRoute(roleKey, { primaryModel: e.target.value })}
-                          />
-                          <datalist id={`models-primary-${roleKey}`}>
-                            {(primaryProv?.models || []).map((m) => (
-                              <option key={m} value={m} />
-                            ))}
-                          </datalist>
+                          >
+                            {buildGroupedOptions(primaryProv?.models, route.primaryModel)}
+                          </select>
                         </label>
 
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
@@ -2113,18 +2175,14 @@ export default function AdminConsolePage() {
                         </label>
 
                         <label style={styles.label}>
-                          4. 备用接口 1 模型 (GPT / Gemini)
-                          <input
-                            style={styles.input}
-                            list={`models-fallback-${roleKey}`}
+                          4. 备用接口 1 模型选择 (下拉选择 Gemini / GPT)
+                          <select
+                            style={{ ...styles.input, fontFamily: 'monospace' }}
                             value={route.fallbackModel}
                             onChange={(e) => updateLocalRoute(roleKey, { fallbackModel: e.target.value })}
-                          />
-                          <datalist id={`models-fallback-${roleKey}`}>
-                            {(fallbackProv?.models || []).map((m) => (
-                              <option key={m} value={m} />
-                            ))}
-                          </datalist>
+                          >
+                            {buildGroupedOptions(fallbackProv?.models, route.fallbackModel)}
+                          </select>
                         </label>
 
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
@@ -2137,7 +2195,7 @@ export default function AdminConsolePage() {
                                 const nextProv = systemConfig.providers.find((p) => p.id === e.target.value);
                                 updateLocalRoute(roleKey, {
                                   fallbackProvider2Id: e.target.value,
-                                  fallbackModel2: nextProv?.models[0] || route.fallbackModel2 || 'gpt-4o',
+                                  fallbackModel2: nextProv?.models[0] || route.fallbackModel2 || 'gpt-6.1-sol',
                                 });
                               }}
                             >
@@ -2150,19 +2208,20 @@ export default function AdminConsolePage() {
                             </select>
                           </label>
                           <label style={styles.label}>
-                            6. 备用接口 2 模型
-                            <input
-                              style={styles.input}
+                            6. 备用接口 2 模型选择
+                            <select
+                              style={{ ...styles.input, fontFamily: 'monospace' }}
                               value={route.fallbackModel2 || ''}
                               onChange={(e) => updateLocalRoute(roleKey, { fallbackModel2: e.target.value })}
-                              placeholder="gpt-4o / gemini-2.5-pro"
-                            />
+                            >
+                              {buildGroupedOptions(fallbackProv2?.models, route.fallbackModel2 || '')}
+                            </select>
                           </label>
                         </div>
                       </div>
 
                       <label style={{ ...styles.label, marginTop: 12 }}>
-                        5. 工位专属系统提示词 (System Prompt · 仅服务端可见，前台严格保密)
+                        7. 工位专属系统提示词 (System Prompt · 仅服务端可见，前台严格保密)
                         <textarea
                           rows={2}
                           style={styles.input}

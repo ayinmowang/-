@@ -345,6 +345,22 @@ export async function POST(request: Request) {
       } else {
         store.systemConfig.providers.push(updatedProvider);
       }
+
+      // Auto-sync any station routes bound to this provider whose model is not in the updated models list
+      if (updatedProvider.models.length > 0) {
+        const firstGpt = updatedProvider.models.find((m) => !/gemini/i.test(m)) || updatedProvider.models[0];
+        const firstGemini = updatedProvider.models.find((m) => /gemini/i.test(m)) || updatedProvider.models[0];
+        for (const rKey of Object.keys(store.systemConfig.routes || {})) {
+          const r = (store.systemConfig.routes as any)[rKey];
+          if (r && r.primaryProviderId === updatedProvider.id && !updatedProvider.models.includes(r.primaryModel)) {
+            r.primaryModel = ['vision', 'planner', 'writer'].includes(rKey) ? firstGemini : firstGpt;
+          }
+          if (r && r.fallbackProviderId === updatedProvider.id && !updatedProvider.models.includes(r.fallbackModel)) {
+            r.fallbackModel = ['vision', 'planner', 'writer'].includes(rKey) ? firstGpt : firstGemini;
+          }
+        }
+      }
+
       flushPersistentStore();
       return Response.json(buildAdminSnapshot(adminAcc));
     }
@@ -524,6 +540,17 @@ export async function POST(request: Request) {
       const combined = Array.from(new Set([...gptModels, ...geminiModels]));
       if (combined.length > 0) {
         prov.models = combined;
+        const firstGpt = gptModels[0] || combined[0];
+        const firstGemini = geminiModels[0] || combined[0];
+        for (const rKey of Object.keys(store.systemConfig.routes || {})) {
+          const r = (store.systemConfig.routes as any)[rKey];
+          if (r && r.primaryProviderId === prov.id && !combined.includes(r.primaryModel)) {
+            r.primaryModel = ['vision', 'planner', 'writer'].includes(rKey) ? firstGemini : firstGpt;
+          }
+          if (r && r.fallbackProviderId === prov.id && !combined.includes(r.fallbackModel)) {
+            r.fallbackModel = ['vision', 'planner', 'writer'].includes(rKey) ? firstGpt : firstGemini;
+          }
+        }
         flushPersistentStore();
         return Response.json({
           ...buildAdminSnapshot(adminAcc),
