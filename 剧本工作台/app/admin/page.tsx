@@ -141,6 +141,10 @@ export default function AdminConsolePage() {
   const [stationTestMsg, setStationTestMsg] = useState<Record<string, string>>({});
   const [modelDrafts, setModelDrafts] = useState<Record<string, string>>({});
   const [keyDrafts, setKeyDrafts] = useState<Record<string, string>>({});
+  const [selectedFamilies, setSelectedFamilies] = useState<Record<string, { gemini: boolean; gpt: boolean }>>({});
+  const [discoveredCatalog, setDiscoveredCatalog] = useState<
+    Record<string, { geminiModels: string[]; gptModels: string[]; keySupportedModels: string[] }>
+  >({});
   const [editingPassId, setEditingPassId] = useState<string | null>(null);
   const [editingPassVal, setEditingPassVal] = useState('');
 
@@ -1497,7 +1501,7 @@ export default function AdminConsolePage() {
                         />
                       </label>
                       <label style={styles.label}>
-                        该中转站支持的 GPT / Gemini 模型列表（支持中英文逗号或换行分隔，也可点上方「🔍 自动拉取可用模型」）
+                        该中转站已启用的 GPT / Gemini 模型列表（可在下方可视化点选，也可手动编辑）
                         <textarea
                           rows={3}
                           style={{ ...styles.input, fontFamily: 'monospace' }}
@@ -1518,9 +1522,214 @@ export default function AdminConsolePage() {
                                 .filter(Boolean),
                             });
                           }}
-                          placeholder="gpt-6.1-sol, gpt-6.2-sol, gemini-2.5-pro, gemini-2.5-flash, gpt-4o"
+                          placeholder="gpt-6.1-sol, gpt-6.2-sol, gemini-4-hydrogen, gemini-4-argon, gemini-3.7-flash"
                         />
                       </label>
+                    </div>
+
+                    {/* Interactive Step 1 & Step 2: Select LLM Families -> Auto-Fetch from Relay -> Click to Pick Models */}
+                    <div
+                      style={{
+                        marginTop: 14,
+                        padding: 14,
+                        borderRadius: 12,
+                        background: 'rgba(10, 132, 255, 0.07)',
+                        border: '1px solid rgba(10, 132, 255, 0.25)',
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+                          <strong style={{ fontSize: 13, color: '#7cc0ff' }}>
+                            步骤 1 · 先勾选你要从中转站拉取的大模型系列：
+                          </strong>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#f3f5f8', cursor: 'pointer' }}>
+                            <input
+                              type="checkbox"
+                              checked={selectedFamilies[prov.id]?.gemini ?? true}
+                              onChange={(e) =>
+                                setSelectedFamilies((prev) => ({
+                                  ...prev,
+                                  [prov.id]: {
+                                    gemini: e.target.checked,
+                                    gpt: prev[prov.id]?.gpt ?? true,
+                                  },
+                                }))
+                              }
+                            />
+                            ✨ Gemini 大模型系列
+                          </label>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#f3f5f8', cursor: 'pointer' }}>
+                            <input
+                              type="checkbox"
+                              checked={selectedFamilies[prov.id]?.gpt ?? true}
+                              onChange={(e) =>
+                                setSelectedFamilies((prev) => ({
+                                  ...prev,
+                                  [prov.id]: {
+                                    gemini: prev[prov.id]?.gemini ?? true,
+                                    gpt: e.target.checked,
+                                  },
+                                }))
+                              }
+                            />
+                            🤖 GPT 大模型系列
+                          </label>
+                        </div>
+
+                        <button
+                          type="button"
+                          disabled={busy}
+                          style={styles.primaryBtn}
+                          onClick={async () => {
+                            const famCfg = selectedFamilies[prov.id] || { gemini: true, gpt: true };
+                            const families: string[] = [];
+                            if (famCfg.gemini) families.push('gemini');
+                            if (famCfg.gpt) families.push('gpt');
+                            if (families.length === 0) {
+                              setErrorMsg('请至少勾选一个大模型系列（Gemini 或 GPT）');
+                              return;
+                            }
+                            await adminAction('save_provider', { provider: prov });
+                            setProviderTestMsg((prev) => ({
+                              ...prev,
+                              [prov.id]: `◐ 正在从中转站 (${prov.baseUrl}) 拉取 ${families.join(' + ').toUpperCase()} 全量模型库…`,
+                            }));
+                            const res = await adminAction('fetch_provider_models', {
+                              id: prov.id,
+                              families,
+                            });
+                            if (res?.fetchModelsResult) {
+                              const fm = res.fetchModelsResult;
+                              if (fm.ok) {
+                                setDiscoveredCatalog((prev) => ({
+                                  ...prev,
+                                  [prov.id]: {
+                                    geminiModels: fm.geminiModels || [],
+                                    gptModels: fm.gptModels || [],
+                                    keySupportedModels: fm.keySupportedModels || [],
+                                  },
+                                }));
+                                setModelDrafts((prev) => ({
+                                  ...prev,
+                                  [prov.id]: (fm.models || []).join(', '),
+                                }));
+                                setProviderTestMsg((prev) => ({
+                                  ...prev,
+                                  [prov.id]: `✓ 成功拉取到中转站 ${fm.geminiModels?.length || 0} 个 Gemini 模型与 ${fm.gptModels?.length || 0} 个 GPT 模型！请在下方点击选择你要用的模型，并在下方表格分配给六大编剧工位。`,
+                                }));
+                              } else {
+                                setProviderTestMsg((prev) => ({
+                                  ...prev,
+                                  [prov.id]: `⚠ 拉取提示：${fm.error}`,
+                                }));
+                              }
+                            }
+                          }}
+                        >
+                          🔍 按所选系列从中转站自动拉取模型
+                        </button>
+                      </div>
+
+                      {(() => {
+                        const cat = discoveredCatalog[prov.id];
+                        const geminiList =
+                          cat?.geminiModels ||
+                          (Array.isArray(prov.models) ? prov.models.filter((m) => /gemini/i.test(m)) : []);
+                        const gptList =
+                          cat?.gptModels ||
+                          (Array.isArray(prov.models) ? prov.models.filter((m) => !/gemini/i.test(m)) : []);
+
+                        if (geminiList.length === 0 && gptList.length === 0) return null;
+
+                        const toggleModelInProvider = (modelName: string) => {
+                          const current = Array.isArray(prov.models) ? prov.models : [];
+                          const exists = current.includes(modelName);
+                          const next = exists ? current.filter((m) => m !== modelName) : [...current, modelName];
+                          updateLocalProvider(prov.id, { models: next });
+                          setModelDrafts((prev) => ({ ...prev, [prov.id]: next.join(', ') }));
+                        };
+
+                        return (
+                          <div style={{ marginTop: 12, display: 'grid', gap: 10 }}>
+                            <div style={{ fontSize: 12, color: '#939db0' }}>
+                              步骤 2 · 点击下方模型胶囊即可<strong>勾选启用 / 取消</strong>（蓝色高亮代表已加入你的可用模型池）：
+                            </div>
+                            {geminiList.length > 0 && (
+                              <div>
+                                <div style={{ fontSize: 12, fontWeight: 600, color: '#30d158', marginBottom: 6 }}>
+                                  ✨ Gemini 系列模型（共 {geminiList.length} 个）：
+                                </div>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                                  {geminiList.map((m) => {
+                                    const active = prov.models.includes(m);
+                                    return (
+                                      <button
+                                        key={m}
+                                        type="button"
+                                        onClick={() => toggleModelInProvider(m)}
+                                        style={{
+                                          padding: '5px 10px',
+                                          borderRadius: 999,
+                                          fontSize: 12,
+                                          fontFamily: 'monospace',
+                                          cursor: 'pointer',
+                                          border: active
+                                            ? '1px solid #30d158'
+                                            : '1px solid rgba(255,255,255,0.12)',
+                                          background: active
+                                            ? 'rgba(48, 209, 88, 0.2)'
+                                            : 'rgba(255,255,255,0.04)',
+                                          color: active ? '#30d158' : '#939db0',
+                                        }}
+                                      >
+                                        {active ? '✓ ' : '＋ '}
+                                        {m}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+
+                            {gptList.length > 0 && (
+                              <div>
+                                <div style={{ fontSize: 12, fontWeight: 600, color: '#7cc0ff', marginBottom: 6 }}>
+                                  🤖 GPT 系列模型（共 {gptList.length} 个）：
+                                </div>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                                  {gptList.map((m) => {
+                                    const active = prov.models.includes(m);
+                                    return (
+                                      <button
+                                        key={m}
+                                        type="button"
+                                        onClick={() => toggleModelInProvider(m)}
+                                        style={{
+                                          padding: '5px 10px',
+                                          borderRadius: 999,
+                                          fontSize: 12,
+                                          fontFamily: 'monospace',
+                                          cursor: 'pointer',
+                                          border: active
+                                            ? '1px solid #0a84ff'
+                                            : '1px solid rgba(255,255,255,0.12)',
+                                          background: active
+                                            ? 'rgba(10, 132, 255, 0.22)'
+                                            : 'rgba(255,255,255,0.04)',
+                                          color: active ? '#7cc0ff' : '#939db0',
+                                        }}
+                                      >
+                                        {active ? '✓ ' : '＋ '}
+                                        {m}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
 
                     {(providerTestMsg[prov.id] || prov.lastErrorMsg) && (
@@ -1540,6 +1749,185 @@ export default function AdminConsolePage() {
                   </div>
                 ))}
               </div>
+            </section>
+
+            {/* Step 3 directly on the same page: Assign which AI Writer Station uses which Gemini / GPT Model */}
+            <section style={styles.card}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 14 }}>
+                <div>
+                  <h2 style={{ margin: '0 0 4px', fontSize: 17 }}>
+                    🎭 步骤 3 · 规定六大 AI 编剧工位分别使用哪个模型（从上方已拉取的 Gemini / GPT 模型中直接下拉选择）
+                  </h2>
+                  <p style={{ margin: 0, color: '#939db0', fontSize: 13 }}>
+                    直接在此为 6 个编剧角色指定主用模型与备用模型（下拉框已自动归类为「✨ Gemini 系列」与「🤖 GPT 系列」）。
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={busy}
+                  style={styles.primaryBtn}
+                  onClick={() =>
+                    adminAction(
+                      'save_routes',
+                      { routes: systemConfig.routes },
+                      '✓ 已保存六大 AI 编剧工位的模型分配方案！'
+                    )
+                  }
+                >
+                  💾 一键保存六大编剧模型分配
+                </button>
+              </div>
+
+              {(() => {
+                const allModelsPool = Array.from(
+                  new Set(systemConfig.providers.flatMap((p) => p.models || []))
+                );
+                const geminiPool = allModelsPool.filter((m) => /gemini/i.test(m));
+                const gptPool = allModelsPool.filter((m) => !/gemini/i.test(m));
+
+                return (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={styles.table}>
+                      <thead>
+                        <tr>
+                          <th style={styles.th}>AI 编剧工位角色</th>
+                          <th style={styles.th}>主用中转接口</th>
+                          <th style={styles.th}>主用大模型（下拉选择 Gemini 或 GPT）</th>
+                          <th style={styles.th}>备用大模型（主模型超时自动切换）</th>
+                          <th style={styles.th}>测试该编剧工位</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {STATION_ORDER.map((roleKey) => {
+                          const route = systemConfig.routes[roleKey];
+                          if (!route) return null;
+                          return (
+                            <tr key={roleKey}>
+                              <td style={styles.td}>
+                                <strong>{route.title}</strong>
+                                <div style={{ fontSize: 11, color: '#939db0', marginTop: 2 }}>
+                                  {route.description.slice(0, 42)}…
+                                </div>
+                              </td>
+                              <td style={styles.td}>
+                                <select
+                                  style={styles.input}
+                                  value={route.primaryProviderId}
+                                  onChange={(e) =>
+                                    updateLocalRoute(roleKey, { primaryProviderId: e.target.value })
+                                  }
+                                >
+                                  {systemConfig.providers.map((p) => (
+                                    <option key={p.id} value={p.id}>
+                                      {p.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              </td>
+                              <td style={styles.td}>
+                                <select
+                                  style={{ ...styles.input, fontFamily: 'monospace', color: '#7cc0ff', fontWeight: 600 }}
+                                  value={route.primaryModel}
+                                  onChange={(e) =>
+                                    updateLocalRoute(roleKey, { primaryModel: e.target.value })
+                                  }
+                                >
+                                  {!allModelsPool.includes(route.primaryModel) && (
+                                    <option value={route.primaryModel}>{route.primaryModel}</option>
+                                  )}
+                                  {geminiPool.length > 0 && (
+                                    <optgroup label="✨ Gemini 系列模型">
+                                      {geminiPool.map((m) => (
+                                        <option key={m} value={m}>
+                                          ✨ {m}
+                                        </option>
+                                      ))}
+                                    </optgroup>
+                                  )}
+                                  {gptPool.length > 0 && (
+                                    <optgroup label="🤖 GPT 系列模型">
+                                      {gptPool.map((m) => (
+                                        <option key={m} value={m}>
+                                          🤖 {m}
+                                        </option>
+                                      ))}
+                                    </optgroup>
+                                  )}
+                                </select>
+                              </td>
+                              <td style={styles.td}>
+                                <select
+                                  style={{ ...styles.input, fontFamily: 'monospace' }}
+                                  value={route.fallbackModel}
+                                  onChange={(e) =>
+                                    updateLocalRoute(roleKey, { fallbackModel: e.target.value })
+                                  }
+                                >
+                                  {!allModelsPool.includes(route.fallbackModel) && (
+                                    <option value={route.fallbackModel}>{route.fallbackModel}</option>
+                                  )}
+                                  {geminiPool.length > 0 && (
+                                    <optgroup label="✨ Gemini 系列模型">
+                                      {geminiPool.map((m) => (
+                                        <option key={m} value={m}>
+                                          ✨ {m}
+                                        </option>
+                                      ))}
+                                    </optgroup>
+                                  )}
+                                  {gptPool.length > 0 && (
+                                    <optgroup label="🤖 GPT 系列模型">
+                                      {gptPool.map((m) => (
+                                        <option key={m} value={m}>
+                                          🤖 {m}
+                                        </option>
+                                      ))}
+                                    </optgroup>
+                                  )}
+                                </select>
+                              </td>
+                              <td style={styles.td}>
+                                <button
+                                  type="button"
+                                  disabled={busy}
+                                  style={styles.smallSecondaryBtn}
+                                  onClick={async () => {
+                                    await adminAction('save_routes', { routes: systemConfig.routes });
+                                    setStationTestMsg((prev) => ({ ...prev, [roleKey]: '◐ 正在试跑…' }));
+                                    const res = await adminAction('test_station', { station: roleKey });
+                                    if (res?.stationTestResult) {
+                                      const st = res.stationTestResult;
+                                      setStationTestMsg((prev) => ({
+                                        ...prev,
+                                        [roleKey]: st.ok
+                                          ? `✓ 试跑成功 (${route.primaryModel})：${st.reply}`
+                                          : `⚠ 失败：${st.error}`,
+                                      }));
+                                    }
+                                  }}
+                                >
+                                  ⚡ 试跑此工位
+                                </button>
+                                {stationTestMsg[roleKey] && (
+                                  <div
+                                    style={{
+                                      fontSize: 11,
+                                      marginTop: 4,
+                                      color: stationTestMsg[roleKey].startsWith('✓') ? '#30d158' : '#ff9f0a',
+                                    }}
+                                  >
+                                    {stationTestMsg[roleKey]}
+                                  </div>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })()}
             </section>
           </div>
         )}

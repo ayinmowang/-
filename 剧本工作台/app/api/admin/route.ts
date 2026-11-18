@@ -422,45 +422,128 @@ export async function POST(request: Request) {
       }
     }
 
-    // 9b. Auto-fetch available models from Relay's GET /models endpoint
+    // 9b. Auto-fetch available models from Relay's GET /v1/models AND GET /api/pricing (grouped by Gemini & GPT)
     if (op === 'fetch_provider_models') {
       const prov = store.systemConfig.providers.find((p) => p.id === body.id);
       if (!prov) throw new Error('NOT_FOUND');
+
+      const requestedFamilies: string[] = Array.isArray(body.families) && body.families.length
+        ? body.families
+        : ['gemini', 'gpt'];
+      const wantGemini = requestedFamilies.includes('gemini');
+      const wantGpt = requestedFamilies.includes('gpt');
+
       const validKeys = prov.apiKeys.map((k) => k.trim()).filter(Boolean);
-      if (!validKeys.length) {
-        return Response.json({
-          ...buildAdminSnapshot(adminAcc),
-          fetchModelsResult: { ok: false, error: '请先填写至少一个中转 API Key 并保存。' },
-        });
-      }
       const urls = [prov.baseUrl, prov.backupBaseUrl1, prov.backupBaseUrl2]
         .map((u) => String(u || '').trim().replace(/\/+$/, ''))
         .filter(Boolean);
 
+      const discoveredSet = new Set<string>();
+      const keyDirectSet = new Set<string>();
+
       for (const u of urls) {
+        // 1. Query /v1/models for each configured API key
+        for (const k of validKeys) {
+          try {
+            const res = await fetch(`${u}/models`, {
+              headers: { Authorization: `Bearer ${k}` },
+            });
+            if (res.ok) {
+              const data: any = await res.json();
+              if (Array.isArray(data?.data)) {
+                for (const item of data.data) {
+                  const id = String(item?.id || '').trim();
+                  if (id) {
+                    discoveredSet.add(id);
+                    keyDirectSet.add(id);
+                  }
+                }
+              }
+            }
+          } catch {}
+        }
+
+        // 2. Also query NewAPI / OneAPI full station catalog at /api/pricing on the relay origin
         try {
-          const res = await fetch(`${u}/models`, {
-            headers: { Authorization: `Bearer ${validKeys[0]}` },
-          });
-          if (res.ok) {
-            const data: any = await res.json();
-            const ids: string[] = Array.isArray(data?.data)
-              ? data.data.map((m: any) => String(m?.id || '').trim()).filter(Boolean)
-              : [];
-            if (ids.length > 0) {
-              prov.models = ids;
-              flushPersistentStore();
-              return Response.json({
-                ...buildAdminSnapshot(adminAcc),
-                fetchModelsResult: { ok: true, count: ids.length, models: ids },
-              });
+          const origin = new URL(u).origin;
+          const pricingRes = await fetch(`${origin}/api/pricing`);
+          if (pricingRes.ok) {
+            const pricingData: any = await pricingRes.json();
+            if (Array.isArray(pricingData?.data)) {
+              for (const item of pricingData.data) {
+                const name = String(item?.model_name || item?.id || '').trim();
+                // Skip non-chat embedding / tts / image-only models
+                if (!name || /embedding|tts|image|audio|moderation|whisper|robotics|banana/i.test(name)) {
+                  continue;
+                }
+                discoveredSet.add(name);
+              }
             }
           }
         } catch {}
       }
+
+      const allDiscovered = Array.from(discoveredSet);
+      const geminiModels = wantGemini
+        ? allDiscovered
+            .filter((m) => /gemini/i.test(m))
+            .sort((a, b) => {
+              // Put gemini-4 and gemini-3.8/3.7/2.5 first
+              const score = (s: string) =>
+                /gemini-4-(hydrogen|argon|carbon)$/i.test(s)
+                  ? 0
+                  : /gemini-4/i.test(s)
+                  ? 1
+                  : /gemini-3/i.test(s)
+                  ? 2
+                  : /gemini-2\.5/i.test(s)
+                  ? 3
+                  : 4;
+              return score(a) - score(b) || a.localeCompare(b);
+            })
+        : [];
+
+      const gptModels = wantGpt
+        ? allDiscovered
+            .filter((m) => /^(gpt|o1|o3|o4|chatgpt|codex)/i.test(m))
+            .sort((a, b) => {
+              const score = (s: string) =>
+                keyDirectSet.has(s)
+                  ? 0
+                  : /gpt-6\.[12]/i.test(s)
+                  ? 1
+                  : /gpt-6/i.test(s)
+                  ? 2
+                  : /gpt-5/i.test(s)
+                  ? 3
+                  : 4;
+              return score(a) - score(b) || a.localeCompare(b);
+            })
+        : [];
+
+      const combined = Array.from(new Set([...gptModels, ...geminiModels]));
+      if (combined.length > 0) {
+        prov.models = combined;
+        flushPersistentStore();
+        return Response.json({
+          ...buildAdminSnapshot(adminAcc),
+          fetchModelsResult: {
+            ok: true,
+            count: combined.length,
+            models: combined,
+            geminiModels,
+            gptModels,
+            keySupportedModels: Array.from(keyDirectSet),
+          },
+        });
+      }
+
       return Response.json({
         ...buildAdminSnapshot(adminAcc),
-        fetchModelsResult: { ok: false, error: '未能从该中转站的 /models 接口拉取到模型列表，请检查地址与 Key。' },
+        fetchModelsResult: {
+          ok: false,
+          error: '未能从该中转站拉取到所选系列的模型列表，请检查中转接口地址是否正确。',
+        },
       });
     }
 

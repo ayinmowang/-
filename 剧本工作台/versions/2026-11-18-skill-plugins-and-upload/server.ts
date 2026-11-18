@@ -1254,7 +1254,14 @@ export function normalizeRelayModelName(rawModel: string): string {
   const first = String(rawModel || '')
     .split(/[\n,，、;；]+/)
     .map((s) => s.trim())
-    .filter(Boolean)[0] || 'gpt-4o';
+    .filter(Boolean)[0] || 'gpt-6.1-sol';
+
+  const lower = first.toLowerCase().replace(/\s+/g, '');
+  if (lower === 'gemini4' || lower === 'gemini-4') return 'gemini-4-argon';
+  if (lower === 'gemini4h' || lower === 'gemini-4h' || lower === 'gemini4hydrogen') return 'gemini-4-hydrogen';
+  if (lower === 'gemini4c' || lower === 'gemini-4c' || lower === 'gemini4carbon') return 'gemini-4-carbon';
+  if (lower === 'gpt6.1sol' || lower === 'gpt-6.1sol') return 'gpt-6.1-sol';
+  if (lower === 'gpt6.2sol' || lower === 'gpt-6.2sol') return 'gpt-6.2-sol';
 
   // Common relay shorthand normalization: e.g. GPT6.1sol -> gpt-6.1-sol, GPT5.6terra -> gpt-5.6-terra
   const m = first.match(/^(gpt|gemini)[\s_-]*([0-9]+(?:\.[0-9]+)?)[\s_-]*([a-zA-Z0-9]*)$/i);
@@ -1262,7 +1269,6 @@ export function normalizeRelayModelName(rawModel: string): string {
     const prefix = m[1].toLowerCase();
     const ver = m[2];
     const suffix = m[3] ? `-${m[3].toLowerCase()}` : '';
-    // Keep standard names like gpt-4o intact
     if (first.toLowerCase() === 'gpt-4o' || first.toLowerCase() === 'gpt-4o-mini') {
       return first.toLowerCase();
     }
