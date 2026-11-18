@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>剧本工作台 · 内部管理后台 (/admin)</title>
+<style>
+:root {
+  --bg: #0c0e12;
+  --panel: #141821;
+  --panel-alt: #1b202c;
+  --ink: #f3f5f8;
+  --muted: #939db0;
+  --line: rgba(255, 255, 255, 0.09);
+  --accent: #0a84ff;
+  --ok: #30d158;
+  --warn: #ff9f0a;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: radial-gradient(circle at 15% 0%, rgba(10, 132, 255, 0.14), transparent 36%), var(--bg);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans SC", sans-serif;
+  min-height: 100vh;
+}
+.admin-shell {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 28px 24px 60px;
+  display: grid;
+  gap: 20px;
+}
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 22px;
+  border-radius: 18px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.brand-badge {
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  background: linear-gradient(135deg, #0a84ff, #30d158);
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+}
+.brand h1 {
+  margin: 0;
+  font-size: 17px;
+}
+.brand small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 22px;
+}
+.card h2 {
+  margin: 0 0 6px;
+  font-size: 17px;
+}
+.card p {
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.kpi-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.kpi {
+  background: var(--panel-alt);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px 16px;
+}
+.kpi span { font-size: 12px; color: var(--muted); display: block; }
+.kpi strong { font-size: 20px; display: block; margin: 6px 0 2px; }
+.kpi small { font-size: 11px; color: var(--ok); }
+.mode-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.mode-tab {
+  padding: 9px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel-alt);
+  color: var(--ink);
+  font-size: 13px;
+  cursor: pointer;
+}
+.mode-tab.active {
+  background: rgba(10, 132, 255, 0.2);
+  border-color: var(--accent);
+  color: #7cc0ff;
+  font-weight: 600;
+}
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+label {
+  display: grid;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+input, select {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #0e121a;
+  color: var(--ink);
+  font-size: 13px;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+button.primary {
+  padding: 10px 18px;
+  border-radius: 999px;
+  border: 0;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+}
+button.secondary {
+  padding: 10px 16px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel-alt);
+  color: var(--ink);
+  font-size: 13px;
+  cursor: pointer;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+th, td {
+  text-align: left;
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--line);
+}
+th {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+code {
+  background: rgba(255, 255, 255, 0.07);
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.status-box {
+  margin-top: 14px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: rgba(48, 209, 88, 0.12);
+  border: 1px solid rgba(48, 209, 88, 0.35);
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+@media (max-width: 760px) {
+  .kpi-row, .grid-2 { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<div id="admin-app"></div>
+<script>
+const adminState = {
+  mode: 'direct_llm',
+  baseUrl: 'https://api.openai.com/v1',
+  apiKey: '',
+  directorModel: 'gpt-4o',
+  visionModel: 'gpt-4o',
+  analystModel: 'gpt-4o',
+  writerModel: 'claude-3-5-sonnet-latest',
+  polisherModel: 'claude-3-5-sonnet-latest',
+  backendUrl: 'https://your-studio-server.example.com/api/studio',
+  backendToken: '',
+  statusMsg: ''
+};
+
+try {
+  const saved = localStorage.getItem('story_studio_api_config');
+  if (saved) Object.assign(adminState, JSON.parse(saved));
+} catch (_) {}
+
+function renderAdmin() {
+  const root = document.getElementById('admin-app');
+  root.innerHTML = `
+    <div class="admin-shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-badge">🛡️</div>
+          <div>
+            <h1>剧本工作台 · 独立管理后台 (/admin)</h1>
+            <small>仅内部管理员可见 · 与创作者前台网站完全分离 · 配置保存后自动同步生效</small>
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center">
+          <span style="font-size:12px;color:var(--ok)">● 管理员：ayin@studio.ai</span>
+        </div>
+      </header>
+
+      <div class="kpi-row">
+        <div class="kpi"><span>当前接入模式</span><strong>${adminState.mode === 'direct_llm' ? '直连大模型 API' : adminState.mode === 'custom_backend' ? '独立生产后端' : '本地演示沙盒'}</strong><small>✓ 前台零暴露</small></div>
+        <div class="kpi"><span>扒剧并发批次</span><strong>3–5 集/批</strong><small>✓ 自动时长比对与人名锁定</small></div>
+        <div class="kpi"><span>主备线路容灾</span><strong>自动重试</strong><small>✓ 仅重跑失败小步</small></div>
+        <div class="kpi"><span>前台脱敏拦截</span><strong>已开启</strong><small>✓ 过滤模型名/Token/Prompt</small></div>
+      </div>
+
+      <section class="card">
+        <h2>一、API 接口与后端服务器配置（保存后前台自动调用）</h2>
+        <p>在此处配置大模型 API Key 或自建后端服务器地址。普通创作者在前台网页不会看到任何后台入口、模型名称或密钥信息。</p>
+
+        <div class="mode-tabs">
+          <button type="button" class="mode-tab ${adminState.mode === 'direct_llm' ? 'active' : ''}" data-mode="direct_llm">🔌 模式 1：前端直连大模型 API（免搭服务器 · 填 Key 即测）</button>
+          <button type="button" class="mode-tab ${adminState.mode === 'custom_backend' ? 'active' : ''}" data-mode="custom_backend">🖥️ 模式 2：对接独立后端服务器 (STUDIO_BACKEND_URL)</button>
+          <button type="button" class="mode-tab ${adminState.mode === 'sandbox' ? 'active' : ''}" data-mode="sandbox">🧪 模式 3：离线交互沙盒</button>
+        </div>
+
+        ${adminState.mode === 'direct_llm' ? `
+          <div class="mode-tabs" style="margin-bottom:12px">
+            <button type="button" class="secondary" data-preset="openai">一键填 OpenAI 官方地址</button>
+            <button type="button" class="secondary" data-preset="deepseek">一键填 DeepSeek 官方地址</button>
+            <button type="button" class="secondary" data-preset="openrouter">一键填 OpenRouter 地址</button>
+          </div>
+          <div class="grid-2">
+            <label>1. OpenAI 兼容接口地址 (API Base URL)
+              <input id="adm-baseurl" value="${adminState.baseUrl}" placeholder="https://api.openai.com/v1"/>
+            </label>
+            <label>2. API 密钥 (API Key · 保存在浏览器本地)
+              <input id="adm-apikey" type="password" value="${adminState.apiKey}" placeholder="sk-..."/>
+            </label>
+            <label>3. 总编剧 & 原稿分析师模型
+              <input id="adm-director-model" value="${adminState.directorModel}" placeholder="gpt-4o / deepseek-chat"/>
+            </label>
+            <label>4. 扒剧小能手（视觉/字幕还原）模型
+              <input id="adm-vision-model" value="${adminState.visionModel}" placeholder="gpt-4o / gemini-2.5-pro"/>
+            </label>
+            <label>5. 故事策划师 & 编剧小能手模型
+              <input id="adm-writer-model" value="${adminState.writerModel}" placeholder="claude-3-5-sonnet-latest"/>
+            </label>
+            <label>6. 审稿官 & 剧本精修师模型
+              <input id="adm-polisher-model" value="${adminState.polisherModel}" placeholder="claude-3-5-sonnet-latest"/>
+            </label>
+          </div>
+        ` : adminState.mode === 'custom_backend' ? `
+          <div class="grid-2">
+            <label>1. 生产后端服务器地址 (STUDIO_BACKEND_URL)
+              <input id="adm-backend-url" value="${adminState.backendUrl}" placeholder="https://your-server.com/api/studio"/>
+            </label>
+            <label>2. 生产后端鉴权 Token (STUDIO_BACKEND_TOKEN)
+              <input id="adm-backend-token" type="password" value="${adminState.backendToken}" placeholder="Bearer ..."/>
+            </label>
+          </div>
+        ` : `
+          <p>当前处于离线交互沙盒模式，适合无 Key 演示页面交互。</p>
+        `}
+
+        <div class="actions">
+          <button type="button" class="primary" id="adm-save">💾 保存配置并同步到前台</button>
+          <button type="button" class="secondary" id="adm-test">⚡ 发送真实 API 连通性测试</button>
+        </div>
+
+        ${adminState.statusMsg ? `<div class="status-box">${adminState.statusMsg}</div>` : ''}
+      </section>
+
+      <section class="card">
+        <h2>二、六大 AI 工位标准 API 接口契约规范</h2>
+        <p>当对接你自己的后端服务器时，前端按以下 5 个标准动作（Action）与后端通信：</p>
+        <table>
+          <thead>
+            <tr><th>工位角色</th><th>绑定模型</th><th>接口路径与动作</th><th>请求体字段 (Request)</th><th>响应体字段 (Response)</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>总编剧</strong></td><td><code>${adminState.directorModel}</code></td><td><code>POST /api/studio</code> (<code>chat</code>)</td><td><code>{ id, kind, text, attachments }</code></td><td><code>{ reply, suggestions[], nextCard }</code></td></tr>
+            <tr><td><strong>扒剧小能手</strong></td><td><code>${adminState.visionModel}</code></td><td><code>POST /api/studio</code> (<code>transcribe</code>)</td><td><code>{ id, mode, castLock, files[] }</code></td><td><code>{ recap, synopsis, simplifiedDoc, traditionalDoc }</code></td></tr>
+            <tr><td><strong>原稿分析师</strong></td><td><code>${adminState.directorModel}</code></td><td><code>POST /api/studio</code> (<code>analyze</code>)</td><td><code>{ id, kind, sourceFiles[], lockedEpisodes }</code></td><td><code>{ fiveQuestions, eventMap[], emotionCurve[] }</code></td></tr>
+            <tr><td><strong>分集编剧</strong></td><td><code>${adminState.writerModel}</code></td><td><code>POST /api/studio</code> (<code>write_batch</code>)</td><td><code>{ id, startEp, endEp, stopsReleased }</code></td><td><code>{ outlineBatch, scriptEpisodes[] }</code></td></tr>
+            <tr><td><strong>剧本精修师</strong></td><td><code>${adminState.polisherModel}</code></td><td><code>POST /api/studio</code> (<code>polish</code>)</td><td><code>{ id, episode, register }</code></td><td><code>{ diffReport, polishedScript, zipUrl }</code></td></tr>
+          </tbody>
+        </table>
+      </section>
+    </div>
+  `;
+
+  document.querySelectorAll('[data-mode]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      adminState.mode = btn.getAttribute('data-mode');
+      renderAdmin();
+    });
+  });
+  document.querySelectorAll('[data-preset]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const p = btn.getAttribute('data-preset');
+      if (p === 'openai') { adminState.baseUrl = 'https://api.openai.com/v1'; adminState.directorModel = 'gpt-4o'; }
+      if (p === 'deepseek') { adminState.baseUrl = 'https://api.deepseek.com/v1'; adminState.directorModel = 'deepseek-chat'; }
+      if (p === 'openrouter') { adminState.baseUrl = 'https://openrouter.ai/api/v1'; adminState.directorModel = 'anthropic/claude-3.5-sonnet'; }
+      renderAdmin();
+    });
+  });
+
+  document.getElementById('adm-baseurl')?.addEventListener('input', e => { adminState.baseUrl = e.target.value.trim(); });
+  document.getElementById('adm-apikey')?.addEventListener('input', e => { adminState.apiKey = e.target.value.trim(); });
+  document.getElementById('adm-director-model')?.addEventListener('input', e => { adminState.directorModel = e.target.value.trim(); });
+  document.getElementById('adm-vision-model')?.addEventListener('input', e => { adminState.visionModel = e.target.value.trim(); });
+  document.getElementById('adm-writer-model')?.addEventListener('input', e => { adminState.writerModel = e.target.value.trim(); });
+  document.getElementById('adm-polisher-model')?.addEventListener('input', e => { adminState.polisherModel = e.target.value.trim(); });
+  document.getElementById('adm-backend-url')?.addEventListener('input', e => { adminState.backendUrl = e.target.value.trim(); });
+  document.getElementById('adm-backend-token')?.addEventListener('input', e => { adminState.backendToken = e.target.value.trim(); });
+
+  document.getElementById('adm-save')?.addEventListener('click', () => {
+    try {
+      localStorage.setItem('story_studio_api_config', JSON.stringify(adminState));
+      adminState.statusMsg = '✓ 配置已保存至本地存储！现在打开前台网站（剧本工作台），总编剧将自动使用此 API 配置进行真实对话与生成。';
+    } catch (err) {
+      adminState.statusMsg = '保存失败：' + err.message;
+    }
+    renderAdmin();
+  });
+
+  document.getElementById('adm-test')?.addEventListener('click', async () => {
+    if (adminState.mode === 'direct_llm' && !adminState.apiKey) {
+      adminState.statusMsg = '⚠ 请先填写第 2 项 API 密钥 (API Key)，再点击测试。';
+      renderAdmin();
+      return;
+    }
+    adminState.statusMsg = '◐ 正在向 ' + (adminState.mode === 'direct_llm' ? adminState.baseUrl : adminState.backendUrl) + ' 发起真实连通请求…';
+    renderAdmin();
+    const t0 = Date.now();
+    try {
+      const endpoint = adminState.mode === 'direct_llm'
+        ? adminState.baseUrl.replace(/\/+$/, '') + '/chat/completions'
+        : adminState.backendUrl;
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + (adminState.mode === 'direct_llm' ? adminState.apiKey : adminState.backendToken)
+        },
+        body: JSON.stringify({
+          model: adminState.directorModel || 'gpt-4o',
+          messages: [{ role: 'user', content: '请用一句话回复：剧本工作台API连通正常！' }]
+        })
+      });
+      const ms = Date.now() - t0;
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      const text = data?.choices?.[0]?.message?.content || JSON.stringify(data).slice(0, 160);
+      adminState.statusMsg = `✓ 连通成功（耗时 ${ms} ms）：${text}`;
+    } catch (err) {
+      adminState.statusMsg = `⚠ 请求返回错误：${err.message}（请检查接口地址、跨域 CORS 或 API Key 是否正确）`;
+    }
+    renderAdmin();
+  });
+}
+
+renderAdmin();
+</script>
+</body>
+</html>

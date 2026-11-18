@@ -1,0 +1,28 @@
+# Dependencies & Next.js build output
+node_modules/
+.next/
+out/
+dist/
+tsconfig.tsbuildinfo
+
+# Local persistent database, uploaded materials & runtime state (AGENTS.md §4)
+.data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Secrets & environment variables (AGENTS.md §4)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Teamwork agent metadata
+.agents/
+
+# Logs & OS artifacts
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db

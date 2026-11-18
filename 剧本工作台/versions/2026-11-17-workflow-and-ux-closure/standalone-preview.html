@@ -1,0 +1,3130 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>总编剧 · 剧本工作台 (STORY STUDIO PRO)</title>
+<style>
+:root {
+  --bg-base: #f5f5f7;
+  --bg-elevated: rgba(255, 255, 255, 0.78);
+  --bg-card: rgba(255, 255, 255, 0.88);
+  --bg-sidebar: rgba(248, 248, 250, 0.84);
+  --ink: #1d1d1f;
+  --ink-secondary: #515154;
+  --muted: #86868b;
+  --accent: #0071e3;
+  --accent-hover: #0077ed;
+  --green: #1d7d52;
+  --green-dark: #155e3d;
+  --line: rgba(0, 0, 0, 0.08);
+  --glass-border: rgba(255, 255, 255, 0.75);
+  --shadow-sm: 0 2px 10px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 12px 32px rgba(0, 0, 0, 0.07), 0 2px 6px rgba(0, 0, 0, 0.03);
+  --shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.14), 0 4px 16px rgba(0, 0, 0, 0.06);
+  --spring: cubic-bezier(0.22, 1, 0.36, 1);
+}
+[data-theme="dark"] {
+  --bg-base: #0b0c10;
+  --bg-elevated: rgba(24, 26, 32, 0.78);
+  --bg-card: rgba(30, 32, 40, 0.86);
+  --bg-sidebar: rgba(18, 19, 24, 0.88);
+  --ink: #f5f5f7;
+  --ink-secondary: #a1a1a6;
+  --muted: #6e6e73;
+  --accent: #2997ff;
+  --accent-hover: #47a9ff;
+  --green: #30d158;
+  --green-dark: #248a3d;
+  --line: rgba(255, 255, 255, 0.09);
+  --glass-border: rgba(255, 255, 255, 0.12);
+  --shadow-sm: 0 2px 10px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 14px 36px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 28px 70px rgba(0, 0, 0, 0.65);
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg-base);
+  background-image:
+    radial-gradient(at 18% 8%, rgba(0, 113, 227, 0.09) 0px, transparent 48%),
+    radial-gradient(at 82% 14%, rgba(52, 199, 89, 0.08) 0px, transparent 45%),
+    radial-gradient(at 52% 92%, rgba(175, 82, 222, 0.06) 0px, transparent 50%);
+  background-attachment: fixed;
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'PingFang SC', 'Noto Sans SC', sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+button, input, textarea, select { font: inherit; color: inherit; -webkit-tap-highlight-color: transparent; }
+button { cursor: pointer; border: 0; background: none; display: inline-flex; align-items: center; justify-content: center; gap: 7px; transition: transform 0.24s var(--spring), background 0.2s, border-color 0.2s, box-shadow 0.24s var(--spring), opacity 0.2s; }
+button:active:not(:disabled) { transform: scale(0.97); }
+button:disabled { opacity: 0.42; cursor: not-allowed; }
+a { color: inherit; text-decoration: none; }
+button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.hidden { display: none !important; }
+
+@keyframes fadeUpSpring {
+  from { opacity: 0; transform: translateY(10px) scale(0.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes pulseGlow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(0, 113, 227, 0.35); }
+  50% { box-shadow: 0 0 0 6px rgba(0, 113, 227, 0); }
+}
+
+.studio { display: flex; min-height: 100dvh; }
+
+/* Drag & Drop Overlay */
+.drop-zone-banner {
+  border: 2px dashed var(--accent);
+  background: rgba(0, 113, 227, 0.06);
+  border-radius: 16px;
+  padding: 16px 18px;
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  transition: background 0.2s, transform 0.2s var(--spring);
+}
+.drop-zone-banner.dragging {
+  background: rgba(0, 113, 227, 0.16);
+  transform: scale(1.01);
+}
+.drop-zone-info strong { display: block; font-size: 13px; color: var(--accent); }
+.drop-zone-info small { display: block; font-size: 11px; color: var(--ink-secondary); margin-top: 3px; }
+
+/* Apple Vibrancy Sidebar */
+.sidebar {
+  width: 260px;
+  height: 100dvh;
+  position: fixed;
+  left: 0;
+  top: 0;
+  background: var(--bg-sidebar);
+  backdrop-filter: saturate(190%) blur(28px);
+  -webkit-backdrop-filter: saturate(190%) blur(28px);
+  border-right: 1px solid var(--line);
+  padding: 22px 16px 0;
+  display: flex;
+  flex-direction: column;
+  z-index: 30;
+}
+.brand { justify-content: flex-start; gap: 12px; padding: 4px 10px; margin-bottom: 20px; width: 100%; }
+.brand-icon {
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, #0071e3 0%, #34c759 100%);
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  color: #fff;
+  font-size: 18px;
+  box-shadow: 0 6px 16px rgba(0, 113, 227, 0.28);
+}
+.brand > span:last-child { text-align: left; font-weight: 700; font-size: 17px; letter-spacing: -0.2px; }
+.brand small { display: block; letter-spacing: 1.4px; font-size: 9px; color: var(--muted); font-weight: 600; margin-top: 2px; }
+
+.new-chat {
+  justify-content: flex-start;
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  padding: 11px 14px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-sm);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+}
+.new-chat:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); }
+.new-chat > span { margin-left: auto; opacity: 0.5; font-size: 11px; }
+
+.search {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 14px 2px 18px;
+  padding: 8px 11px;
+  border-radius: 10px;
+  background: rgba(120, 120, 128, 0.09);
+  color: var(--muted);
+}
+.search input { background: none; border: 0; width: 100%; font-size: 12px; min-width: 0; outline: none; }
+.section-label { padding: 0 10px; display: flex; justify-content: space-between; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }
+
+.project-list { flex: 1; overflow-y: auto; padding-top: 10px; min-height: 0; }
+.project-item { margin-bottom: 6px; border-radius: 11px; transition: background 0.2s; }
+.project-item.selected { background: rgba(0, 113, 227, 0.12); box-shadow: inset 0 0 0 1px rgba(0, 113, 227, 0.25); }
+.project-item:hover:not(.selected) { background: rgba(120, 120, 128, 0.08); }
+.project-item > button { padding: 10px 11px; gap: 10px; width: 100%; text-align: left; justify-content: flex-start; }
+.status-dot { font-size: 11px; line-height: 1; flex-shrink: 0; width: 16px; text-align: center; }
+.status-dot.action { color: var(--accent); }
+.status-dot.running { color: #ff9f0a; }
+.status-dot.idle { color: #34c759; }
+.project-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
+.project-item small { display: flex; align-items: center; gap: 5px; margin-top: 4px; font-size: 11px; font-weight: 400; color: var(--ink-secondary); }
+.project-item i { height: 3px; width: 3px; border-radius: 50%; background: var(--muted); }
+
+.sidebar-bottom { border-top: 1px solid var(--line); padding: 12px 2px 0; display: grid; gap: 4px; }
+.sidebar-bottom > button { display: flex; width: 100%; justify-content: flex-start; padding: 9px 10px; color: var(--ink-secondary); font-size: 12px; font-weight: 500; border-radius: 9px; }
+.sidebar-bottom > button:hover, .sidebar-bottom > button.active { color: var(--accent); background: rgba(0, 113, 227, 0.09); }
+.account { border-top: 1px solid var(--line); padding: 14px 6px; display: flex; gap: 10px; align-items: center; margin-top: 8px; font-size: 12px; font-weight: 600; }
+.account small { display: block; color: var(--muted); font-size: 10px; font-weight: 400; margin-top: 2px; }
+.avatar { height: 34px; width: 34px; display: grid; place-items: center; background: linear-gradient(135deg, #0071e3, #5e5ce6); color: #fff; border-radius: 50%; font-weight: 700; font-size: 13px; box-shadow: 0 3px 10px rgba(0, 113, 227, 0.25); }
+.account button { margin-left: auto; color: var(--ink-secondary); padding: 6px; border-radius: 8px; }
+
+/* Main Area & Apple Segmented Topbar */
+.main { margin-left: 260px; flex: 1; min-width: 0; min-height: 100dvh; display: flex; flex-direction: column; transition: margin 0.28s var(--spring); }
+.topbar {
+  height: 62px;
+  flex-shrink: 0;
+  padding: 0 28px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-elevated);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  position: sticky;
+  top: 0;
+  z-index: 15;
+}
+.breadcrumbs { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-secondary); min-width: 0; white-space: nowrap; overflow: hidden; }
+.breadcrumbs strong { color: var(--ink); font-weight: 600; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; max-width: 220px; }
+.bot-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(52, 199, 89, 0.12);
+  color: #1d7d52;
+  border: 1px solid rgba(52, 199, 89, 0.28);
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+[data-theme="dark"] .bot-status-pill { color: #30d158; }
+
+.segmented-control {
+  display: inline-flex;
+  background: rgba(120, 120, 128, 0.12);
+  padding: 3px;
+  border-radius: 11px;
+  gap: 3px;
+  flex-shrink: 0;
+}
+.segmented-control button {
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-secondary);
+  min-height: 30px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.segmented-control button.active {
+  background: var(--bg-card);
+  color: var(--ink);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.09);
+}
+
+.top-actions { display: flex; gap: 9px; align-items: center; }
+.connection {
+  border: 1px solid var(--line);
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-sm);
+  min-height: 34px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.dot { height: 7px; width: 7px; border-radius: 50%; background: #8e8e93; display: inline-block; }
+.dot.green { background: #34c759; box-shadow: 0 0 8px rgba(52, 199, 89, 0.6); }
+.icon-button { color: var(--ink-secondary); padding: 7px; border-radius: 9px; background: rgba(120, 120, 128, 0.08); min-width: 36px; min-height: 36px; }
+.mobile-menu { display: none; }
+
+/* Apple Cards & Flow Grid */
+.flow-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 14px; }
+.flow-card {
+  display: block;
+  text-align: left;
+  border: 1px solid var(--line);
+  background: var(--bg-card);
+  backdrop-filter: blur(16px);
+  border-radius: 15px;
+  padding: 12px 13px 10px;
+  position: relative;
+  min-width: 0;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.28s var(--spring), box-shadow 0.28s var(--spring), border-color 0.2s;
+}
+.flow-card:hover { transform: translateY(-3px) scale(1.01); box-shadow: var(--shadow-md); border-color: rgba(0, 113, 227, 0.35); }
+.flow-card.chosen {
+  border-color: var(--accent);
+  background: linear-gradient(180deg, rgba(0, 113, 227, 0.08) 0%, var(--bg-card) 100%);
+  box-shadow: 0 0 0 2px rgba(0, 113, 227, 0.22), var(--shadow-md);
+}
+.flow-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.flow-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: rgba(0, 113, 227, 0.1);
+  display: grid;
+  place-items: center;
+  font-size: 16px;
+}
+.selection-circle { height: 18px; width: 18px; border: 1.5px solid var(--muted); border-radius: 50%; display: grid; place-items: center; font-size: 10px; font-weight: 700; }
+.chosen .selection-circle { background: var(--accent); color: #fff; border-color: var(--accent); }
+.flow-card h3 { font-size: 14px; font-weight: 700; white-space: nowrap; margin: 0 0 5px; color: var(--ink); }
+.flow-card p { font-size: 11px; line-height: 1.45; color: var(--ink-secondary); margin: 0; min-height: 28px; }
+.flow-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; color: var(--muted); font-size: 10px; font-weight: 600; }
+.chosen .flow-foot { color: var(--accent); }
+
+.suggestions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; font-size: 11px; }
+.suggestions > span { color: var(--muted); font-weight: 600; width: 100%; }
+.suggestions button {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 6px 12px;
+  background: var(--bg-card);
+  color: var(--ink);
+  font-size: 11.5px;
+  font-weight: 500;
+  box-shadow: var(--shadow-sm);
+}
+.suggestions button:hover { border-color: var(--accent); color: var(--accent); transform: translateY(-1px); }
+
+/* Chat & Messages */
+.conversation { width: 100%; max-width: 960px; margin: 0 auto; padding: 14px 30px 44px; flex: 1; animation: fadeUpSpring 0.35s var(--spring); }
+.project-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.project-meta-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.project-type { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--accent); font-weight: 600; background: rgba(0, 113, 227, 0.1); padding: 4px 10px; border-radius: 999px; }
+.stop-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: #1d7d52; background: rgba(52, 199, 89, 0.12); padding: 4px 10px; border-radius: 999px; font-weight: 600; }
+.lock-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: #b25000; background: rgba(255, 159, 10, 0.15); padding: 4px 10px; border-radius: 999px; font-weight: 600; }
+.project-heading h1 { font-size: 23px; letter-spacing: -0.3px; font-weight: 700; margin: 8px 0 2px; }
+.date-divider { font-size: 11px; color: var(--muted); text-align: center; margin: 16px 0; font-weight: 500; }
+
+.message { display: flex; align-items: flex-start; gap: 12px; margin: 16px 0; animation: fadeUpSpring 0.3s var(--spring); }
+.director-avatar {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  background: linear-gradient(135deg, #0071e3 0%, #34c759 100%);
+  color: #fff;
+  border-radius: 11px;
+  font-weight: 700;
+  font-size: 14px;
+  box-shadow: 0 4px 12px rgba(0, 113, 227, 0.22);
+}
+.message-body { min-width: 0; max-width: 100%; flex: 1; }
+.message-meta { font-weight: 600; font-size: 12px; color: var(--ink); margin: 2px 0 6px; display: flex; gap: 10px; align-items: center; }
+.message-meta > span { font-size: 11px; color: var(--muted); font-weight: 400; }
+.message-text {
+  font-size: 13.5px;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: 4px 16px 16px 16px;
+  padding: 14px 18px;
+  box-shadow: var(--shadow-sm);
+}
+.suggestion-box {
+  margin-top: 10px;
+  background: linear-gradient(135deg, rgba(0, 113, 227, 0.06) 0%, rgba(52, 199, 89, 0.06) 100%);
+  border: 1px solid rgba(0, 113, 227, 0.18);
+  border-radius: 14px;
+  padding: 11px 14px;
+}
+.suggestion-title { display: block; font-size: 11.5px; font-weight: 700; color: var(--accent); margin-bottom: 7px; }
+.message.user { justify-content: flex-end; }
+.message.user .message-body { max-width: 82%; flex: initial; }
+.message.user .message-text {
+  background: linear-gradient(135deg, #0071e3 0%, #005bb5 100%);
+  border: 0;
+  border-radius: 18px 18px 4px 18px;
+  padding: 12px 17px;
+  color: #fff;
+  box-shadow: 0 6px 18px rgba(0, 113, 227, 0.22);
+}
+.user-time { display: flex; align-items: center; justify-content: flex-end; gap: 5px; font-size: 10px; color: var(--muted); margin-top: 5px; }
+
+/* Apple Glass Decision Cards */
+.decision {
+  margin: 12px 0 12px 46px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--bg-card);
+  backdrop-filter: saturate(180%) blur(24px);
+  padding: 16px 18px;
+  box-shadow: var(--shadow-md);
+  animation: fadeUpSpring 0.35s var(--spring);
+}
+.inline-bot-card { margin-left: 0; margin-top: 12px; }
+.decision-title { display: flex; gap: 11px; align-items: center; font-size: 13.5px; font-weight: 700; color: var(--ink); }
+.decision-title > span { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 9px; background: rgba(0, 113, 227, 0.12); color: var(--accent); font-size: 15px; flex-shrink: 0; }
+.decision-title small { display: block; font-size: 11px; color: var(--muted); font-weight: 400; margin-top: 2px; }
+.recap-grid { display: grid; grid-template-columns: repeat(3, 1fr); margin: 14px 0; padding: 12px; border-radius: 12px; background: rgba(120, 120, 128, 0.06); gap: 10px; font-size: 11px; color: var(--muted); }
+.recap-grid strong { display: block; color: var(--ink); font-weight: 700; font-size: 12.5px; margin-top: 4px; }
+.decision-actions { display: flex; gap: 9px; flex-wrap: wrap; align-items: center; }
+
+.primary {
+  background: linear-gradient(180deg, #0077ed 0%, #0062c4 100%);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 9px 17px;
+  border-radius: 999px;
+  box-shadow: 0 4px 14px rgba(0, 113, 227, 0.32);
+  min-height: 36px;
+}
+.primary:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(0, 113, 227, 0.42); }
+.secondary {
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 8px 14px;
+  min-height: 34px;
+  box-shadow: var(--shadow-sm);
+}
+.secondary:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.wide { width: 100%; margin-top: 14px; }
+
+/* Dedicated Workspace Status & Live Output View */
+.workspace-view {
+  width: 100%;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 20px 30px 36px;
+  flex: 1;
+  display: grid;
+  gap: 18px;
+  animation: fadeUpSpring 0.35s var(--spring);
+}
+.workspace-hud {
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 18px 22px;
+  box-shadow: var(--shadow-md);
+}
+.hud-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 14px; }
+.hud-title h2 { margin: 4px 0 0; font-size: 19px; font-weight: 700; letter-spacing: -0.3px; }
+.agent-pipeline {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 10px;
+}
+.agent-node {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 11px;
+  background: rgba(120, 120, 128, 0.04);
+  transition: transform 0.25s var(--spring), border-color 0.25s;
+}
+.agent-node.done { border-color: rgba(52, 199, 89, 0.4); background: rgba(52, 199, 89, 0.07); }
+.agent-node.active {
+  border-color: var(--accent);
+  background: rgba(0, 113, 227, 0.09);
+  animation: pulseGlow 2.4s infinite;
+}
+.agent-node-head { display: flex; justify-content: space-between; align-items: center; font-size: 10.5px; font-weight: 700; margin-bottom: 5px; }
+.agent-node strong { display: block; font-size: 12px; color: var(--ink); }
+.agent-node small { display: block; font-size: 10px; color: var(--muted); margin-top: 3px; }
+
+.workspace-grid {
+  display: grid;
+  grid-template-columns: 1fr 1.35fr;
+  gap: 18px;
+  align-items: start;
+}
+.output-viewer {
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 18px 20px;
+  box-shadow: var(--shadow-md);
+}
+.output-tabs { display: flex; gap: 6px; flex-wrap: wrap; border-bottom: 1px solid var(--line); padding-bottom: 11px; margin-bottom: 12px; }
+.output-tabs button {
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink-secondary);
+  background: rgba(120, 120, 128, 0.08);
+}
+.output-tabs button.active { background: var(--accent); color: #fff; }
+.output-document {
+  background: rgba(120, 120, 128, 0.05);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 15px 17px;
+  font-size: 13px;
+  line-height: 1.82;
+  white-space: pre-wrap;
+  max-height: 430px;
+  overflow-y: auto;
+}
+.video-preview-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: rgba(120, 120, 128, 0.05);
+  margin-bottom: 8px;
+}
+.video-preview-card video { width: 110px; height: 64px; object-fit: cover; border-radius: 8px; background: #000; }
+
+/* Admin Console View (/admin) */
+.admin-view {
+  width: 100%;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 22px 30px 36px;
+  flex: 1;
+  display: grid;
+  gap: 18px;
+  animation: fadeUpSpring 0.35s var(--spring);
+}
+.kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+.kpi-card {
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 15px 17px;
+  box-shadow: var(--shadow-sm);
+}
+.kpi-card span { font-size: 11px; color: var(--muted); font-weight: 600; }
+.kpi-card strong { display: block; font-size: 22px; font-weight: 700; margin: 5px 0 4px; color: var(--ink); }
+.kpi-card small { font-size: 11px; color: #1d7d52; font-weight: 600; }
+.admin-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.admin-table th, .admin-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.admin-table th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; }
+
+/* Composer Area */
+.composer-area { position: sticky; bottom: 0; margin-top: auto; padding: 8px 34px 14px; background: linear-gradient(0deg, var(--bg-base) 82%, transparent); width: 100%; z-index: 10; pointer-events: none; }
+.composer-area > div { max-width: 900px; margin: 0 auto; pointer-events: auto; }
+.composer {
+  border: 1px solid var(--line);
+  background: var(--bg-card);
+  backdrop-filter: saturate(190%) blur(24px);
+  box-shadow: var(--shadow-md);
+  border-radius: 18px;
+  padding: 12px 15px 10px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.composer:focus-within { border-color: var(--accent); box-shadow: 0 8px 28px rgba(0, 113, 227, 0.16); }
+.composer textarea { display: block; resize: none; max-height: 140px; width: 100%; border: 0; background: transparent; font-size: 13.5px; line-height: 1.65; min-height: 38px; outline: none; }
+.composer-bottom, .composer-bottom > div { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.composer-bottom { justify-content: space-between; margin-top: 6px; }
+.attach { color: var(--ink); font-size: 11.5px; font-weight: 600; padding: 5px 12px; border-radius: 999px; background: rgba(0, 113, 227, 0.1); border: 1px solid rgba(0, 113, 227, 0.22); min-height: 32px; }
+.attach:hover { background: rgba(0, 113, 227, 0.18); }
+.composer-divider { height: 13px; width: 1px; background: var(--line); }
+.composer-kind-btn { display: inline-flex; gap: 6px; align-items: center; font-size: 11.5px; color: var(--accent); font-weight: 600; padding: 5px 11px; border-radius: 999px; background: rgba(0, 113, 227, 0.08); min-height: 32px; }
+.send { width: 36px; height: 36px; border-radius: 50%; background: var(--accent); color: #fff; box-shadow: 0 4px 12px rgba(0, 113, 227, 0.3); }
+.composer-caption { display: flex; align-items: center; justify-content: space-between; font-size: 10.5px; color: var(--muted); margin-top: 7px !important; padding: 0 6px; }
+.queued-files { display: flex; flex-wrap: wrap; gap: 8px; padding-bottom: 8px; }
+.queued-files > span { display: inline-flex; align-items: center; gap: 6px; background: rgba(0, 113, 227, 0.1); color: var(--accent); padding: 5px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; max-width: 100%; overflow-wrap: anywhere; }
+
+.card-fields { display: grid; gap: 12px; margin: 12px 0; }
+.card-fields label { display: block; font-size: 11.5px; font-weight: 600; color: var(--ink-secondary); }
+.card-fields input, .card-fields textarea, .card-fields select { width: 100%; margin-top: 6px; background: var(--bg-base); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; font-size: 12.5px; font-weight: 400; }
+.episode-row { display: grid; grid-template-columns: 1.4fr 0.8fr auto; gap: 8px; align-items: center; background: rgba(120, 120, 128, 0.05); padding: 9px 12px; border-radius: 11px; border: 1px solid var(--line); }
+.preset-chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 7px; }
+.preset-chip { font-size: 11.5px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg-card); color: var(--ink); min-height: 32px; text-align: left; }
+.preset-chip.active, .preset-chip:hover { background: rgba(0, 113, 227, 0.12); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.gate-hint { font-size: 11.5px; color: #b25000; background: rgba(255, 159, 10, 0.12); border: 1px solid rgba(255, 159, 10, 0.3); border-radius: 10px; padding: 9px 12px; margin: 0 0 12px; }
+
+.delivery-block { margin: 14px 0 14px 46px; display: grid; gap: 10px; }
+.download-card { display: flex; align-items: center; gap: 14px; border: 1px solid var(--line); background: var(--bg-card); border-radius: 16px; padding: 14px 18px; color: var(--ink); box-shadow: var(--shadow-sm); width: 100%; text-align: left; }
+.download-card:hover { border-color: var(--accent); transform: translateY(-1px); }
+.download-card small { display: block; margin-top: 4px; font-size: 11px; color: var(--muted); }
+.download-card strong { font-size: 13.5px; font-weight: 700; }
+.transfer-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; background: rgba(120, 120, 128, 0.06); border: 1px solid var(--line); border-radius: 14px; padding: 11px 15px; font-size: 11.5px; color: var(--ink-secondary); }
+.transfer-bar > div { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Right Panel */
+.with-panel { margin-right: 290px; }
+.right-panel {
+  width: 290px;
+  position: fixed;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid var(--line);
+  background: var(--bg-sidebar);
+  backdrop-filter: saturate(190%) blur(28px);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  z-index: 20;
+}
+.panel-title { height: 62px; min-height: 62px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; border-bottom: 1px solid var(--line); font-size: 13.5px; font-weight: 700; }
+.panel-tabs { display: flex; border-bottom: 1px solid var(--line); padding: 0 16px; gap: 14px; }
+.panel-tabs > button { font-size: 11.5px; color: var(--muted); padding: 13px 2px 11px; border-bottom: 2px solid transparent; min-height: 40px; font-weight: 600; }
+.panel-tabs > button.active { border-color: var(--accent); color: var(--accent); }
+.panel-section { padding: 18px 20px; border-bottom: 1px solid var(--line); }
+.panel-label { font-size: 10.5px; color: var(--muted); font-weight: 600; text-transform: uppercase; }
+.panel-section h3 { font-size: 13.5px; font-weight: 700; margin: 8px 0; }
+.progress-track { height: 6px; border-radius: 999px; background: rgba(120, 120, 128, 0.14); overflow: hidden; margin: 12px 0 8px; }
+.progress-track i { height: 100%; background: linear-gradient(90deg, #0071e3, #34c759); display: block; min-width: 5%; border-radius: 999px; transition: width 0.4s var(--spring); }
+.timeline { padding-top: 14px; padding-bottom: 14px; }
+.timeline > div { display: flex; align-items: center; gap: 11px; position: relative; height: 36px; }
+.timeline > div:not(:last-child):after { content: ''; position: absolute; width: 1.5px; height: 22px; top: 24px; left: 7px; background: var(--line); }
+.timeline > div > span { height: 16px; width: 16px; border: 1.5px solid var(--muted); border-radius: 50%; display: grid; place-items: center; background: var(--bg-card); color: var(--accent); z-index: 1; font-size: 9px; font-weight: 700; }
+.timeline > div.current > span, .timeline > div.done > span { border-color: var(--accent); background: rgba(0, 113, 227, 0.12); }
+.timeline p { font-size: 11.5px; color: var(--ink-secondary); margin: 0; }
+.timeline .current p, .timeline .done p { color: var(--ink); font-weight: 600; }
+.timeline small { font-size: 10px; color: var(--accent); margin-left: auto; background: rgba(0, 113, 227, 0.1); border-radius: 999px; padding: 2px 8px; font-weight: 600; }
+.panel-section dl { display: grid; grid-template-columns: 1fr 1.2fr; font-size: 11.5px; row-gap: 11px; margin: 14px 0 0; }
+.panel-section dt { color: var(--muted); }
+.panel-section dd { margin: 0; text-align: right; color: var(--ink); font-weight: 600; }
+.panel-bottom { margin-top: auto; padding: 16px 20px; display: flex; gap: 8px; color: var(--muted); font-size: 11px; }
+.file-item { border-bottom: 1px solid var(--line); padding-bottom: 8px; margin-bottom: 6px; }
+.file-row { display: flex; gap: 10px; align-items: center; padding: 8px 0 4px; font-size: 11.5px; }
+.file-row > span { flex: 1; min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
+.file-row small { display: block; font-size: 10px; color: var(--muted); margin-top: 3px; font-weight: 400; }
+.requirement { background: var(--bg-card); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 10px; padding: 11px 13px; }
+.requirement > span { display: flex; align-items: center; gap: 5px; color: var(--accent); font-size: 10px; font-weight: 700; }
+.requirement p { font-size: 11.5px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; margin: 5px 0 0; }
+
+/* Apple Sheet / Spotlight Modal */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.36);
+  backdrop-filter: saturate(180%) blur(12px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: fadeUpSpring 0.25s var(--spring);
+}
+.modal {
+  width: 540px;
+  max-width: 100%;
+  max-height: 90dvh;
+  overflow: auto;
+  background: var(--bg-card);
+  backdrop-filter: saturate(200%) blur(32px);
+  border: 1px solid var(--glass-border);
+  border-radius: 24px;
+  padding: 26px;
+  position: relative;
+  box-shadow: var(--shadow-lg);
+  animation: fadeUpSpring 0.32s var(--spring);
+}
+.modal-close { position: absolute; right: 16px; top: 16px; padding: 4px; color: var(--muted); border-radius: 50%; background: rgba(120, 120, 128, 0.1); min-width: 34px; min-height: 34px; }
+.modal h2 { font-size: 20px; font-weight: 700; letter-spacing: -0.3px; margin: 6px 0; }
+.modal > p { font-size: 12.5px; color: var(--ink-secondary); line-height: 1.65; margin-bottom: 14px; }
+.modal > label { display: block; font-size: 12px; font-weight: 600; color: var(--ink-secondary); margin-top: 12px; }
+.modal input { display: block; width: 100%; padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-base); margin-top: 6px; font-size: 13px; }
+.modal-flow-cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 10px; }
+.modal-flow-card {
+  text-align: left;
+  padding: 12px 13px;
+  border-radius: 14px;
+  border: 1.5px solid var(--line);
+  background: var(--bg-base);
+  display: block;
+}
+.modal-flow-card.active {
+  border-color: var(--accent);
+  background: rgba(0, 113, 227, 0.09);
+  box-shadow: 0 4px 16px rgba(0, 113, 227, 0.15);
+}
+.modal-flow-card strong { display: flex; justify-content: space-between; font-size: 13px; color: var(--ink); }
+.modal-flow-card small { display: block; font-size: 11px; color: var(--ink-secondary); margin-top: 4px; line-height: 1.4; }
+
+.error-banner { display: flex; gap: 10px; align-items: center; margin: 12px 34px 0; padding: 11px 15px; border-radius: 12px; background: rgba(255, 59, 48, 0.1); border: 1px solid rgba(255, 59, 48, 0.25); color: #d70015; font-size: 12px; font-weight: 500; }
+.error-banner > span { flex: 1; }
+.toast { position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%); z-index: 150; display: flex; align-items: center; gap: 10px; padding: 12px 20px; background: rgba(29, 29, 31, 0.92); backdrop-filter: blur(16px); color: #fff; border-radius: 999px; box-shadow: var(--shadow-lg); font-size: 12.5px; font-weight: 600; animation: fadeUpSpring 0.25s var(--spring); }
+
+@media(max-width:1280px) { .bot-status-pill { display: none; } }
+@media(max-width:1100px) {
+  .agent-pipeline { grid-template-columns: repeat(3, 1fr); }
+  .workspace-grid { grid-template-columns: 1fr; }
+  .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media(max-width:1000px) {
+  .with-panel { margin-right: 0; }
+  .flow-grid { grid-template-columns: repeat(2, 1fr); gap: 9px; }
+}
+@media(max-width:700px) {
+  .sidebar { transform: translateX(-100%); transition: transform 0.26s var(--spring); width: 260px; z-index: 60; }
+  .sidebar.open { transform: translateX(0); }
+  .scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.35); z-index: 45; backdrop-filter: blur(4px); }
+  .main { margin-left: 0; }
+  .mobile-menu { display: flex; padding: 4px; min-width: 36px; min-height: 36px; }
+  .topbar { height: 56px; padding-inline: 12px; }
+  .segmented-control button { padding: 5px 8px; font-size: 11px; }
+  .conversation, .workspace-view, .admin-view { padding: 14px 12px 20px; }
+  .decision, .delivery-block { margin-left: 0; padding: 15px; }
+  .composer-area { padding: 6px 12px 10px; }
+  .agent-pipeline { grid-template-columns: repeat(2, 1fr); }
+  .episode-row { grid-template-columns: 1fr; }
+  .right-panel { top: auto; bottom: 0; left: 0; width: 100%; height: 75dvh; border-radius: 22px 22px 0 0; z-index: 50; box-shadow: var(--shadow-lg); }
+}
+@media(prefers-reduced-motion:reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+}
+
+/* Strictly Step-by-Step (一项项来) Progressive Wizard Styles */
+.step-wizard-stack {
+  display: grid;
+  gap: 10px;
+  margin-top: 8px;
+}
+.completed-steps-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.completed-step-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 13px;
+  border-radius: 999px;
+  background: rgba(50, 215, 75, 0.10);
+  border: 1px solid rgba(50, 215, 75, 0.28);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.3;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+.completed-step-pill:hover {
+  background: rgba(50, 215, 75, 0.18);
+  transform: translateY(-1px);
+}
+.completed-step-pill .pill-check {
+  color: var(--ok);
+  font-weight: 700;
+}
+.completed-step-pill .pill-edit {
+  color: var(--accent);
+  font-weight: 600;
+  margin-left: 2px;
+}
+.step-progress-dots {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.step-dot {
+  width: 22px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  transition: all 0.22s ease;
+}
+.app-shell[data-theme="light"] .step-dot {
+  background: rgba(0, 0, 0, 0.10);
+}
+.step-dot.done {
+  background: var(--ok);
+}
+.step-dot.active {
+  width: 36px;
+  background: var(--accent);
+}
+
+
+/* Minimalist Empty-Start Chat + Typing Indicator + Typewriter Caret + Spring Card Reveal */
+.conversation.minimal-chat {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 28px 20px 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.minimal-top-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: rgba(120, 120, 128, 0.08);
+  border: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--muted);
+}
+.minimal-top-strip strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+.minimal-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.minimal-top-actions button {
+  min-height: 28px;
+  padding: 4px 10px;
+  font-size: 11px;
+  border-radius: 999px;
+}
+.typing-bubble {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px;
+  border-radius: 18px;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  animation: fadeSlideUp 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.typing-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.typing-dots i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  display: inline-block;
+  animation: typingBounce 1.2s infinite ease-in-out;
+}
+.typing-dots i:nth-child(2) {
+  animation-delay: 0.18s;
+}
+.typing-dots i:nth-child(3) {
+  animation-delay: 0.36s;
+}
+@keyframes typingBounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.45; }
+  30% { transform: translateY(-5px); opacity: 1; }
+}
+.typing-status-label {
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 500;
+}
+.streaming-caret {
+  display: inline-block;
+  width: 8px;
+  height: 15px;
+  margin-left: 3px;
+  vertical-align: -2px;
+  background: var(--accent);
+  border-radius: 2px;
+  animation: caretBlink 0.7s infinite;
+}
+@keyframes caretBlink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.15; }
+}
+@keyframes fadeSlideUp {
+  from { opacity: 0; transform: translateY(10px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.decision.card-enter {
+  animation: fadeSlideUp 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+</style>
+</head>
+<body>
+<div id="app"></div>
+<!-- Hidden real file input that handles actual local files -->
+<input id="real-file-input" type="file" multiple accept=".mp4,.mov,.mkv,.webm,.avi,.mp3,.wav,.docx,.xlsx,.csv,.txt,.md,.srt,.zip,.png,.jpg,.jpeg,.webp" style="position:fixed;top:-9999px;left:-9999px;opacity:0;width:1px;height:1px" />
+<script>
+const flows = [
+  { kind: 'transcribe', title: '扒剧（视频/表格还原）', description: '上传短剧分集视频或导出表，自动识别集号、选择快速/详细模式，产出繁简双版 Word。', tag: '★ 当前测试 · 视频还原', icon: '🎬' },
+  { kind: 'foreign', title: '国外迭代国外', description: '上传海外原稿与锁定集，完成原稿分析、四项配置、主线细纲与双语交付。', tag: '迭代改编 · 支持锁集续写', icon: '🌐' },
+  { kind: 'domestic', title: '国内迭代国外', description: '在迭代流程上增加桥段出海四级诊断、世界观/人设/替换三道门与美式幽默精修。', tag: '跨文化出海 · 三道门把关', icon: '🧭' },
+  { kind: 'original', title: '原创', description: '从一句话脑洞出发，经前四层推理与停点 A 拍板，推进设定集、分批细纲与正文。', tag: '脑洞起盘 · 停点 A 决策', icon: '✨' }
+];
+const labels = { foreign: '国外迭代国外', domestic: '国内迭代国外', transcribe: '扒剧', original: '原创' };
+const timelineByKind = {
+  foreign: ['资料收集与复述', '原稿分析与曲线', '四项配置与主线', '梗概与分批细纲', '正文与自动审改', 'Word 成稿交付'],
+  domestic: ['资料收集与复述', '四级诊断与三道门', '四项配置与主线', '梗概与分批细纲', '正文与北美精修', 'Word 成稿交付'],
+  transcribe: ['上传视频与核对集号', '选择快速/详细模式', '确认清单并开始扒剧', '分集还原与补写校准', '生成繁简双版 Word', 'ZIP 交付或转迭代'],
+  original: ['脑洞收集与复述', '前四层推理与停点 A', '设定集与每10集细纲', '正文前3集逐集确认', '整批写作与自动审改', 'Word 成稿交付']
+};
+const agentsByKind = {
+  foreign: [
+    { role: '总编剧', task: '复述与全局把控' },
+    { role: '原稿分析师', task: '五问与情绪曲线' },
+    { role: '主线策划师', task: '主线3选1与看得懂关' },
+    { role: '分集编剧', task: '分批细纲与双语正文' },
+    { role: '审稿官', task: '连续性与卡点复核' },
+    { role: '台词精修师', task: '母语化与去AI味' }
+  ],
+  domestic: [
+    { role: '总编剧', task: '复述与三道门主审' },
+    { role: '原稿分析师', task: '桥段出海四级诊断' },
+    { role: '本土化架构师', task: '世界观/人设/替换三门' },
+    { role: '分集编剧', task: '欧美快节奏正文' },
+    { role: '审稿官', task: '去中式说教复核' },
+    { role: '北美精修师', task: '美式幽默与俚语打磨' }
+  ],
+  transcribe: [
+    { role: '总编剧', task: '集号核对与派活' },
+    { role: '扒剧小能手', task: '抽帧OCR与分集转写' },
+    { role: '人名校准器', task: '全剧标准人名锁定' },
+    { role: '质检核查员', task: '时长与待补写核查' },
+    { role: '梗概整理师', task: '提炼梗概与人物小传' },
+    { role: '排版交付官', task: '繁简双版Word打包' }
+  ],
+  original: [
+    { role: '总编剧', task: '脑洞复述与停点A' },
+    { role: '原创负责人', task: '前四层推理与破局引擎' },
+    { role: '设定架构师', task: '14节设定与视觉锤' },
+    { role: '分集编剧', task: '双线细纲与前3集打样' },
+    { role: '审稿官', task: '付费卡点与钩子复核' },
+    { role: '台词精修师', task: '双语母语化精修' }
+  ]
+};
+
+function detectEpisodeFromName(name) {
+  const base = name.replace(/\.[^.]+$/, '').trim();
+  if (/^\d+\s*[-_]\s*\d+$/.test(base) || /微信视频|WeChat|\d{6,}/i.test(base)) {
+    return undefined;
+  }
+  const match =
+    base.match(/(?:第|^|[_\-\s])0*(\d{1,3})\s*集/) ||
+    base.match(/(?:^|[_\-\s])(?:ep|episode)\s*0*(\d{1,3})(?:$|[_\-\s])/i) ||
+    base.match(/[_-]0*(\d{1,3})$/) ||
+    base.match(/^0*(\d{1,3})$/);
+  const n = Number(match?.[1]);
+  return Number.isInteger(n) && n >= 1 && n <= 300 ? n : undefined;
+}
+
+function formatBytes(n) {
+  return n > 1024 * 1024 ? (n / 1024 / 1024).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
+}
+
+function generateTranscribeOutputs(proj) {
+  const sorted = [...proj.attachments].sort((a, b) => (a.episode || 999) - (b.episode || 999));
+  const modeText = proj.transcribeMode === 'detailed' ? '详细模式（每秒一帧逐格精看+动作细节白描）' : '快速模式（整集速看+关键集抽查）';
+  const castText = proj.castLock || '男主：凯尔·诺顿（Kale Norton，隐藏首富/牧场主）｜女主：南希·珀西（Nancy Percy，替嫁真千金）｜反派：丽莎（Lisa，势利妹妹）';
+  const gapFill = proj.manualGapText || '凯尔亮出全球仅三张的黑金无限额副卡，保安队长当场核验通过';
+
+  const recapDoc = [
+    `# 《${proj.title}》扒剧立项与素材核对清单`,
+    `• 创作流程：扒剧（视频/导出表还原标准剧本）`,
+    `• 所选模式：${proj.transcribeMode ? modeText : '待选择（快速模式 / 详细模式，无默认）'}`,
+    `• 全剧集数：${proj.total || sorted.length || 45} 集（当前已挂载 ${sorted.length} 份分集素材）`,
+    `• 全剧锁定人名表：${castText}`,
+    ``,
+    `## 已归档素材与集号映射：`,
+    ...(sorted.length
+      ? sorted.map(a => `- 第 ${a.episode ?? '【待补录】'} 集：《${a.name}》（大小：${formatBytes(a.size)}${a.durationSec ? `，实测时长：${a.durationSec} 秒` : '，时长：68 秒'}）${a.extractedText ? `\n  > 实读内容摘要：${a.extractedText.slice(0, 120)}…` : ''}`)
+      : ['- 暂无上传文件，请点击下方「📎 拖入或添加素材」上传本地视频/表格，或点击「🎬 一键载入3集测试视频包」'])
+  ].join('\n');
+
+  const synopsisDoc = [
+    `# 《${proj.title}》故事梗概与人物小传（简体全集卷首）`,
+    ``,
+    `## 一、故事梗概（Synopsis）`,
+    `珀西家养女南希（Nancy）被偏心父母与妹妹丽莎（Lisa）强行替嫁给传闻中的“穷酸乡下农夫”凯尔·诺顿（Kale Norton），还要给五个收养的孩子当后妈。殊不知凯尔实则是掌控全球五百座牧场与能源帝国的 ND 集团董事长。南希携萌宝在顶奢商场遭娘家羞辱时，凯尔携无限额黑卡与百辆豪车护妻打脸，最终在婚礼现场粉碎丽莎的栽赃阴谋。`,
+    ``,
+    `## 二、核心人物小传（Character Bios · 全剧译名已锁死）`,
+    `1. **南希·珀西（Nancy Percy，女主）**：坚韧清醒、护短果断。替嫁入牧场后真心疼爱五个孩子，面对娘家羞辱绝不内耗。`,
+    `2. **凯尔·诺顿（Kale Norton，男主）**：表面是低调牧场农夫，实为 ND 集团百亿掌权人。冷峻护妻，给女主每日一百万零花与全球仅三张的黑金卡。`,
+    `3. **丽莎·珀西（Lisa Percy，女反）**：贪慕虚荣的假千金妹妹，嫌贫爱富悔婚后发现姐夫是首富，屡次设局反被送进监狱。`
+  ].join('\n');
+
+  const simplifiedScript = (sorted.length ? sorted : [
+    { name: '第01集.mp4', episode: 1, durationSec: 72 },
+    { name: '第02集.mp4', episode: 2, durationSec: 66 },
+    { name: '微信视频_片段1-1.mp4', episode: 3, durationSec: 78 }
+  ]).map(a => {
+    const ep = a.episode || 1;
+    const realText = a.extractedText ? `\n▲ 【实读上传文件内容】${a.extractedText.slice(0, 260)}\n` : '';
+    return [
+      `====================================`,
+      `第 ${ep} 集（来源素材：${a.name}｜时长：${a.durationSec || 68} 秒｜${proj.transcribeMode === 'detailed' ? '逐帧详细还原' : '快速还原'}）`,
+      `【本集人物】南希（Nancy）、凯尔（Kale）、丽莎（Lisa）、孩子们`,
+      ``,
+      `${ep}-1 日 内 顶奢精品店 VIP 厅`,
+      `▲ 南希牵着五个孩子走进童装区，丽莎挽着未婚夫文森特迎面走来，上下打量南希。${realText}`,
+      `丽莎（讥讽）：Look who it is. You married a broke farmer, Nancy. What could you possibly afford here?（看看这是谁。你嫁了个穷农夫，南希，这儿的东西你买得起吗？）`,
+      `▲ 店员一把夺过小女孩手里的礼服裙，冷脸推开南希。`,
+      `南希（护住孩子，冷声）：Take your hands off my kid. We are paying with this card.（把你的手从我孩子身上拿开。我们刷这张卡。）`,
+      `▲ 【镜头切特写】${gapFill}。`,
+      `▲ 凯尔带着四名黑衣保镖推门而入，单手揽住南希肩膀，全场店员鞠躬屏息。`,
+      `凯尔（低沉冷冽）：Who just called my wife and kids trash?（刚才，是谁叫我太太和孩子垃圾？）`,
+      `【集尾钩子 Cliffhanger：丽莎认出 ND 集团董事长专属徽章，脸色骤变】`
+    ].join('\n');
+  }).join('\n\n');
+
+  const traditionalScript = [
+    `# 《${proj.title}》繁體單集還原劇本（供後期字幕對軸與單集存檔）`,
+    `> 導出規格：每集獨立成篇，保留原始時間軸與【待人工補寫】校準位`,
+    ``,
+    ...((sorted.length ? sorted : [{ name: '第01集.mp4', episode: 1 }]).map(a => {
+      const ep = a.episode || 1;
+      return [
+        `### 【繁體單集 Word · 第 ${ep} 集】（對應檔案：${a.name}）`,
+        `- 場次：${ep}-1 日 內 頂奢精品店 VIP 廳`,
+        `- ▲ 南希牽著五個孩子走進童裝區，麗莎挽著文森特冷笑逼近。`,
+        `- 麗莎（譏諷）：「妳嫁了個窮農夫，南希，這裡的衣服妳買得起嗎？」`,
+        `- 南希（護住孩子，冷聲）：「把妳的手拿開，我們刷這張卡。」`,
+        `- ▲ 【特寫校準位】：${gapFill}`,
+        `- 凱爾（推門而入，低沉）：「剛才，是誰叫我太太和孩子垃圾？」`
+      ].join('\n');
+    }))
+  ].join('\n\n');
+
+  return {
+    recap: recapDoc,
+    analysis: synopsisDoc,
+    outline: simplifiedScript,
+    script: traditionalScript
+  };
+}
+
+const state = {
+  theme: 'light',
+  surface: 'chat', // 'chat' | 'workspace' | 'admin'
+  isDragging: false,
+  user: { name: 'ayin', email: 'ayin@studio.ai', role: '发起人 · 创作主审人', loggedIn: true },
+  projects: [
+    {
+      id: 'proj-transcribe-1',
+      title: '北美狼人/豪门分集扒剧还原',
+      kind: 'transcribe',
+      total: 45,
+      lockedEpisodes: null,
+      startEpisode: 1,
+      confirmed: false,
+      transcribeMode: '', // '' | 'fast' | 'detailed' (never default!)
+      transcribePhase: -1, // -1: 初始上传视频步, 0: 核对集号, 1: 选模式, 2: 锁人名并启动, 3: 待补写校准, 4: 交付与转迭代
+      castLock: '男主：凯尔（Kale Norton）｜女主：南希（Nancy Percy）｜反派：丽莎（Lisa）',
+      manualGapText: '凯尔亮出全球仅三张的黑金无限额副卡，店长当场鞠躬核验通过',
+      stepIndex: 0,
+      activeOutputTab: 'recap',
+      createdAt: '2026-11-17T05:30:00Z',
+      attachments: [],
+      requirements: ['[初始说明] 全剧 45 集，上传分集视频还原剧本，导出繁体单集与简体全集 Word。'],
+      outputs: {},
+      messages: [],
+      card: null
+    },
+    {
+      id: 'proj-foreign-lock',
+      title: '豪门闪婚：前10集锁定续写',
+      kind: 'foreign',
+      total: 62,
+      lockedEpisodes: 10,
+      startEpisode: 11,
+      confirmed: true,
+      stepIndex: 2,
+      activeOutputTab: 'analysis',
+      createdAt: '2026-11-17T06:00:00Z',
+      attachments: [
+        { id: 'att-1', name: 'Evelyn_Ep01-10_Locked_Final.docx', size: 184320, role: 'locked' },
+        { id: 'att-2', name: 'Original_Source_Full_62Eps.docx', size: 542100, role: 'source' }
+      ],
+      requirements: [
+        '[初始说明 · 全剧适用（前 10 集锁定，从第 11 集续写）] 全剧 62 集，前 10 集已锁定（一字不动），本轮从第 11 集写到第 62 集。'
+      ],
+      outputs: {
+        recap: `【总编剧复述确认单 · 已锁定生效】\n1. 创作流程：国外迭代国外（锁集续写模式）\n2. 锁定范围：第 1–10 集定稿只读保护（导出逐字比对 100% 一致），本轮生成第 11–62 集。`,
+        analysis: `【原稿五问与逐集情绪曲线分析报告】\n• 事件映射：E001–E062 全量对齐完成，前 10 集已标记为 [LOCKED_READONLY]。`,
+        outline: `【第 11–20 集分集细纲】\n• 第 11 集：开场 3 秒承接第 10 集尾钩反手扣住反派手腕，亮出医院钢印报告。`,
+        script: `第11集\n11-1 夜 内 霍克庄园宴会厅\n▲ 伊芙琳一把扣住林赛悬在半空的手腕，将她甩退两步。`
+      },
+      messages: [
+        { id: 'm1', role: 'user', text: '全剧 62 集，前 10 集已锁定（一字不动），本轮从第 11 集写到第 62 集。', time: '14:10' },
+        { id: 'm2', role: 'director', text: '收到！前 10 集已作为只读锁定稿保护，本轮从第 11 集续写至第 62 集。', time: '14:10' }
+      ],
+      card: {
+        title: '简化主线单 · 必过「看得懂关」',
+        step: 'mainline_sheet',
+        fields: ['selection', 'understood'],
+        questions: ['1. 已生成 3 套主线与对手方案，★ 方案 A 排第一，并附上简化主线单，请先确认是否看懂主线因果。']
+      }
+    },
+    {
+      id: 'proj-original-1',
+      title: '都市急诊科隐藏财阀千金',
+      kind: 'original',
+      total: null,
+      lockedEpisodes: null,
+      startEpisode: 1,
+      confirmed: true,
+      stepIndex: 1,
+      activeOutputTab: 'analysis',
+      createdAt: '2026-11-17T05:00:00Z',
+      attachments: [],
+      requirements: ['[初始说明] 一句话脑洞：急诊科实习医生实为顶级医疗财阀唯一继承人，在前夫悔婚现场亮出股权。'],
+      outputs: {
+        recap: '【原创脑洞立项复述】\n核心设定：急诊科实习医生女主 vs 势利前未婚夫与顶流外科主任男主。',
+        analysis: '【原创前四层推理产出】\n1. 第一层（人物主动性）：女主隐瞒身份是为了独立完成微创临床试验。'
+      },
+      messages: [
+        {
+          id: 'mo1',
+          role: 'director',
+          text: '一句话脑洞已收到！原创无需在建档时预设总集数，我已经跑完前四层推理，请在下方「停点 A」卡片拍板。',
+          time: '13:20'
+        }
+      ],
+      card: null
+    }
+  ],
+  preChat: [],
+  pendingBrief: '',
+  queuedFiles: [],
+  activeId: 'proj-transcribe-1', // 默认直接打开扒剧项目，方便用户上来就能上传视频跑扒剧全流程！
+  kind: 'transcribe',
+  query: '',
+  text: '',
+  title: '',
+  modal: '',
+  error: '',
+  toast: '',
+  left: false,
+  right: false, // 默认收起右侧面板，保持聊天页干净纯粹
+  tab: 'overview',
+  understoodVal: '',
+  directionVal: '方案 A：强反差高频打脸+情感拉扯',
+  openingVal: '开场 B：绝境危机冲突前置',
+  totalVal: '60',
+  audienceVal: '女频',
+  episodeInput: '2',
+  episodeInputs: {},
+  editingEpId: null,
+  retranscribeEp: '1',
+  cardSubStep: 0,
+  isTyping: false,
+  typingStatus: '总编剧正在输入…',
+  streamingMsgId: null,
+  cardReady: true,
+  loginEmail: 'ayin@studio.ai',
+  loginRole: '发起人 · 创作主审人 (ayin)',
+  apiConfig: {
+    mode: 'direct_llm', // 'direct_llm' | 'custom_backend' | 'sandbox'
+    baseUrl: 'https://api.openai.com/v1',
+    apiKey: '',
+    directorModel: 'gpt-4o',
+    visionModel: 'gpt-4o',
+    writerModel: 'claude-3-5-sonnet-latest',
+    backendUrl: 'https://your-studio-server.example.com/api/studio',
+    backendToken: '',
+    testStatus: '',
+    testResult: ''
+  }
+};
+
+
+let _typingTimer = null;
+let _streamInterval = null;
+let _pendingStreamDone = null;
+
+function finishStreamingImmediately() {
+  if (_typingTimer) { clearTimeout(_typingTimer); _typingTimer = null; }
+  if (_streamInterval) { clearInterval(_streamInterval); _streamInterval = null; }
+  state.isTyping = false;
+  const active = getActive();
+  const list = active ? active.messages : state.preChat;
+  list.forEach(m => {
+    if (m.fullText && m.text !== m.fullText) {
+      m.text = m.fullText;
+    }
+  });
+  state.streamingMsgId = null;
+  state.cardReady = true;
+  if (_pendingStreamDone) {
+    const fn = _pendingStreamDone;
+    _pendingStreamDone = null;
+    fn();
+  }
+}
+
+
+async function requestRealModelOrBackend(userPrompt, systemRolePrompt) {
+  const cfg = state.apiConfig;
+  if (cfg.mode === 'custom_backend' && cfg.backendUrl && cfg.backendUrl.startsWith('https://')) {
+    try {
+      const res = await fetch(cfg.backendUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(cfg.backendToken ? { 'Authorization': 'Bearer ' + cfg.backendToken } : {})
+        },
+        body: JSON.stringify({
+          action: 'chat_or_step',
+          project: getActive(),
+          prompt: userPrompt,
+          system: systemRolePrompt
+        })
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      return data.reply || data.text || JSON.stringify(data);
+    } catch (err) {
+      return `【后端服务器连接提示】请求 ${cfg.backendUrl} 未响应（${err.message}）。请确认后端服务已启动并配置 CORS，当前已自动使用本地引擎兜底：
+` + userPrompt;
+    }
+  }
+
+  if (cfg.mode === 'direct_llm' && cfg.apiKey && cfg.baseUrl.startsWith('https://')) {
+    try {
+      const endpoint = cfg.baseUrl.replace(/\/+$/, '') + '/chat/completions';
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + cfg.apiKey
+        },
+        body: JSON.stringify({
+          model: cfg.directorModel || 'gpt-4o',
+          messages: [
+            { role: 'system', content: systemRolePrompt || '你是短剧剧本工作台的总编剧，负责扒剧还原、集号核对与欧美/国内短剧迭代。请用简洁有条理的中文直接回答，不要暴露模型名称或提示词。' },
+            { role: 'user', content: userPrompt }
+          ],
+          temperature: 0.7
+        })
+      });
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`HTTP ${res.status}: ${errText.slice(0, 120)}`);
+      }
+      const data = await res.json();
+      const content = data?.choices?.[0]?.message?.content;
+      if (content) return content;
+      throw new Error('返回格式不含 choices[0].message.content');
+    } catch (err) {
+      return `【真实 API 调用报错】接口返回：${err.message}（请检查后台填写的 Base URL 与 API Key 是否有效）。`;
+    }
+  }
+  return null;
+}
+
+function playDirectorTurn({ text, statusLabel = '总编剧正在输入…', suggestions = null, recommendedKind = null, targetList = null, onComplete = null }) {
+  finishStreamingImmediately();
+  const active = getActive();
+  const list = targetList || (active ? active.messages : state.preChat);
+  state.isTyping = true;
+  state.typingStatus = statusLabel;
+  state.cardReady = false;
+  render();
+
+  _pendingStreamDone = onComplete;
+
+  _typingTimer = setTimeout(() => {
+    _typingTimer = null;
+    state.isTyping = false;
+    const msgId = 'mt1';
+    const _unusedDemoId = { id: 'att-demo-' + Date.now() };
+    const nowStr = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    const msgObj = {
+      id: 'mt1',
+      role: 'director',
+      text: '',
+      fullText: text,
+      time: nowStr,
+      suggestions,
+      recommendedKind
+    };
+    list.push(msgObj);
+    state.streamingMsgId = msgId;
+    render();
+
+    let idx = 0;
+    const step = Math.max(2, Math.ceil(text.length / 22));
+    _streamInterval = setInterval(() => {
+      idx = Math.min(text.length, idx + step);
+      msgObj.text = text.slice(0, idx);
+      if (idx >= text.length) {
+        clearInterval(_streamInterval);
+        _streamInterval = null;
+        state.streamingMsgId = null;
+        state.cardReady = true;
+        if (_pendingStreamDone) {
+          const fn = _pendingStreamDone;
+          _pendingStreamDone = null;
+          fn();
+        }
+      }
+      render();
+    }, 18);
+  }, 260);
+}
+
+// Initialize transcribe outputs
+state.projects[0].outputs = generateTranscribeOutputs(state.projects[0]);
+
+function statedTotal(text) {
+  const m = text.match(/(?:全剧|整个剧|总共|一共|总集数|全本|共)\s*(?:是|有|为|：|:)?\s*(\d{1,3})\s*集/) || text.match(/写到\s*第?\s*(\d{1,3})\s*集/) || text.trim().match(/^(\d{1,3})\s*集[。！!]?$/);
+  const n = Number(m?.[1]);
+  return Number.isInteger(n) && n >= 1 && n <= 300 ? n : null;
+}
+function statedLocked(text) {
+  const m = text.match(/前\s*(\d{1,3})\s*集\s*(?:已|已经)?\s*(?:锁定|定稿|不改|不动)/) || text.match(/(?:锁定|定稿)\s*前\s*(\d{1,3})\s*集/);
+  const n = Number(m?.[1]);
+  return Number.isInteger(n) && n >= 1 && n <= 299 ? n : null;
+}
+function isProgressQuery(text) {
+  const t = text.trim();
+  if (t.length > 36) return false;
+  return /^(现在|目前|请问|这剧)?(进度)?(咋样了?|怎么样了?|还要多久|什么时候好|啥时候.*答复|到哪一步了?|在跑吗|卡在哪了?|进度)[？?。！!]*$/.test(t);
+}
+function inferKind(text) {
+  if (/扒剧|视频|字幕|导出表/.test(text)) return 'transcribe';
+  if (/国内|红果|出海|三道门|本土化|北美|彩礼/.test(text)) return 'domestic';
+  if (/前\s*\d+\s*集|锁定|定稿|续写|原稿|迭代/.test(text)) return 'foreign';
+  return 'original';
+}
+function buildSuggestions(kind, text, total, locked) {
+  if (kind === 'transcribe') {
+    return [
+      '★ 建议 1（人名锁定）：扒剧前先锁死男女主与反派标准译名，防止出现“金发男/新娘”等外号',
+      '★ 建议 2（模式选择）：快速拆解选「快速模式」；逐帧对齐台词与动作选「详细模式」'
+    ];
+  }
+  if (kind === 'domestic') {
+    return [
+      '★ 建议 1（桥段出海四级诊断）：将中式逼婚/彩礼置换为北美信托基金冻结、Prenup 婚前协议或慈善晚宴除名',
+      '建议 2（三道门推进）：先依次过「世界观 → 人设 → 替换要点」三道门，再进梗概与细纲'
+    ];
+  }
+  if (kind === 'original') {
+    return [
+      '★ 建议 1（前 3 秒冲突开场）：采用「开场 B 绝境冲突前置」，第 1 集第 1 场直接亮出身份反差与核心危机',
+      `建议 2（付费卡点）：建议全剧定在 ${total || 60} 集左右，第 10 集末尾埋设首次重大身份反转钩子`
+    ];
+  }
+  return [
+    locked
+      ? `★ 建议 1（锁集无缝接力）：前 ${locked} 集锁死一字不动，第 ${locked + 1} 集开场前 3 秒直接承接第 ${locked} 集尾钩反击`
+      : '★ 建议 1（情绪曲线对位）：先跑原稿五问与逐集情绪曲线，将原剧爽点峰值 1:1 对位',
+    '★ 建议 2（双线推拉强化）：每集保证「事件危机线 + 男女主情感拉扯线」各推进一格，过完「看得懂关」再开细纲'
+  ];
+}
+
+// Real File Upload Handler (reads real local video duration & text content!)
+function handleFilesSelected(fileList) {
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+  state.error = '';
+  let active = getActive();
+
+  // If on home page without an active project, auto-switch or queue into transcribe if video/table
+  if (!active) {
+    const inferred = state.kind || 'transcribe';
+    state.kind = inferred;
+    const newProj = {
+      id: 'proj-' + Date.now(),
+      title: files[0].name.replace(/\.[^.]+$/, '') + '（扒剧项目）',
+      kind: inferred,
+      total: 45,
+      lockedEpisodes: null,
+      startEpisode: 1,
+      confirmed: false,
+      transcribeMode: '',
+      transcribePhase: 0,
+      castLock: '男主：凯尔（Kale Norton）｜女主：南希（Nancy Percy）｜反派：丽莎（Lisa）',
+      manualGapText: '凯尔亮出全球仅三张的黑金无限额副卡，店长当场鞠躬核验通过',
+      stepIndex: 0,
+      activeOutputTab: 'recap',
+      createdAt: new Date().toISOString(),
+      attachments: [],
+      requirements: [`[上传建档] 上传了 ${files.length} 份本地素材`],
+      outputs: {},
+      messages: [],
+      card: null
+    };
+    state.projects.unshift(newProj);
+    state.activeId = newProj.id;
+    active = newProj;
+  }
+
+  const recognized = [];
+  const unrecognized = [];
+
+  files.forEach((f) => {
+    let ep = active.kind === 'transcribe' ? detectEpisodeFromName(f.name) : undefined;
+    if (ep !== undefined && active.attachments.some(a => a.episode === ep)) {
+      ep = undefined; // prevent duplicate auto-assignment
+    }
+    const attId = 'att-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+    const previewUrl = (f.type && f.type.startsWith('video/')) || /\.(mp4|mov|webm|mkv)$/i.test(f.name)
+      ? URL.createObjectURL(f)
+      : undefined;
+
+    const att = {
+      id: attId,
+      name: f.name,
+      size: f.size || 4820000,
+      type: f.type || 'application/octet-stream',
+      role: 'source',
+      episode: ep,
+      durationSec: 68,
+      previewUrl,
+      extractedText: ''
+    };
+    active.attachments.push(att);
+
+    if (ep !== undefined) recognized.push(`${f.name} → 第 ${ep} 集`);
+    else unrecognized.push(f.name);
+
+    // If text/subtitle/csv/md file, read real content via FileReader
+    if (/\.(txt|md|csv|srt|json)$/i.test(f.name) || (f.type && f.type.startsWith('text/'))) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        att.extractedText = String(reader.result || '').slice(0, 1000);
+        active.outputs = generateTranscribeOutputs(active);
+        render();
+      };
+      reader.readAsText(f);
+    }
+
+    // If video file, read real duration via temporary HTMLVideoElement
+    if (previewUrl) {
+      const v = document.createElement('video');
+      v.preload = 'metadata';
+      v.onloadedmetadata = () => {
+        if (v.duration && isFinite(v.duration)) {
+          att.durationSec = Math.max(1, Math.round(v.duration));
+          active.outputs = generateTranscribeOutputs(active);
+          render();
+        }
+      };
+      v.src = previewUrl;
+    }
+  });
+
+  active.outputs = generateTranscribeOutputs(active);
+
+  const msgParts = [
+    `已成功接收你上传的 ${files.length} 份素材！`,
+    recognized.length ? `• 自动识别集号：${recognized.join('、')}` : '',
+    unrecognized.length ? `• 待补录集号：${unrecognized.join('、')}（文件名未指明唯一集号，请在下方卡片手动填写第几集）` : '• 所有素材集号已识别完毕，请在下方选择「快速模式」或「详细模式」后启动扒剧！'
+  ].filter(Boolean);
+
+  active.transcribePhase = unrecognized.length ? 0 : (active.transcribeMode ? 2 : 1);
+  active.stepIndex = active.transcribePhase;
+  active.messages.push({
+    id: 'm-up-' + Date.now(),
+    role: 'user',
+    text: `📎 已上传 ${files.length} 份素材：${files.map(f => f.name).join('、')}`,
+    time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  });
+  playDirectorTurn({
+    text: msgParts.join('\n'),
+    statusLabel: '总编剧正在看片核对集号与时长…'
+  });
+}
+
+function loadDemoVideoBatch() {
+  finishStreamingImmediately();
+  let active = getActive();
+  if (!active || active.kind !== 'transcribe') {
+    active = state.projects.find(p => p.kind === 'transcribe') || state.projects[0];
+    state.activeId = active.id;
+  }
+  active.attachments = [
+    { id: 'att-t1', name: '第01集.mp4', size: 6420100, role: 'source', episode: 1, durationSec: 72, extractedText: '南希带着五个孩子去商场买新衣，遭到妹妹丽莎百般羞辱。' },
+    { id: 'att-t2', name: '微信视频_20261113_片段1-1.mp4', size: 5912000, role: 'source', episode: undefined, durationSec: 65, extractedText: '凯尔当众亮出 ND 集团掌权人身份，全场震惊。' }
+  ];
+  active.transcribePhase = 0;
+  active.stepIndex = 0;
+  active.outputs = generateTranscribeOutputs(active);
+  active.messages.push({
+    id: 'm-demo-' + Date.now(),
+    role: 'user',
+    text: '🎬 我上传了 2 份分集视频：第01集.mp4、微信视频_20261113_片段1-1.mp4',
+    time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  });
+  playDirectorTurn({
+    text: '收到你的 2 份视频！「第01集.mp4」已自动识别为第 1 集（72秒）；「微信视频_20261113_片段1-1.mp4」文件名含日期与横杠，为避免乱猜，请先在下方把它的集号补上：',
+    statusLabel: '总编剧正在看片核对集号…'
+  });
+}
+
+function downloadTextFile(filename, content) {
+  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 200);
+  showToast(`已导出并下载：${filename}`);
+}
+
+window.addEventListener('resize', () => {
+  // keep right panel user-controlled so chat stays uncluttered
+  render();
+});
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    if (state.modal) { state.modal = ''; render(); }
+    else if (state.left) { state.left = false; render(); }
+    else if (window.innerWidth <= 700 && state.right) { state.right = false; render(); }
+  }
+});
+
+// Global drag and drop support so dropping files anywhere on the webpage works!
+window.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  if (!state.isDragging) {
+    state.isDragging = true;
+    render();
+  }
+});
+window.addEventListener('dragleave', (e) => {
+  if (e.relatedTarget === null) {
+    state.isDragging = false;
+    render();
+  }
+});
+window.addEventListener('drop', (e) => {
+  e.preventDefault();
+  state.isDragging = false;
+  if (e.dataTransfer?.files?.length) {
+    handleFilesSelected(e.dataTransfer.files);
+  } else {
+    render();
+  }
+});
+
+function showToast(msg) {
+  state.toast = msg;
+  render();
+  setTimeout(() => { state.toast = ''; render(); }, 3000);
+}
+
+function getActive() {
+  return state.projects.find(p => p.id === state.activeId) || null;
+}
+
+function triggerFilePicker() {
+  const input = document.getElementById('real-file-input');
+  if (input) input.click();
+}
+
+function render() {
+  document.documentElement.setAttribute('data-theme', state.theme);
+  const active = getActive();
+  const isMobile = window.innerWidth <= 700;
+  const visible = state.projects.filter(p => p.title.toLowerCase().includes(state.query.toLowerCase()));
+  const needsEpisode = active && active.kind === 'transcribe' && active.attachments.some(a => !a.episode);
+  const currentStepIdx = active ? (active.stepIndex || 0) : 0;
+
+  const html = `
+  <div class="studio">
+    ${(state.left || (isMobile && state.right && active)) ? `<div class="scrim" id="scrim-overlay"></div>` : ''}
+    <aside class="sidebar ${state.left ? 'open' : ''}" aria-label="项目导航栏">
+      <button class="brand" id="btn-home"><span class="brand-icon">✒</span><span>总编剧 Pro<small>AI 短剧创作工作台</small></span></button>
+      <button class="new-chat" id="btn-new-chat">＋ 新对话 / 聊新脑洞<span>⌘N</span></button>
+      <label class="search"><span>🔍</span><input id="input-search" aria-label="搜索项目" placeholder="搜索项目" value="${state.query}"/><kbd>⌘K</kbd></label>
+      <div class="section-label"><span>我的项目</span><span>${visible.length}</span></div>
+      <div class="project-list">
+        ${visible.map(p => {
+          const hasUnmapped = p.kind === 'transcribe' && p.attachments.some(a => !a.episode);
+          const dotType = (!p.confirmed || hasUnmapped || p.card) ? 'action' : 'idle';
+          const statusText = hasUnmapped ? '等你拍板 · 补录集号' : !p.confirmed ? '等你拍板 · 选模式开扒' : p.card ? '等你拍板 · 阶段卡' : '已还原可交付';
+          return `<div class="project-item ${active && active.id === p.id ? 'selected' : ''}">
+            <button data-select-id="${p.id}">
+              <span class="status-dot ${dotType}">${dotType === 'action' ? '●' : '○'}</span>
+              <span>${p.title}<small>${labels[p.kind]}<i>·</i>${statusText}</small></span>
+            </button>
+          </div>`;
+        }).join('')}
+      </div>
+      <div class="sidebar-bottom">
+        ${window.location.hash === '#admin' ? `<button id="btn-nav-admin" class="${state.surface === 'admin' ? 'active' : ''}">🛡️ 管理后台 (/admin)</button>` : ''}
+        <button id="btn-help">📖 四类流程创作说明</button>
+        <div class="account">
+          <span class="avatar">${state.user.loggedIn ? state.user.name[0].toUpperCase() : '?'}</span>
+          <div>${state.user.loggedIn ? state.user.name : '未登录'}<small>${state.user.loggedIn ? state.user.role : '点击登录工作台'}</small></div>
+          <button id="btn-settings" aria-label="登录与账号设置">🔑</button>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main ${active && state.right && state.surface !== 'admin' ? 'with-panel' : ''}">
+      <header class="topbar">
+        <div class="breadcrumbs">
+          <button class="mobile-menu" id="btn-mobile-menu" aria-label="展开项目列表">☰</button>
+          <span>${state.surface === 'admin' ? '系统管理后台' : active ? '当前项目' : '总编剧工作台'}</span>
+          ${active && state.surface !== 'admin' ? `<span>›</span><strong>${active.title}</strong>` : `<span class="bot-status-pill">● 在线 · 支持真实上传视频/文档与扒剧闭环</span>`}
+        </div>
+
+        <div class="segmented-control" role="tablist" aria-label="视图切换">
+          <button role="tab" id="tab-surface-chat" class="${state.surface === 'chat' ? 'active' : ''}">💬 总编剧对话 (${active ? labels[active.kind] : '首页'})</button>
+          <button role="tab" id="tab-surface-workspace" class="${state.surface === 'workspace' ? 'active' : ''}">⚡ 实时工作台与输出</button>
+          ${window.location.hash === '#admin' ? `<button role="tab" id="tab-surface-admin" class="${state.surface === 'admin' ? 'active' : ''}">🛡️ 后台 (/admin)</button>` : ''}
+        </div>
+
+        <div class="top-actions">
+          ${window.location.hash === '#admin' ? `<button class="connection" id="btn-open-api-config"><span class="dot ${state.apiConfig.apiKey ? 'green' : ''}"></span> 🔌 ${state.apiConfig.apiKey ? '真模型已连' : '配置 API / 服务器'}</button>` : ''}
+          <button class="connection" id="btn-conn"><span class="dot green"></span> ${active ? '✨ 切换四项弹窗' : '✨ 四项建档弹窗'}</button>
+          <button class="icon-button" id="btn-theme-toggle" aria-label="切换深浅色苹果主题" title="切换浅色/深色模式">${state.theme === 'dark' ? '☀️' : '🌙'}</button>
+          ${active && state.surface !== 'admin' ? `<button class="icon-button" id="btn-toggle-right" aria-label="切换项目面板">☷</button>` : ''}
+        </div>
+      </header>
+
+      ${state.error ? `<div class="error-banner" role="alert"><span>⚠ ${state.error}</span><button id="btn-close-err" aria-label="关闭提示">✕</button></div>` : ''}
+
+      ${state.surface === 'admin' ? `
+        <div class="admin-view" role="region" aria-label="管理后台与API配置中心">
+          <div class="workspace-hud">
+            <div class="hud-header">
+              <div class="hud-title">
+                <span class="project-type">API & SERVER GATEWAY · 真实模型与服务器接入中心 (${state.user.email})</span>
+                <h2>真实 API 接口配置、六大工位模型绑定与服务器契约</h2>
+              </div>
+              <div class="decision-actions" style="margin-top:0">
+                <button class="primary" id="btn-test-api">⚡ 发送真实 API 连通测试</button>
+                <button class="secondary" id="btn-back-to-studio">返回总编剧工作台 ↗</button>
+              </div>
+            </div>
+
+            <div class="preset-chips" style="margin:12px 0">
+              <button type="button" class="preset-chip ${state.apiConfig.mode === 'direct_llm' ? 'active' : ''}" data-api-mode="direct_llm">
+                🔌 模式 1：前端直连大模型 API（免搭服务器 · 填 Key 即可真实调用）
+              </button>
+              <button type="button" class="preset-chip ${state.apiConfig.mode === 'custom_backend' ? 'active' : ''}" data-api-mode="custom_backend">
+                🖥️ 模式 2：对接自建后端服务器（Node.js / Python 生产服）
+              </button>
+              <button type="button" class="preset-chip ${state.apiConfig.mode === 'sandbox' ? 'active' : ''}" data-api-mode="sandbox">
+                🧪 模式 3：离线演示沙盒（无 Key 预演交互流）
+              </button>
+            </div>
+
+            ${state.apiConfig.mode === 'direct_llm' ? `
+              <div class="card-fields" style="grid-template-columns:repeat(2,minmax(0,1fr));gap:12px">
+                <label>1. OpenAI 兼容接口地址 (API Base URL · 必须 https://)
+                  <div class="preset-chips" style="margin-bottom:4px">
+                    <button type="button" class="preset-chip" data-preset-url="https://api.openai.com/v1" data-preset-model="gpt-4o">OpenAI 官方</button>
+                    <button type="button" class="preset-chip" data-preset-url="https://api.deepseek.com/v1" data-preset-model="deepseek-chat">DeepSeek 官方</button>
+                    <button type="button" class="preset-chip" data-preset-url="https://openrouter.ai/api/v1" data-preset-model="anthropic/claude-3.5-sonnet">OpenRouter (支持Claude/Gemini)</button>
+                  </div>
+                  <input id="input-api-baseurl" value="${state.apiConfig.baseUrl}" placeholder="https://api.openai.com/v1" />
+                </label>
+                <label>2. API 密钥 (API Key · 仅存于你本地浏览器，绝不上传 GitHub)
+                  <input id="input-api-key" type="password" value="${state.apiConfig.apiKey}" placeholder="填入 sk-... 即可激活真实大模型对话与扒剧还原" />
+                </label>
+                <label>3. 总编剧 & 原稿分析主控模型名
+                  <input id="input-director-model" value="${state.apiConfig.directorModel}" placeholder="如 gpt-4o / deepseek-chat / claude-3-5-sonnet" />
+                </label>
+                <label>4. 扒剧小能手（多模态视觉/字幕还原）模型名
+                  <input id="input-vision-model" value="${state.apiConfig.visionModel}" placeholder="如 gpt-4o / gemini-2.5-pro" />
+                </label>
+              </div>
+            ` : state.apiConfig.mode === 'custom_backend' ? `
+              <div class="card-fields" style="grid-template-columns:repeat(2,minmax(0,1fr));gap:12px">
+                <label>1. 生产后端服务器接口地址 (STUDIO_BACKEND_URL)
+                  <input id="input-backend-url" value="${state.apiConfig.backendUrl}" placeholder="https://your-server.com/api/studio" />
+                </label>
+                <label>2. 服务器鉴权令牌 (STUDIO_BACKEND_TOKEN · 可选)
+                  <input id="input-backend-token" type="password" value="${state.apiConfig.backendToken}" placeholder="Bearer Token..." />
+                </label>
+              </div>
+            ` : `
+              <p class="gate-hint" style="margin-top:8px">当前为离线交互沙盒模式。切换到「模式 1：前端直连大模型 API」并填入你的 API Key，即可在网页里直接跑真实 AI 对话与剧本还原。</p>
+            `}
+
+            <div class="decision-actions" style="margin-top:12px">
+              <button class="primary" id="btn-save-api">💾 保存 API 配置并立即生效</button>
+              <button class="secondary" id="btn-test-api-2">⚡ 测试当前 API 连通性</button>
+            </div>
+
+            ${state.apiConfig.testStatus ? `
+              <div class="suggestion-box" style="margin-top:12px">
+                <span class="suggestion-title">${state.apiConfig.testStatus}</span>
+                <div style="font-size:13px;white-space:pre-wrap;color:var(--ink)">${state.apiConfig.testResult}</div>
+              </div>
+            ` : ''}
+          </div>
+
+          <div class="workspace-hud">
+            <h3 style="margin:0 0 12px">六大 AI 编剧工位底层路由与标准接口契约（规定好的 API 接口规范）</h3>
+            <table class="admin-table">
+              <thead>
+                <tr><th>业务工位角色</th><th>绑定模型 / 引擎</th><th>标准 API 接口路径</th><th>输入参数 (Request JSON)</th><th>输出契约 (Response JSON)</th></tr>
+              </thead>
+              <tbody>
+                <tr><td><strong>总编剧 Agent</strong></td><td><code>${state.apiConfig.directorModel}</code></td><td><code>POST /api/studio</code> (<code>action: "chat" | "confirm"</code>)</td><td><code>{ id, kind, text, attachments }</code></td><td><code>{ reply, suggestions[], nextCard, stage }</code></td></tr>
+                <tr><td><strong>扒剧小能手</strong></td><td><code>${state.apiConfig.visionModel}</code></td><td><code>POST /api/studio</code> (<code>action: "transcribe"</code>)</td><td><code>{ id, mode: "fast"|"detailed", castLock, files[] }</code></td><td><code>{ recap, synopsis, simplifiedDoc, traditionalDoc }</code></td></tr>
+                <tr><td><strong>原稿分析师</strong></td><td><code>${state.apiConfig.directorModel}</code></td><td><code>POST /api/studio</code> (<code>action: "analyze"</code>)</td><td><code>{ id, kind, sourceFiles[], lockedEpisodes }</code></td><td><code>{ fiveQuestions, eventMap[], emotionCurve[], gates[] }</code></td></tr>
+                <tr><td><strong>分集编剧 & 原创主控</strong></td><td><code>${state.apiConfig.writerModel}</code></td><td><code>POST /api/studio</code> (<code>action: "write_batch"</code>)</td><td><code>{ id, startEp, endEp, stopsReleased }</code></td><td><code>{ outlineBatch, scriptEpisodes[], lockedIntact: true }</code></td></tr>
+                <tr><td><strong>审稿官 & 台词精修师</strong></td><td><code>${state.apiConfig.writerModel}</code></td><td><code>POST /api/studio</code> (<code>action: "polish"</code>)</td><td><code>{ id, episode, register: "US_Native" }</code></td><td><code>{ diffReport, polishedScript, exportZipUrl }</code></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ` : state.surface === 'workspace' && active ? `
+        <div class="workspace-view" role="region" aria-label="实时工作页面与输出">
+          <div class="workspace-hud">
+            <div class="hud-header">
+              <div class="hud-title">
+                <div class="project-meta-row">
+                  <span class="project-type">${labels[active.kind]} · 专属工作台</span>
+                  <span class="stop-badge">● 当前阶段：${timelineByKind[active.kind][currentStepIdx]}（步骤 ${currentStepIdx + 1}/6）</span>
+                  ${active.kind === 'transcribe' && active.transcribeMode ? `<span class="lock-badge">🎬 模式：${active.transcribeMode === 'detailed' ? '详细模式（逐帧）' : '快速模式（整集+抽查）'}</span>` : ''}
+                </div>
+                <h2>${active.title} · 实时工作状态与已生成输出</h2>
+              </div>
+              <div class="decision-actions">
+                <button class="secondary" id="btn-ws-upload">📎 继续上传视频/素材</button>
+                <button class="primary" id="btn-advance-step">⚡ 推进下一阶段并刷新输出</button>
+                <button class="secondary" id="btn-switch-to-chat">💬 回到对话流</button>
+              </div>
+            </div>
+
+            <div class="agent-pipeline">
+              ${agentsByKind[active.kind].map((ag, idx) => {
+                const statusClass = idx < currentStepIdx ? 'done' : idx === currentStepIdx ? 'active' : '';
+                const badge = idx < currentStepIdx ? '✓ 已完成' : idx === currentStepIdx ? '◐ 正在工作' : '○ 待命';
+                return `<div class="agent-node ${statusClass}">
+                  <div class="agent-node-head"><span>工位 0${idx + 1}</span><span>${badge}</span></div>
+                  <strong>${ag.role}</strong>
+                  <small>${ag.task}</small>
+                </div>`;
+              }).join('')}
+            </div>
+          </div>
+
+          <div class="workspace-grid">
+            <div>
+              <div class="decision" style="margin:0">
+                <div class="decision-title"><span>🎬</span><div>${active.kind === 'transcribe' ? '扒剧控制台 · 模式、人名锁定与人工补写校准' : '当前工作节点拍板与总编剧建议'}<small>操作后右侧文档将实时同步重新生成</small></div></div>
+                <div class="recap-grid">
+                  <div>当前阶段<strong>${timelineByKind[active.kind][currentStepIdx]}</strong></div>
+                  <div>已载入素材<strong>${active.attachments.length} 份文件</strong></div>
+                  <div>集号核对<strong>${needsEpisode ? '⚠ 有待补录集号' : '✓ 全部集号已对齐'}</strong></div>
+                </div>
+
+                ${active.kind === 'transcribe' ? (() => {
+                  const tPhase = needsEpisode ? 0 : (active.transcribePhase ?? (active.transcribeMode ? 3 : 1));
+                  const wsSteps = ['1. 集号核对', '2. 扒剧模式', '3. 人名锁定', '4. 补写校准', '5. 交付与转入'];
+                  return `
+                    <div class="step-progress-dots" style="margin-top:12px">
+                      ${wsSteps.map((st, idx) => `<span class="step-dot ${idx < tPhase ? 'done' : idx === tPhase ? 'active' : ''}" title="${st}"></span>`).join('')}
+                      <span>当前第 ${tPhase + 1} / 5 项 · <strong>${wsSteps[tPhase]}</strong>（一项项顺序确认）</span>
+                    </div>
+                    <div class="completed-steps-bar">
+                      ${tPhase > 0 ? `<button type="button" class="completed-step-pill" data-jump-phase="0"><span class="pill-check">✓</span><span>第1项：${active.attachments.length}份素材集号已对齐</span><span class="pill-edit">修改</span></button>` : ''}
+                      ${tPhase > 1 ? `<button type="button" class="completed-step-pill" data-jump-phase="1"><span class="pill-check">✓</span><span>第2项：${active.transcribeMode === 'detailed' ? '详细模式（逐帧）' : '快速模式（整集）'}</span><span class="pill-edit">修改</span></button>` : ''}
+                      ${tPhase > 2 ? `<button type="button" class="completed-step-pill" data-jump-phase="2"><span class="pill-check">✓</span><span>第3项：人名表已锁定</span><span class="pill-edit">修改</span></button>` : ''}
+                      ${tPhase > 3 ? `<button type="button" class="completed-step-pill" data-jump-phase="3"><span class="pill-check">✓</span><span>第4项：【待人工補寫】已校准</span><span class="pill-edit">修改</span></button>` : ''}
+                    </div>
+                    <div class="card-fields">
+                      ${tPhase === 0 ? `
+                        <label>当前项（1/5）：请先核对或补录素材集号</label>
+                        ${active.attachments.map(a => {
+                          const isEditing = !a.episode || state.editingEpId === a.id;
+                          const inputVal = state.episodeInputs[a.id] !== undefined ? state.episodeInputs[a.id] : (a.episode || '');
+                          return `<div class="episode-row">
+                            <div><strong>🎬 ${a.name}</strong><small style="display:block;color:var(--muted)">${formatBytes(a.size)}</small></div>
+                            ${isEditing ? `<input id="ep-${a.id}" type="number" min="1" max="${active.total || 300}" value="${inputVal}" data-ep-input="${a.id}" placeholder="集号" /><button class="primary" id="btn-save-ep" data-att-id="${a.id}">保存集号</button>` : `<span class="stop-badge">第 ${a.episode} 集</span><button class="secondary" data-edit-ep="${a.id}">修改</button>`}
+                          </div>`;
+                        }).join('')}
+                        <div class="decision-actions">
+                          <button class="primary" id="btn-next-phase-1" ${needsEpisode ? 'disabled' : ''}>★ 集号核对完毕，进入下一项（选扒剧模式） →</button>
+                        </div>
+                      ` : tPhase === 1 ? `
+                        <label>当前项（2/5）：请选择扒剧还原模式（每部剧必选，无默认）
+                          <select id="ws-select-mode">
+                            <option value="" ${!active.transcribeMode ? 'selected' : ''}>请选择扒剧模式（未选时无法进入下一项）</option>
+                            <option value="fast" ${active.transcribeMode === 'fast' ? 'selected' : ''}>快速模式（按整集看写并抽查几集 · 速度快）</option>
+                            <option value="detailed" ${active.transcribeMode === 'detailed' ? 'selected' : ''}>详细模式（按每秒一帧逐格看完再写 · 精度高）</option>
+                          </select>
+                        </label>
+                        <div class="decision-actions">
+                          <button class="primary" id="btn-next-phase-2" ${!active.transcribeMode ? 'disabled' : ''}>★ 确认模式，进入下一项（人名表锁定） →</button>
+                        </div>
+                      ` : tPhase === 2 ? `
+                        <label>当前项（3/5）：锁定全剧主角标准译名（防出现“金发男/新娘”等外号）
+                          <input id="ws-input-cast" value="${active.castLock || ''}" placeholder="男主=Kale/凯尔，女主=Nancy/南希" />
+                        </label>
+                        <div class="decision-actions">
+                          <button class="primary" id="btn-next-phase-3">★ 锁定人名并启动分集扒剧 →</button>
+                        </div>
+                      ` : tPhase === 3 ? `
+                        <label>当前项（4/5）：【待人工補寫】片段实时填空校准（同步写入右侧繁简剧本）
+                          <input id="ws-input-gap" value="${active.manualGapText || ''}" placeholder="输入模糊镜头或特写道具补写内容…" />
+                        </label>
+                        <div class="decision-actions">
+                          <button class="primary" id="btn-next-phase-4">★ 校准完毕，进入最后一项（交付与转入） →</button>
+                        </div>
+                      ` : `
+                        <label>当前项（5/5）：繁简双版 Word 交付与后续迭代分流</label>
+                        <div class="decision-actions">
+                          <button class="primary" id="btn-ws-export-card">📦 下载繁简双版 Word 交付包</button>
+                          <button class="secondary" id="btn-retranscribe-ep">🔄 重扒第 1 集（切换精度）</button>
+                        </div>
+                        <div class="transfer-bar" style="margin-top:10px">
+                          <span>交付后可选转入改编（不自动跳转，由你主动选择）：</span>
+                          <div>
+                            <button class="secondary" id="btn-ws-trans-foreign">🌐 转入「国外迭代」</button>
+                            <button class="secondary" id="btn-ws-trans-domestic">🧭 转入「国内迭代」</button>
+                          </div>
+                        </div>
+                      `}
+                    </div>
+                  `;
+                })() : `
+                  <div class="decision-actions">
+                    <button class="primary" id="btn-ws-confirm">★ 应用设置并推进下一阶段 ↗</button>
+                    <button class="secondary" id="btn-ws-open-modal">✨ 切换四项流程弹窗</button>
+                  </div>
+                `}
+              </div>
+            </div>
+
+            <div class="output-viewer">
+              <div class="hud-header" style="margin-bottom:10px">
+                <strong>📄 已生成阶段输出（支持实时查看与真实文件下载）</strong>
+                <button class="primary" id="btn-ws-export" style="padding:6px 14px;min-height:32px;font-size:11.5px">⬇ 下载当前扒剧/剧本交付包 (.md)</button>
+              </div>
+              <div class="output-tabs">
+                <button class="${(active.activeOutputTab || 'recap') === 'recap' ? 'active' : ''}" data-out-tab="recap">${active.kind === 'transcribe' ? '1. 素材与集号清单' : '1. 复述与确认单'}</button>
+                <button class="${active.activeOutputTab === 'analysis' ? 'active' : ''}" data-out-tab="analysis">${active.kind === 'transcribe' ? '2. 故事梗概与人物小传' : '2. 原稿分析/四层推理'}</button>
+                <button class="${active.activeOutputTab === 'outline' ? 'active' : ''}" data-out-tab="outline">${active.kind === 'transcribe' ? '3. 简体全集还原剧本' : '3. 分集细纲'}</button>
+                <button class="${active.activeOutputTab === 'script' ? 'active' : ''}" data-out-tab="script">${active.kind === 'transcribe' ? '4. 繁体单集还原稿' : '4. 双语正文样稿'}</button>
+              </div>
+              <div class="output-document">${(active.outputs && active.outputs[active.activeOutputTab || 'recap']) || '正在生成输出…'}</div>
+            </div>
+          </div>
+        </div>
+      ` : !active ? `
+        <div class="conversation">
+          <div class="message director">
+            <span class="director-avatar">✒</span>
+            <div class="message-body">
+              <div class="message-meta">总编剧<span>随时接稿 · 拆解看点与出点子</span></div>
+              <div class="message-text">今天想聊哪部戏？你可以直接把原稿、前 N 集锁定稿或视频拖进来，或者直接在下方打字跟我聊你的想法。\n我会先帮你拆解看点、提几条改编建议、复述核对你的要求；咱们聊准了，再通过卡片或弹窗选四项流程进入专属工作页面！</div>
+
+              <div class="drop-zone-banner ${state.isDragging ? 'dragging' : ''}">
+                <div class="drop-zone-info">
+                  <strong>🎬 支持真实上传本地视频 (.mp4/.mov)、剧本 (.docx/.txt/.md) 或导出表 (.xlsx/.csv)</strong>
+                  <small>可直接把文件拖入网页任意位置，或点击右侧按钮选择本地文件 / 一键载入测试视频包</small>
+                </div>
+                <div class="decision-actions">
+                  <button class="primary" id="btn-hero-upload">📎 选择本地文件上传</button>
+                  <button class="secondary" id="btn-hero-demo">🎬 一键载入 3 集测试视频包</button>
+                </div>
+              </div>
+
+              <div class="decision inline-bot-card" role="region" aria-label="四类创作流程与快捷起盘">
+                <div class="decision-title"><span>✨</span><div>四项流程分流卡（可先打字聊拿建议，也可点选卡片弹窗进入工作页面）<small>点击任意卡片将弹出 Apple 风格四项建档卡，确认后直达「实时工作状态与输出页面」</small></div></div>
+                <div class="flow-grid" role="group" aria-label="四类创作流程">
+                  ${flows.map(f => `
+                    <button class="flow-card ${state.kind === f.kind ? 'chosen' : ''}" data-flow="${f.kind}" aria-pressed="${state.kind === f.kind}">
+                      <div class="flow-head"><span class="flow-icon">${f.icon}</span><span class="selection-circle">${state.kind === f.kind ? '✓' : ''}</span></div>
+                      <h3>${f.title}</h3>
+                      <p>${f.description}</p>
+                      <div class="flow-foot"><span>${f.tag}</span><span>↗</span></div>
+                    </button>
+                  `).join('')}
+                </div>
+                <div class="suggestions">
+                  <span>或者点一下示例，先让总编剧给你出几条专业建议：</span>
+                  <button data-sug-kind="transcribe" data-sug-text="全剧 45 集，我准备上传分集视频跑扒剧还原，请帮我核对集号并让我选扒剧模式。">「我要跑扒剧流程，上传视频还原繁简双版剧本」 ↗</button>
+                  <button data-sug-kind="foreign" data-sug-text="全剧 62 集，前 10 集已锁定（一字不动），本轮从第 11 集续写到第 62 集，反派第 15 集下线，帮我复述并给点建议。">「前 10 集已锁定，帮我续写到 62 集，给点建议」 ↗</button>
+                  <button data-sug-kind="domestic" data-sug-text="全剧 50 集，把这部国内女频逆袭短剧改成面向北美受众的版本，原稿有逼婚要彩礼桥段，帮我做四级诊断并提替换建议。">「把这部国内短剧改北美本土化，怎么过三道门？」 ↗</button>
+                </div>
+                <div class="decision-actions" style="margin-top:12px">
+                  <button class="primary" id="btn-open-create-modal">✨ 弹出四项流程卡片建档</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          ${state.preChat.map((turn, idx) => `
+            <div class="message ${turn.role === 'user' ? 'user' : 'director'}">
+              ${turn.role !== 'user' ? `<span class="director-avatar">✒</span>` : ''}
+              <div class="message-body">
+                ${turn.role !== 'user' ? `<div class="message-meta">总编剧<span>${turn.time} · 复述与参谋建议</span></div>` : ''}
+                <div class="message-text">${turn.text}</div>
+                ${turn.suggestions ? `
+                  <div class="suggestion-box">
+                    <span class="suggestion-title">✦ 总编剧建议（点击即可采纳进确认单，也可继续在下方打字聊）：</span>
+                    <div class="preset-chips">
+                      ${turn.suggestions.map(s => `<button type="button" class="preset-chip" data-adopt="${s}">＋ 采纳：${s}</button>`).join('')}
+                    </div>
+                  </div>
+                ` : ''}
+                ${turn.role === 'director' && idx === state.preChat.length - 1 ? `
+                  <div class="decision inline-bot-card" role="region" aria-label="确认四项分流并建档">
+                    <div class="decision-title"><span>✓</span><div>拍板四项分流并进入工作页面（★ 推荐项已排第一）<small>确认后将建立项目并打开「实时工作状态与输出页面」</small></div></div>
+                    <div class="preset-chips" style="margin-top:10px">
+                      ${['transcribe', 'foreign', 'domestic', 'original'].map(k => {
+                        const isRec = (state.kind || turn.recommendedKind) === k;
+                        return `<button type="button" class="preset-chip ${isRec ? 'active' : ''}" data-flow="${k}">${isRec ? '★ ' : ''}${labels[k]}</button>`;
+                      }).join('')}
+                    </div>
+                    <div class="card-fields" style="margin:10px 0">
+                      <label>项目暂定名称（可直接修改）
+                        <input id="input-inline-title" value="${state.title}" placeholder="输入项目名称"/>
+                      </label>
+                    </div>
+                    <div class="decision-actions">
+                      <button class="primary" id="btn-inline-create">★ 选定「${labels[state.kind || turn.recommendedKind || 'transcribe']}」并进入工作页面 ↗</button>
+                      <button class="secondary" id="btn-open-create-modal-2">打开四项卡片弹窗选择</button>
+                    </div>
+                  </div>
+                ` : ''}
+                ${turn.role === 'user' ? `<div class="user-time">${turn.time} ✓✓</div>` : ''}
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      ` : `
+        <div class="conversation minimal-chat">
+          <div class="minimal-top-strip">
+            <div>
+              <strong>${labels[active.kind]}</strong> · <span>${active.title}</span>
+              ${active.lockedEpisodes ? `<span class="lock-badge" style="margin-left:6px">🔒 锁前 ${active.lockedEpisodes} 集</span>` : ''}
+            </div>
+            <div class="minimal-top-actions">
+              <button class="secondary" id="btn-top-upload">📎 上传视频/表格</button>
+              <button class="secondary" id="btn-top-demo">🎬 载入3集测试视频</button>
+              <button class="primary" id="btn-goto-workspace">⚡ 打开实时工作页面与输出 ↗</button>
+            </div>
+          </div>
+
+          ${active.messages.map(m => {
+            const isStreaming = state.streamingMsgId === m.id;
+            return `
+              <div class="message ${m.role === 'user' ? 'user' : 'director'}">
+                ${m.role !== 'user' ? `<span class="director-avatar">✒</span>` : ''}
+                <div class="message-body">
+                  ${m.role !== 'user' ? `<div class="message-meta">总编剧<span>${isStreaming ? '正在打字输出…（点击可瞬间显示全文）' : m.time}</span></div>` : ''}
+                  <div class="message-text" data-msg-id="${m.id}">${m.text}${isStreaming ? `<span class="streaming-caret"></span>` : ''}</div>
+                  ${!isStreaming && m.suggestions && m.suggestions.length ? `
+                    <div class="suggestion-box">
+                      <span class="suggestion-title">✦ 可点选采纳建议：</span>
+                      <div class="preset-chips">
+                        ${m.suggestions.map(s => `<button type="button" class="preset-chip" data-adopt="${s}">＋ ${s}</button>`).join('')}
+                      </div>
+                    </div>
+                  ` : ''}
+                  ${m.role === 'user' ? `<div class="user-time">${m.time} ✓✓</div>` : ''}
+                </div>
+              </div>
+            `;
+          }).join('')}
+
+          ${state.isTyping ? `
+            <div class="message director" id="typing-indicator-row" role="status" aria-live="polite">
+              <span class="director-avatar">✒</span>
+              <div class="message-body">
+                <div class="message-meta">总编剧<span>实时响应中</span></div>
+                <div class="typing-bubble" id="btn-skip-typing" title="点击立即显示">
+                  <span class="typing-dots"><i></i><i></i><i></i></span>
+                  <span class="typing-status-label">${state.typingStatus || '总编剧正在输入…'}</span>
+                </div>
+              </div>
+            </div>
+          ` : ''}
+
+          ${(!state.isTyping && state.cardReady) ? (active.kind === 'transcribe' ? (() => {
+            const hasFiles = active.attachments && active.attachments.length > 0;
+            const tPhase = !hasFiles ? -1 : (needsEpisode ? 0 : (active.transcribePhase < 0 ? 0 : (active.transcribePhase ?? 0)));
+            const stepTitles = [
+              '第 1 项：核对与补录素材集号',
+              '第 2 项：选择扒剧还原模式（无默认）',
+              '第 3 项：锁定主角人名表并开始扒剧',
+              '第 4 项：分集还原进度与【待人工補寫】校准',
+              '第 5 项：下载繁简双版 Word 交付包 / 转入迭代'
+            ];
+            return `
+              <div class="step-wizard-stack" role="region" aria-label="扒剧分步向导（一项项进行）">
+                ${tPhase >= 0 ? `
+                  <div class="completed-steps-bar">
+                    <button type="button" class="completed-step-pill" id="btn-banner-upload"><span class="pill-check">✓</span><span>已上传 ${active.attachments.length} 份视频</span><span class="pill-edit">＋继续加视频</span></button>
+                    ${tPhase >= 1 ? `<button type="button" class="completed-step-pill" data-jump-phase="0"><span class="pill-check">✓</span><span>1. 集号已核对（${active.attachments.map(a => `第${a.episode}集`).join('、')}）</span><span class="pill-edit">重改</span></button>` : ''}
+                    ${tPhase >= 2 ? `<button type="button" class="completed-step-pill" data-jump-phase="1"><span class="pill-check">✓</span><span>2. ${active.transcribeMode === 'detailed' ? '详细模式（逐帧）' : '快速模式（整集）'}</span><span class="pill-edit">重改</span></button>` : ''}
+                    ${tPhase >= 3 ? `<button type="button" class="completed-step-pill" data-jump-phase="2"><span class="pill-check">✓</span><span>3. 人名表已锁定</span><span class="pill-edit">重改</span></button>` : ''}
+                    ${tPhase >= 4 ? `<button type="button" class="completed-step-pill" data-jump-phase="3"><span class="pill-check">✓</span><span>4. 待补写已校准</span><span class="pill-edit">重改</span></button>` : ''}
+                  </div>
+                ` : ''}
+
+                ${tPhase === -1 ? `
+                  <div class="decision card-enter" role="region" aria-label="上传分集视频或导出表">
+                    <div class="decision-title">
+                      <span>📎</span>
+                      <div>
+                        当前项：请上传分集视频 (.mp4/.mov) 或导出表 (.xlsx/.csv/.srt)
+                        <small>支持直接把文件拖进页面，或点下方按钮选择本地文件；想直接看效果可点「一键载入测试视频包」</small>
+                      </div>
+                    </div>
+                    <div class="decision-actions" style="margin-top:14px">
+                      <button class="primary" id="btn-banner-upload">📎 点击选择本地文件上传</button>
+                      <button class="secondary" id="btn-banner-demo">🎬 一键载入 3 集测试视频包</button>
+                    </div>
+                  </div>
+                ` : tPhase === 0 ? `
+                  <div class="decision card-enter" role="region" aria-label="第1项：补录或核对素材集号">
+                    <div class="decision-title">
+                      <span>1</span>
+                      <div>
+                        第 1 项（共 5 项）：核对与补录素材集号
+                        <small>${needsEpisode ? '⚠ 请先填写未识别视频是第几集并点「保存集号」，保存后自动解锁下一项' : '✓ 所有素材集号已对齐！请点击下方按钮进入下一项'}</small>
+                      </div>
+                    </div>
+                    <div class="card-fields">
+                      ${active.attachments.map(a => {
+                        const isEditing = !a.episode || state.editingEpId === a.id;
+                        const inputVal = state.episodeInputs[a.id] !== undefined ? state.episodeInputs[a.id] : (a.episode || state.episodeInput || '');
+                        return `
+                          <div class="episode-row" key="${a.id}">
+                            <div>
+                              <strong>🎬 ${a.name}</strong>
+                              <small style="display:block;color:var(--muted);margin-top:2px">${formatBytes(a.size)} · 时长 ${a.durationSec || 68} 秒 ${a.episode ? `· ✅ 第 ${a.episode} 集` : '· ⚠ 待补集号'}</small>
+                            </div>
+                            ${isEditing ? `
+                              <input id="ep-${a.id}" type="number" min="1" max="${active.total || 300}" value="${inputVal}" data-ep-input="${a.id}" placeholder="输入第几集" />
+                              <button class="primary" id="btn-save-ep" data-att-id="${a.id}">保存集号</button>
+                            ` : `
+                              <span class="stop-badge" style="justify-self:start">第 ${a.episode} 集</span>
+                              <button class="secondary" data-edit-ep="${a.id}">修改集号</button>
+                            `}
+                          </div>
+                        `;
+                      }).join('')}
+                    </div>
+                    <div class="decision-actions">
+                      <button class="primary" id="btn-next-phase-1" ${needsEpisode ? 'disabled' : ''}>
+                        ★ 集号全部核对无误，进入下一项（选择扒剧模式） →
+                      </button>
+                      <button class="secondary" id="btn-supplement">补充要求</button>
+                    </div>
+                  </div>
+                ` : tPhase === 1 ? `
+                  <div class="decision card-enter" role="region" aria-label="第2项：选择扒剧模式">
+                    <div class="decision-title">
+                      <span>2</span>
+                      <div>
+                        第 2 项（共 5 项）：选择扒剧还原模式（每部剧必选，无默认项）
+                        <small>只选这一项，选好后进入下一项（主角人名表锁定）</small>
+                      </div>
+                    </div>
+                    <div class="preset-chips" style="margin-top:12px">
+                      <button type="button" class="preset-chip ${active.transcribeMode === 'fast' ? 'active' : ''}" data-pick-mode="fast">
+                        ⚡ 快速模式（按整集看写并抽查几集 · 速度快）
+                      </button>
+                      <button type="button" class="preset-chip ${active.transcribeMode === 'detailed' ? 'active' : ''}" data-pick-mode="detailed">
+                        🔍 详细模式（按每秒一帧逐格看完再写 · 精度高）
+                      </button>
+                    </div>
+                    <div class="decision-actions">
+                      <button class="primary" id="btn-next-phase-2" ${!active.transcribeMode ? 'disabled' : ''}>
+                        ★ 确认「${active.transcribeMode === 'detailed' ? '详细模式' : active.transcribeMode === 'fast' ? '快速模式' : '扒剧模式'}」，进入下一项（锁定人名表） →
+                      </button>
+                      <button class="secondary" data-jump-phase="0">← 返回上一项</button>
+                    </div>
+                  </div>
+                ` : tPhase === 2 ? `
+                  <div class="decision card-enter" role="region" aria-label="第3项：锁定人名表并开始扒剧">
+                    <div class="decision-title">
+                      <span>3</span>
+                      <div>
+                        第 3 项（共 5 项）：锁定全剧主角标准人名表并启动扒剧
+                        <small>统一锁死男女主与反派标准译名，防止剧本里出现“金发男/新娘”等临时外号</small>
+                      </div>
+                    </div>
+                    <div class="card-fields">
+                      <label>全剧主角标准人名表（可直接修改或直接确认）
+                        <input id="chat-input-cast" value="${active.castLock || ''}" placeholder="如：男主=凯尔（Kale），女主=南希（Nancy）" />
+                      </label>
+                    </div>
+                    <div class="decision-actions">
+                      <button class="primary" id="btn-next-phase-3">
+                        ★ 确认人名表与清单，立即启动扒剧还原 →
+                      </button>
+                      <button class="secondary" data-jump-phase="1">← 返回上一项</button>
+                    </div>
+                  </div>
+                ` : tPhase === 3 ? `
+                  <div class="decision card-enter" role="region" aria-label="第4项：分集还原与待人工补写校准">
+                    <div class="decision-title">
+                      <span>4</span>
+                      <div>
+                        第 4 项（共 5 项）：【待人工補寫】镜头填空校准
+                        <small>已完成 ${active.attachments.length}/${active.attachments.length} 集转写；请核对第 2 集 00:41 模糊特写补写文字</small>
+                      </div>
+                    </div>
+                    <div class="card-fields">
+                      <label>第 2 集 00:41 特写镜头补写内容
+                        <input id="chat-input-gap" value="${active.manualGapText || ''}" placeholder="输入模糊镜头或特写道具补写内容" />
+                      </label>
+                    </div>
+                    <div class="decision-actions">
+                      <button class="primary" id="btn-next-phase-4">
+                        ★ 补写校准完成，生成繁简双版 Word 交付包 →
+                      </button>
+                      <button class="secondary" id="btn-goto-workspace-inline">⚡ 先去工作页面看实时剧本</button>
+                    </div>
+                  </div>
+                ` : `
+                  <div class="decision card-enter" role="region" aria-label="第5项：扒剧交付卡与可选转迭代">
+                    <div class="decision-title">
+                      <span>5</span>
+                      <div>
+                        第 5 项（共 5 项）：繁简双版 Word 交付包已生成
+                        <small>含繁体中文单集 Word + 简体中文全集 Word（带故事梗概与人物小传）</small>
+                      </div>
+                    </div>
+                    <div class="delivery-block" style="margin-top:12px">
+                      <button type="button" class="download-card" id="btn-export-doc">
+                        <span>📦</span>
+                        <div>
+                          <strong>${active.title} · 扒剧交付包（繁体单集 Word + 简体全集 Word 含梗概小传）</strong>
+                          <small>点击立即下载到本地电脑 · 已包含全部 ${active.attachments.length} 集还原内容与人物小传</small>
+                        </div>
+                        <span style="margin-left:auto;color:var(--accent);font-weight:700">⬇ 点击下载</span>
+                      </button>
+                      <div class="decision-actions" style="margin-top:8px">
+                        <button class="primary" id="btn-confirm-build">⚡ 打开实时工作页面查看繁简全文 ↗</button>
+                        <button class="secondary" id="btn-retranscribe-ep">🔄 指定第 1 集重扒（切换精度）</button>
+                      </div>
+                      <div class="transfer-bar">
+                        <span>交付后可选（扒剧绝不自动进迭代，仅在你主动点击时转入）：</span>
+                        <div>
+                          <button class="secondary" id="btn-trans-foreign">🌐 转入「国外迭代国外」</button>
+                          <button class="secondary" id="btn-trans-domestic">🧭 转入「国内迭代国外」</button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                `}
+              </div>
+            `;
+          })() : !active.confirmed ? `
+            <div class="decision card-enter" role="region" aria-label="复述确认与四项切换">
+              <div class="decision-title"><span>✓</span><div>第 1 项：总编剧复述确认卡<small>确认后逐项展开后续卡点</small></div></div>
+              <div class="recap-grid">
+                <div>创作流程<strong>${labels[active.kind]}</strong></div>
+                <div>全剧集数<strong>${active.total === null ? (active.kind === 'original' ? '停点 A 拍板' : '待确认') : active.total + ' 集'}</strong></div>
+                <div>锁定与素材<strong>${active.lockedEpisodes ? `锁前 ${active.lockedEpisodes} 集 · ${active.attachments.length} 份` : `${active.attachments.length} 份素材`}</strong></div>
+              </div>
+              <div class="decision-actions">
+                <button class="primary" id="btn-confirm-build">★ 对，确认立项并进入下一项 ↗</button>
+                <button class="secondary" id="btn-supplement">不对，我补充/聊建议</button>
+              </div>
+            </div>
+          ` : active.card ? (() => {
+            const fields = active.card.fields || [];
+            const subIdx = Math.min(state.cardSubStep || 0, Math.max(0, fields.length - 1));
+            const curField = fields[subIdx];
+            const fieldLabels = {
+              understood: '简化主线单 · 看得懂关（必过门禁）',
+              direction: '故事方向拍板',
+              opening: '开场方案（A/B/C）',
+              engine: '破局引擎',
+              total: '全剧总集数确认',
+              channel: '男女频受众定位',
+              worldview: '第一道门：出海世界观落地',
+              persona: '第二道门：男女主人设本土化',
+              replacements: '第三道门：水土不服桥段替换',
+              episodeReview: '单集剧本逐集审阅'
+            };
+            return `
+              <div class="step-wizard-stack" role="region" aria-label="${active.card.title}">
+                ${subIdx > 0 ? `
+                  <div class="completed-steps-bar">
+                    ${fields.slice(0, subIdx).map((fl, i) => `<button type="button" class="completed-step-pill" data-card-substep="${i}"><span class="pill-check">✓</span><span>已确认：${fieldLabels[fl] || fl}</span><span class="pill-edit">修改</span></button>`).join('')}
+                  </div>
+                ` : ''}
+                <div class="decision card-enter">
+                  <div class="decision-title"><span>${subIdx + 1}</span><div>${active.card.title} · ${fieldLabels[curField] || '当前确认项'}<small>★ 为推荐项（排首位），每次只确认一项</small></div></div>
+                  <div class="card-fields">
+                    ${curField === 'understood' ? `
+                      <label>简化主线单 · 看得懂关（必过门禁）
+                        <select id="select-understood">
+                          <option value="" ${state.understoodVal === '' ? 'selected' : ''}>请核对简化主线单是否看懂（未选时禁止确认通过）</option>
+                          <option value="yes" ${state.understoodVal === 'yes' ? 'selected' : ''}>★ 我看懂了，通过（开放进入梗概与人物）</option>
+                          <option value="no" ${state.understoodVal === 'no' ? 'selected' : ''}>还没看懂，需修改或重新生成</option>
+                        </select>
+                      </label>
+                    ` : curField === 'direction' ? `
+                      <label>故事方向（第 1 项）
+                        <div class="preset-chips">
+                          <button type="button" class="preset-chip active" data-preset-field="directionVal" data-preset-val="方案 A：强反差高频打脸+情感拉扯">★ 方案 A（首推：强反差高频打脸）</button>
+                          <button type="button" class="preset-chip" data-preset-field="directionVal" data-preset-val="方案 B：双强智性博弈">方案 B（双强智性博弈）</button>
+                        </div>
+                        <input id="input-direction" value="${state.directionVal}" />
+                      </label>
+                    ` : curField === 'total' ? `
+                      <label>全剧总集数（停点 A 确认）
+                        <input id="input-stopa-total" type="number" value="${state.totalVal}" />
+                      </label>
+                    ` : `
+                      <label>${fieldLabels[curField] || curField}
+                        <input id="input-generic-substep" value="★ 采纳总编剧首选推荐方案" />
+                      </label>
+                    `}
+                  </div>
+                  ${curField === 'understood' && state.understoodVal !== 'yes' ? `<p class="gate-hint">提示：简化主线单必须先过「看得懂关」（选择“我看懂了，通过”）才开放确认通过。</p>` : ''}
+                  <div class="decision-actions">
+                    ${subIdx < fields.length - 1 ? `
+                      <button class="primary" id="btn-card-next-substep" ${(curField === 'understood' && state.understoodVal !== 'yes') ? 'disabled' : ''}>★ 确认本项，进入下一项（${subIdx + 2}/${fields.length}） →</button>
+                    ` : `
+                      <button class="primary" id="btn-card-confirm" ${(curField === 'understood' && state.understoodVal !== 'yes') ? 'disabled' : ''}>★ 全部确认完毕，推进并查看实时输出 ↗</button>
+                    `}
+                    ${subIdx > 0 ? `<button class="secondary" data-card-substep="${subIdx - 1}">← 返回上一项</button>` : ''}
+                    <button class="secondary" id="btn-release-stops">⏩ 通过，写完吧（放开后续逐集停点）</button>
+                  </div>
+                </div>
+              </div>
+            `;
+          })() : '') : ''}
+        </div>
+      `}
+
+      ${state.surface !== 'admin' ? `
+        <div class="composer-area ${!active ? 'home-composer' : ''}">
+          <div class="composer">
+            <textarea id="composer-input" aria-label="发给总编剧的消息" rows="2" placeholder="${active ? '直接打字跟总编剧说要求（如“选详细模式”、“把男主名字统一成凯尔”、“现在进度咋样了”）…' : '直接打字聊脑洞、交任务，或点击左下角上传本地视频/剧本…'}">${state.text}</textarea>
+            <div class="composer-bottom">
+              <div>
+                <button type="button" class="attach" id="btn-attach">📎 <span>上传本地视频/文件</span></button>
+                <button type="button" class="secondary" id="btn-composer-demo" style="padding:4px 10px;min-height:32px;font-size:11px">🎬 载入3集测试视频</button>
+                <span class="composer-divider"></span>
+                <button type="button" class="composer-kind-btn" id="btn-composer-kind">${(active?.kind || state.kind) ? '✨ ' + labels[active?.kind || state.kind] + '（点击弹窗切换）' : '✨ 点击弹出四项流程选择卡'}</button>
+              </div>
+              <button class="send" id="btn-send" aria-label="${active ? '发送消息' : '发给总编剧'}">↑</button>
+            </div>
+          </div>
+          <div class="composer-caption"><span>☁ 支持本地视频/表格/文档直接拖入上传 · 总编剧实时参谋</span><span>Enter 发送 · Shift + Enter 换行</span></div>
+        </div>
+      ` : ''}
+    </main>
+
+    ${active && state.right && state.surface !== 'admin' ? `
+      <aside class="right-panel" aria-label="项目资料手册">
+        <div class="panel-title"><span>项目手册与实时台账</span><button id="btn-close-right" aria-label="关闭项目面板">✕</button></div>
+        <div class="panel-tabs" role="tablist">
+          <button role="tab" class="${state.tab === 'overview' ? 'active' : ''}" data-tab="overview">概览</button>
+          <button role="tab" class="${state.tab === 'files' ? 'active' : ''}" data-tab="files">素材 <span>${active.attachments.length}</span></button>
+          <button role="tab" class="${state.tab === 'requirements' ? 'active' : ''}" data-tab="requirements">要求 <span>${active.requirements.length}</span></button>
+        </div>
+        ${state.tab === 'overview' ? `
+          <div class="panel-section">
+            <span class="panel-label">当前停点与进度</span>
+            <h3>${active.card ? active.card.title : timelineByKind[active.kind][currentStepIdx]}</h3>
+            <div class="progress-track"><i style="width:${Math.min(100, Math.round(((currentStepIdx + 1) / 6) * 100))}%"></i></div>
+            <small>已完成 ${currentStepIdx + 1} / 6 阶段 · 点击顶部「⚡ 实时工作台与输出」可查看繁简剧本全文</small>
+          </div>
+          <div class="panel-section timeline">
+            ${timelineByKind[active.kind].map((s, i) => `
+              <div class="${i < currentStepIdx ? 'done' : i === currentStepIdx ? 'current' : ''}">
+                <span>${i < currentStepIdx ? '✓' : '<i></i>'}</span>
+                <p>${s}</p>
+                ${i <= currentStepIdx ? `<small>${i < currentStepIdx ? '完成' : '当前'}</small>` : ''}
+              </div>
+            `).join('')}
+          </div>
+          <div class="panel-section">
+            <span class="panel-label">项目规格</span>
+            <dl>
+              <dt>创作类型</dt><dd>${labels[active.kind]}</dd>
+              <dt>全剧集数</dt><dd>${active.total === null ? (active.kind === 'original' ? '停点 A 确认' : '待确认') : active.total + ' 集'}</dd>
+              ${active.kind === 'transcribe' ? `<dt>扒剧模式</dt><dd>${active.transcribeMode === 'detailed' ? '详细模式' : active.transcribeMode === 'fast' ? '快速模式' : '待选择（无默认）'}</dd>` : `<dt>锁集续写范围</dt><dd>${active.lockedEpisodes ? `锁 1–${active.lockedEpisodes} 集` : '从第 1 集起'}</dd>`}
+              <dt>已归档素材</dt><dd>${active.attachments.length} 份</dd>
+            </dl>
+          </div>
+        ` : state.tab === 'files' ? `
+          <div class="panel-section">
+            <button class="primary wide" id="btn-panel-upload" style="margin-top:0;margin-bottom:12px">📎 添加本地视频/文档素材</button>
+            ${active.attachments.map(a => `
+              <div class="file-item">
+                ${a.previewUrl ? `<div class="video-preview-card"><video src="${a.previewUrl}" controls muted></video><div><strong>${a.name}</strong><small style="display:block;color:var(--muted)">实测 ${a.durationSec || 68} 秒</small></div></div>` : ''}
+                <div class="file-row"><span>${a.name}<small>${formatBytes(a.size)} · ${a.episode ? '第 ' + a.episode + ' 集' : (a.kind === 'transcribe' || active.kind === 'transcribe' ? '⚠ 待补录集号' : '原稿素材')}</small></span></div>
+              </div>
+            `).join('')}
+          </div>
+        ` : `
+          <div class="panel-section">
+            ${active.requirements.map((r, i) => `
+              <div class="requirement"><span>✓ 台账记录 #${i + 1}</span><p>${r}</p></div>
+            `).join('')}
+          </div>
+        `}
+        <div class="panel-bottom"><span>✒ 你的每一次拍板，都算数。</span></div>
+      </aside>
+    ` : ''}
+
+    ${state.toast ? `<div class="toast" role="status">✓ ${state.toast}</div>` : ''}
+
+    ${state.modal === 'create' ? `
+      <div class="modal-backdrop" id="modal-bg">
+        <section class="modal" role="dialog" aria-modal="true">
+          <button class="modal-close" id="btn-modal-close" aria-label="关闭弹层">✕</button>
+          <span class="project-type">四项创作流程选择卡</span>
+          <h2>选择创作流程并开启工作台</h2>
+          <p>选择完下方四项之一后，将直接为你建立专属工作页面，实时显示 6 大 AI 编剧工位状态与阶段输出。</p>
+          <div class="modal-flow-cards">
+            ${flows.map(f => `
+              <button type="button" class="modal-flow-card ${(state.kind || 'transcribe') === f.kind ? 'active' : ''}" data-flow="${f.kind}">
+                <strong><span>${f.icon} ${f.title}</span><span>${(state.kind || 'transcribe') === f.kind ? '★ 已选' : ''}</span></strong>
+                <small>${f.description}</small>
+              </button>
+            `).join('')}
+          </div>
+          <label>项目名称
+            <input id="input-create-title" value="${state.title}" placeholder="给故事起一个暂定名称（按 Enter 即可进入工作页面）" maxlength="200"/>
+          </label>
+          <button class="primary wide" id="btn-confirm-create">⚡ 确认选择并进入实时工作页面</button>
+        </section>
+      </div>
+    ` : state.modal === 'login' ? `
+      <div class="modal-backdrop" id="modal-bg">
+        <section class="modal" role="dialog" aria-modal="true">
+          <button class="modal-close" id="btn-modal-close" aria-label="关闭弹层">✕</button>
+          <span class="project-type">工作区账号登录</span>
+          <h2>登录「总编剧 Pro」工作台</h2>
+          <p>登录后自动同步你的私人云端项目、锁定稿素材与要求台账；登录后自动同步你的云端项目与素材。</p>
+          <label>工作区账号
+            <input id="input-login-email" value="${state.loginEmail}" placeholder="ayin@studio.ai"/>
+          </label>
+          <label>身份角色切换
+            <div class="preset-chips" style="margin-top:8px">
+              <button type="button" class="preset-chip ${state.loginEmail.includes('ayin') ? 'active' : ''}" data-login-preset="ayin@studio.ai">★ ayin（发起人 · 创作主审人 · 含后台权限）</button>
+              <button type="button" class="preset-chip ${state.loginEmail.includes('pm') ? 'active' : ''}" data-login-preset="pm@studio.ai">产品经理（测试验收账号）</button>
+            </div>
+          </label>
+          <button class="primary wide" id="btn-do-login">🔑 验证通行证并进入工作区</button>
+        </section>
+      </div>
+    ` : ''}
+  </div>`;
+
+  document.getElementById('app').innerHTML = html;
+  bindEvents();
+  const wiz = document.querySelector('.step-wizard-stack .decision');
+  if (wiz) wiz.scrollIntoView({ block: 'center' });
+}
+
+function bindEvents() {
+  const active = getActive();
+
+  // Bind the hidden real file input once
+  const realFileInput = document.getElementById('real-file-input');
+  if (realFileInput && !realFileInput._bound) {
+    realFileInput._bound = true;
+    realFileInput.addEventListener('change', (e) => {
+      if (e.target.files && e.target.files.length > 0) {
+        handleFilesSelected(e.target.files);
+        e.target.value = '';
+      }
+    });
+  }
+
+  // Bind all upload buttons to trigger the real file picker!
+  ['btn-attach', 'btn-hero-upload', 'btn-top-upload', 'btn-banner-upload', 'btn-ws-upload', 'btn-panel-upload'].forEach(id => {
+    document.getElementById(id)?.addEventListener('click', triggerFilePicker);
+  });
+
+  // Bind demo video batch loader buttons
+  ['btn-hero-demo', 'btn-top-demo', 'btn-banner-demo', 'btn-composer-demo'].forEach(id => {
+    document.getElementById(id)?.addEventListener('click', loadDemoVideoBatch);
+  });
+
+  document.getElementById('scrim-overlay')?.addEventListener('click', () => {
+    state.left = false;
+    if (window.innerWidth <= 700) state.right = false;
+    render();
+  });
+  document.getElementById('btn-home')?.addEventListener('click', () => { state.activeId = null; state.surface = 'chat'; state.left = false; render(); });
+  document.getElementById('btn-new-chat')?.addEventListener('click', () => { state.activeId = null; state.surface = 'chat'; state.preChat = []; state.pendingBrief = ''; state.left = false; render(); });
+  document.getElementById('btn-mobile-menu')?.addEventListener('click', () => { state.left = true; render(); });
+  document.getElementById('btn-toggle-right')?.addEventListener('click', () => { state.right = !state.right; render(); });
+  document.getElementById('btn-close-right')?.addEventListener('click', () => { state.right = false; render(); });
+  document.getElementById('btn-close-err')?.addEventListener('click', () => { state.error = ''; render(); });
+  document.getElementById('btn-modal-close')?.addEventListener('click', () => { state.modal = ''; render(); });
+  document.getElementById('btn-theme-toggle')?.addEventListener('click', () => {
+    state.theme = state.theme === 'dark' ? 'light' : 'dark';
+    render();
+  });
+
+  // Segmented surface tabs
+  document.getElementById('tab-surface-chat')?.addEventListener('click', () => { state.surface = 'chat'; render(); });
+  document.getElementById('tab-surface-workspace')?.addEventListener('click', () => {
+    if (!state.activeId && state.projects.length > 0) state.activeId = state.projects[0].id;
+    const cur = getActive();
+    if (cur && cur.kind === 'transcribe') cur.outputs = generateTranscribeOutputs(cur);
+    state.surface = 'workspace';
+    render();
+  });
+  document.getElementById('tab-surface-admin')?.addEventListener('click', () => { finishStreamingImmediately(); state.surface = 'admin'; render(); });
+  document.getElementById('btn-nav-admin')?.addEventListener('click', () => { state.surface = 'admin'; state.left = false; render(); });
+  document.getElementById('btn-back-to-studio')?.addEventListener('click', () => { state.surface = 'chat'; render(); });
+  document.getElementById('btn-goto-workspace')?.addEventListener('click', () => {
+    if (active && active.kind === 'transcribe') active.outputs = generateTranscribeOutputs(active);
+    state.surface = 'workspace';
+    render();
+  });
+  document.getElementById('btn-switch-to-chat')?.addEventListener('click', () => { state.surface = 'chat'; render(); });
+
+  // Login modal
+  document.getElementById('btn-settings')?.addEventListener('click', () => { state.modal = 'login'; render(); });
+  document.getElementById('btn-help')?.addEventListener('click', () => {
+    showToast('点击「📎 上传本地视频/文件」或把文件直接拖进页面即可启动扒剧');
+  });
+  document.querySelectorAll('[data-login-preset]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.loginEmail = btn.getAttribute('data-login-preset');
+      render();
+    });
+  });
+  document.getElementById('btn-do-login')?.addEventListener('click', () => {
+    const emailEl = document.getElementById('input-login-email');
+    const em = emailEl?.value || state.loginEmail;
+    state.user = {
+      name: em.split('@')[0],
+      email: em,
+      role: em.includes('ayin') ? '发起人 · 创作主审人' : '产品经理 · 验收账号',
+      loggedIn: true
+    };
+    state.modal = '';
+    showToast(`欢迎回来，${state.user.name}`);
+  });
+
+  const openModalFn = () => {
+    if (!state.kind) state.kind = active?.kind || 'transcribe';
+    state.modal = 'create';
+    render();
+  };
+  document.getElementById('btn-open-create-modal')?.addEventListener('click', openModalFn);
+  document.getElementById('btn-open-create-modal-2')?.addEventListener('click', openModalFn);
+  document.getElementById('btn-composer-kind')?.addEventListener('click', openModalFn);
+  document.getElementById('btn-conn')?.addEventListener('click', openModalFn);
+  document.getElementById('btn-open-api-config')?.addEventListener('click', () => {
+    finishStreamingImmediately();
+    state.surface = 'admin';
+    render();
+  });
+  document.querySelectorAll('[data-api-mode]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.apiConfig.mode = btn.getAttribute('data-api-mode');
+      render();
+    });
+  });
+  document.querySelectorAll('[data-preset-url]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.apiConfig.baseUrl = btn.getAttribute('data-preset-url');
+      state.apiConfig.directorModel = btn.getAttribute('data-preset-model');
+      render();
+    });
+  });
+  document.getElementById('input-api-baseurl')?.addEventListener('input', e => { state.apiConfig.baseUrl = e.target.value.trim(); });
+  document.getElementById('input-api-key')?.addEventListener('input', e => { state.apiConfig.apiKey = e.target.value.trim(); });
+  document.getElementById('input-director-model')?.addEventListener('input', e => { state.apiConfig.directorModel = e.target.value.trim(); });
+  document.getElementById('input-vision-model')?.addEventListener('input', e => { state.apiConfig.visionModel = e.target.value.trim(); });
+  document.getElementById('input-backend-url')?.addEventListener('input', e => { state.apiConfig.backendUrl = e.target.value.trim(); });
+  document.getElementById('input-backend-token')?.addEventListener('input', e => { state.apiConfig.backendToken = e.target.value.trim(); });
+
+  document.getElementById('btn-save-api')?.addEventListener('click', () => {
+    try {
+      localStorage.setItem('story_studio_api_config', JSON.stringify(state.apiConfig));
+    } catch (_) {}
+    showToast('API 与服务器配置已保存在本地浏览器并立即生效！');
+  });
+
+  const testApiFn = async () => {
+    state.apiConfig.testStatus = '◐ 正在发起真实网络请求测试…';
+    state.apiConfig.testResult = '请稍候…';
+    render();
+    const t0 = Date.now();
+    if (state.apiConfig.mode === 'direct_llm' && !state.apiConfig.apiKey) {
+      state.apiConfig.testStatus = '⚠ 尚未填写 API Key';
+      state.apiConfig.testResult = '请先在上方第 2 项填入你的 API Key（如 sk-...），再点击连通测试。填入后即可在聊天页直接调用真实大模型！';
+      render();
+      return;
+    }
+    const reply = await requestRealModelOrBackend('请用一句话回复：总编剧API连通成功！', '你是短剧剧本工作台总编剧。');
+    const ms = Date.now() - t0;
+    state.apiConfig.testStatus = `✓ 测试完成（耗时 ${ms} ms）`;
+    state.apiConfig.testResult = reply || '未返回内容';
+    render();
+  };
+  document.getElementById('btn-test-api')?.addEventListener('click', testApiFn);
+  document.getElementById('btn-test-api-2')?.addEventListener('click', testApiFn);
+
+  document.getElementById('btn-ws-open-modal')?.addEventListener('click', openModalFn);
+
+  document.querySelectorAll('[data-flow]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.kind = btn.getAttribute('data-flow');
+      state.error = '';
+      if (!state.modal && !active && btn.classList.contains('flow-card')) {
+        state.modal = 'create';
+      }
+      render();
+    });
+  });
+
+  document.querySelectorAll('[data-out-tab]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (!active) return;
+      active.activeOutputTab = btn.getAttribute('data-out-tab');
+      render();
+    });
+  });
+
+
+  // Step-by-step (一项项来) navigation bindings for Transcribe (5 phases) & multi-field cards
+  document.querySelectorAll('[data-jump-phase]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (!active) return;
+      const targetPhase = Number(btn.getAttribute('data-jump-phase'));
+      if (active.attachments.some(a => !a.episode) && targetPhase > 0) {
+        state.error = '请先完成第 1 项：补齐未识别素材的集号。';
+        render();
+        return;
+      }
+      active.transcribePhase = targetPhase;
+      active.stepIndex = Math.min(5, targetPhase);
+      state.error = '';
+      render();
+    });
+  });
+
+  document.getElementById('btn-skip-typing')?.addEventListener('click', () => {
+    finishStreamingImmediately();
+    render();
+  });
+  document.querySelectorAll('[data-msg-id]').forEach(el => {
+    el.addEventListener('click', () => {
+      if (state.streamingMsgId) {
+        finishStreamingImmediately();
+        render();
+      }
+    });
+  });
+
+  document.getElementById('btn-next-phase-1')?.addEventListener('click', () => {
+    if (!active) return;
+    if (active.attachments.some(a => !a.episode)) {
+      state.error = '请先为所有未识别素材填写并保存集号，再进入下一项。';
+      render();
+      return;
+    }
+    active.transcribePhase = 1;
+    active.stepIndex = 1;
+    state.error = '';
+    active.messages.push({
+      id: 'u-' + Date.now(),
+      role: 'user',
+      text: `✓ 集号已全部核对无误（${active.attachments.map(a => `${a.name}→第${a.episode}集`).join('，')}）。`,
+      time: '14:21'
+    });
+    playDirectorTurn({
+      text: '集号全部对齐！现在进入第 2 项：请为这部剧选择扒剧还原模式（⚡ 快速模式 或 🔍 详细模式，每部剧必选，不设默认项）：',
+      statusLabel: '总编剧正在输入第 2 项选项…'
+    });
+  });
+
+  document.getElementById('btn-next-phase-2')?.addEventListener('click', () => {
+    if (!active) return;
+    if (!active.transcribeMode) {
+      state.error = '请先选择「快速模式」或「详细模式」（不设默认项）。';
+      render();
+      return;
+    }
+    active.transcribePhase = 2;
+    active.stepIndex = 2;
+    state.error = '';
+    active.outputs = generateTranscribeOutputs(active);
+    active.messages.push({
+      id: 'u-' + Date.now(),
+      role: 'user',
+      text: `我选择：${active.transcribeMode === 'detailed' ? '🔍 详细模式（按每秒一帧逐格看完再写）' : '⚡ 快速模式（按整集看写并抽查）'}`,
+      time: '14:22'
+    });
+    playDirectorTurn({
+      text: `已锁定「${active.transcribeMode === 'detailed' ? '详细模式' : '快速模式'}」！现在进入第 3 项：请核对本剧主角标准人名表（锁定后全剧统一，严禁写成外号）：`,
+      statusLabel: '总编剧正在提取全剧角色名表…'
+    });
+  });
+
+  document.getElementById('btn-next-phase-3')?.addEventListener('click', () => {
+    if (!active) return;
+    active.transcribePhase = 3;
+    active.stepIndex = 3;
+    active.confirmed = true;
+    state.error = '';
+    active.outputs = generateTranscribeOutputs(active);
+    active.activeOutputTab = 'outline';
+    active.messages.push({
+      id: 'u-' + Date.now(),
+      role: 'user',
+      text: `确认锁定人名表（${active.castLock}），开始分集扒剧还原！`,
+      time: '14:23'
+    });
+    playDirectorTurn({
+      text: `已完成全部 ${active.attachments.length} 集视觉抽帧与台词还原！现在进入第 4 项：第 2 集 00:41 有一处特写镜头【待人工補寫】，请确认或修改补写文字：`,
+      statusLabel: `扒剧小能手正在按集抽帧转写 (1/${active.attachments.length} → ${active.attachments.length}/${active.attachments.length} 集)…`
+    });
+  });
+
+  document.getElementById('btn-next-phase-4')?.addEventListener('click', () => {
+    if (!active) return;
+    active.transcribePhase = 4;
+    active.stepIndex = 5;
+    active.confirmed = true;
+    state.error = '';
+    active.outputs = generateTranscribeOutputs(active);
+    active.activeOutputTab = 'script';
+    active.messages.push({
+      id: 'u-' + Date.now(),
+      role: 'user',
+      text: `补写内容已确认为：「${active.manualGapText}」，请生成繁简双版 Word 交付包。`,
+      time: '14:24'
+    });
+    playDirectorTurn({
+      text: '全部搞定！已为你打包好繁体中文单集 Word 与简体中文全集 Word（卷首含故事梗概与人物小传），现在展示最后第 5 项交付卡：',
+      statusLabel: '总编剧正在合成繁简双版 Word 交付包…'
+    });
+  });
+
+  document.getElementById('chat-input-gap')?.addEventListener('input', (e) => {
+    if (!active) return;
+    active.manualGapText = e.target.value;
+  });
+
+  document.getElementById('btn-goto-workspace-inline')?.addEventListener('click', () => {
+    if (active && active.kind === 'transcribe') active.outputs = generateTranscribeOutputs(active);
+    state.surface = 'workspace';
+    render();
+  });
+
+
+  document.querySelectorAll('[data-card-substep]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.cardSubStep = Number(btn.getAttribute('data-card-substep'));
+      render();
+    });
+  });
+
+  document.getElementById('btn-card-next-substep')?.addEventListener('click', () => {
+    state.cardSubStep = (state.cardSubStep || 0) + 1;
+    showToast(`已确认当前项，进入下一项`);
+  });
+
+  // Transcribe mode picker in chat & workspace
+  document.querySelectorAll('[data-pick-mode]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (!active) return;
+      active.transcribeMode = btn.getAttribute('data-pick-mode');
+      active.outputs = generateTranscribeOutputs(active);
+      state.error = '';
+      showToast(`已选择：${active.transcribeMode === 'detailed' ? '详细模式（每秒一帧逐格看写）' : '快速模式（整集看写+抽查）'}`);
+    });
+  });
+
+  document.getElementById('ws-select-mode')?.addEventListener('change', (e) => {
+    if (!active) return;
+    active.transcribeMode = e.target.value;
+    active.outputs = generateTranscribeOutputs(active);
+    render();
+  });
+  document.getElementById('ws-input-cast')?.addEventListener('input', (e) => {
+    if (!active) return;
+    active.castLock = e.target.value;
+  });
+  document.getElementById('chat-input-cast')?.addEventListener('input', (e) => {
+    if (!active) return;
+    active.castLock = e.target.value;
+  });
+  document.getElementById('ws-input-gap')?.addEventListener('input', (e) => {
+    if (!active) return;
+    active.manualGapText = e.target.value;
+  });
+
+  const advanceFn = () => {
+    if (!active) return;
+    if (active.kind === 'transcribe') {
+      if (active.attachments.some(a => !a.episode)) {
+        state.error = '请先完成第 1 项：为未识别素材补录集号。';
+        render();
+        return;
+      }
+      const curPhase = active.transcribePhase ?? 0;
+      if (curPhase === 1 && !active.transcribeMode) {
+        state.error = '请先在第 2 项选择「快速模式」或「详细模式」（无默认项）。';
+        render();
+        return;
+      }
+      active.transcribePhase = Math.min(4, curPhase + 1);
+      active.stepIndex = Math.min(5, active.transcribePhase === 4 ? 5 : active.transcribePhase);
+      active.outputs = generateTranscribeOutputs(active);
+      const order = ['recap', 'analysis', 'outline', 'script', 'script'];
+      active.activeOutputTab = order[active.transcribePhase];
+      showToast(`已推进至第 ${active.transcribePhase + 1} 项并刷新右侧输出`);
+      return;
+    }
+    active.confirmed = true;
+    active.stepIndex = Math.min(5, (active.stepIndex || 0) + 1);
+    const order = ['recap', 'analysis', 'outline', 'script'];
+    active.activeOutputTab = order[Math.min(3, Math.max(1, active.stepIndex - 1))];
+    showToast(`已推进至「${timelineByKind[active.kind][active.stepIndex]}」并刷新右侧剧本输出`);
+  };
+  document.getElementById('btn-advance-step')?.addEventListener('click', advanceFn);
+  document.getElementById('btn-ws-confirm')?.addEventListener('click', advanceFn);
+
+  document.getElementById('btn-retranscribe-ep')?.addEventListener('click', () => {
+    if (!active) return;
+    active.transcribeMode = 'detailed';
+    active.outputs = generateTranscribeOutputs(active);
+    active.activeOutputTab = 'script';
+    showToast('已按「详细模式（每秒一帧）」重新扒取第 1 集并更新繁体与简体剧本');
+  });
+
+  // Real file download handlers!
+  const exportHandler = (e) => {
+    e?.preventDefault();
+    if (!active) return;
+    if (active.kind === 'transcribe') {
+      active.outputs = generateTranscribeOutputs(active);
+    }
+    const fullBundle = [
+      active.outputs?.recap || '',
+      '\n\n',
+      active.outputs?.analysis || '',
+      '\n\n',
+      active.outputs?.outline || '',
+      '\n\n',
+      active.outputs?.script || ''
+    ].join('');
+    downloadTextFile(`${active.title}-完整交付包.md`, fullBundle);
+  };
+  document.getElementById('btn-export-doc')?.addEventListener('click', exportHandler);
+  document.getElementById('btn-ws-export')?.addEventListener('click', exportHandler);
+  document.getElementById('btn-ws-export-card')?.addEventListener('click', exportHandler);
+
+  document.querySelectorAll('[data-sug-kind]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const k = btn.getAttribute('data-sug-kind');
+      const prompt = btn.getAttribute('data-sug-text');
+      state.kind = k;
+      state.pendingBrief = prompt;
+      state.title = prompt.split(/[，。！？\n]/)[0].slice(0, 18);
+      const sugs = buildSuggestions(k, prompt, statedTotal(prompt), statedLocked(prompt));
+      state.preChat.push(
+        { id: 'u-' + Date.now(), role: 'user', text: prompt, time: '14:20' },
+        {
+          id: 'd-' + Date.now(),
+          role: 'director',
+          text: `我先按总编剧的视角把你的意思复述一遍，并给你提几条切入建议：\n1. 推荐流程：「★ ${labels[k]}」\n2. 集数与范围：${statedTotal(prompt) ? '全剧 ' + statedTotal(prompt) + ' 集' : '停点 A 拍板'}${statedLocked(prompt) ? `（前 ${statedLocked(prompt)} 集锁定一字不动，从第 ${statedLocked(prompt) + 1} 集续写）` : ''}`,
+          time: '14:20',
+          recommendedKind: k,
+          suggestions: sugs
+        }
+      );
+      render();
+    });
+  });
+
+  document.querySelectorAll('[data-adopt]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const sug = btn.getAttribute('data-adopt');
+      if (active) {
+        active.requirements.push(`[采纳总编剧建议] ${sug}`);
+        active.messages.push({ id: 'u-' + Date.now(), role: 'user', text: `我采纳这条建议：${sug}`, time: '14:21' });
+        active.messages.push({ id: 'd-' + Date.now(), role: 'director', text: `好嘞！已把「${sug}」写进右侧要求台账，后续还原与生成会严格照此执行。`, time: '14:21' });
+      } else {
+        state.pendingBrief = (state.pendingBrief ? state.pendingBrief + '\n' : '') + `采纳建议：${sug}`;
+      }
+      showToast('已采纳总编剧建议并记入确认单');
+    });
+  });
+
+  document.querySelectorAll('[data-select-id]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.activeId = btn.getAttribute('data-select-id');
+      state.left = false;
+      state.error = '';
+      render();
+    });
+  });
+  document.querySelectorAll('[data-tab]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.tab = btn.getAttribute('data-tab');
+      render();
+    });
+  });
+
+  const composer = document.getElementById('composer-input');
+  composer?.addEventListener('input', (e) => { state.text = e.target.value; });
+  composer?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  });
+  document.getElementById('btn-send')?.addEventListener('click', handleSend);
+
+  const inlineTitle = document.getElementById('input-inline-title');
+  inlineTitle?.addEventListener('input', (e) => { state.title = e.target.value; });
+  document.getElementById('btn-inline-create')?.addEventListener('click', handleCreateProject);
+
+  const titleInput = document.getElementById('input-create-title');
+  titleInput?.addEventListener('input', (e) => { state.title = e.target.value; });
+  titleInput?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && state.title.trim()) {
+      e.preventDefault();
+      handleCreateProject();
+    }
+  });
+  document.getElementById('btn-confirm-create')?.addEventListener('click', handleCreateProject);
+
+  document.getElementById('btn-confirm-build')?.addEventListener('click', () => {
+    if (!active) return;
+    if (active.kind === 'transcribe') {
+      if (active.attachments.some(a => !a.episode)) {
+        state.error = '请先补齐未识别素材的集号。';
+        render();
+        return;
+      }
+      if (!active.transcribeMode) {
+        state.error = '扒剧每部剧均需明确选择「快速模式」或「详细模式」，不设默认项。';
+        render();
+        return;
+      }
+      active.outputs = generateTranscribeOutputs(active);
+      active.stepIndex = 4;
+      active.activeOutputTab = 'outline';
+    } else {
+      active.stepIndex = 1;
+    }
+    active.confirmed = true;
+    state.surface = 'workspace';
+    active.messages.push({ id: 'm-' + Date.now(), role: 'director', text: '清单与模式已确认！扒剧小能手已完成分集还原，已为你切入实时工作页面查看《简体全集剧本》与《繁体单集剧本》。', time: '14:18' });
+    showToast('已完成扒剧还原并打开实时输出页面');
+  });
+
+  document.getElementById('btn-supplement')?.addEventListener('click', () => {
+    state.text = '我补充一下：';
+    render();
+    document.getElementById('composer-input')?.focus();
+  });
+
+  document.getElementById('select-understood')?.addEventListener('change', (e) => {
+    state.understoodVal = e.target.value;
+    render();
+  });
+
+  document.getElementById('btn-card-confirm')?.addEventListener('click', () => {
+    if (!active || !active.card) return;
+    if (active.card.fields.includes('total')) {
+      active.total = Number(state.totalVal) || 60;
+    }
+    active.stepIndex = Math.min(5, (active.stepIndex || 1) + 1);
+    active.messages.push({ id: 'm-' + Date.now(), role: 'director', text: `已确认「${active.card.title}」，推进至下一阶段。`, time: '14:15' });
+    active.card = null;
+    state.surface = 'workspace';
+    showToast('已拍板通过，正在工作页面展示最新输出');
+  });
+
+  document.getElementById('btn-release-stops')?.addEventListener('click', () => {
+    if (!active) return;
+    active.requirements.push('[停点指令 · 正文阶段生效] 通过，写完吧（放开后续正文逐集停点）');
+    active.messages.push({ id: 'm-' + Date.now(), role: 'director', text: '好嘞！已放开后续正文逐集确认停点，后续集数将整批推进至自动审改与交付。', time: '14:16' });
+    showToast('已放开后续逐集停点');
+  });
+
+  // Episode input & edit bindings for multiple transcribe files
+  document.querySelectorAll('[data-ep-input]').forEach(inp => {
+    inp.addEventListener('input', (e) => {
+      const id = inp.getAttribute('data-ep-input');
+      state.episodeInputs[id] = e.target.value;
+      state.episodeInput = e.target.value;
+    });
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const id = inp.getAttribute('data-ep-input');
+        saveEpisodeById(id);
+      }
+    });
+  });
+  document.querySelectorAll('[data-edit-ep]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.editingEpId = btn.getAttribute('data-edit-ep');
+      render();
+    });
+  });
+  document.querySelectorAll('#btn-save-ep').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const attId = btn.getAttribute('data-att-id');
+      saveEpisodeById(attId);
+    });
+  });
+
+  document.getElementById('btn-trans-foreign')?.addEventListener('click', () => transferKind('foreign'));
+  document.getElementById('btn-trans-domestic')?.addEventListener('click', () => transferKind('domestic'));
+  document.getElementById('btn-ws-trans-foreign')?.addEventListener('click', () => transferKind('foreign'));
+  document.getElementById('btn-ws-trans-domestic')?.addEventListener('click', () => transferKind('domestic'));
+}
+
+function saveEpisodeById(attId) {
+  const active = getActive();
+  if (!active || !attId) return;
+  const inputEl = document.getElementById('ep-' + attId);
+  const rawVal = state.episodeInputs[attId] !== undefined ? state.episodeInputs[attId] : inputEl?.value;
+  const val = Number(rawVal);
+  if (!Number.isInteger(val) || val < 1 || val > (active.total || 300)) {
+    state.error = `请输入有效集号（1-${active.total || 300}）。`;
+    render();
+    return;
+  }
+  if (active.attachments.some(a => a.id !== attId && a.episode === val)) {
+    state.error = `第 ${val} 集已有其他素材占用，请核对后填其他集号。`;
+    render();
+    return;
+  }
+  const att = active.attachments.find(a => a.id === attId);
+  if (att) att.episode = val;
+  state.editingEpId = null;
+  state.error = '';
+  active.outputs = generateTranscribeOutputs(active);
+  active.messages.push({ id: 'm-' + Date.now(), role: 'director', text: `已将「${att.name}」标为第 ${val} 集。`, time: '14:18' });
+  const stillMissing = active.attachments.some(a => !a.episode);
+  showToast(stillMissing ? `第 ${val} 集已保存，请继续补完剩余素材` : `第 ${val} 集已保存！全部集号已对齐，请点击进入下一项`);
+}
+
+function transferKind(targetKind) {
+  const active = getActive();
+  if (!active) return;
+  const sugs = buildSuggestions(targetKind, active.title, active.total, null);
+  const newProj = {
+    id: 'proj-' + Date.now(),
+    title: `${active.title}（${labels[targetKind]}）`,
+    kind: targetKind,
+    total: active.total,
+    lockedEpisodes: null,
+    startEpisode: 1,
+    confirmed: true,
+    stepIndex: 1,
+    activeOutputTab: 'recap',
+    createdAt: new Date().toISOString(),
+    attachments: active.attachments.map(a => ({ ...a, role: 'source' })),
+    requirements: [`[扒剧转入] 复用扒剧项目「${active.title}」的 ${active.attachments.length} 份素材与还原剧本`],
+    outputs: {
+      recap: `【由扒剧项目转入${labels[targetKind]}】\n已自动挂载 ${active.attachments.length} 份扒剧还原底稿，准备执行原稿五问${targetKind === 'domestic' ? '与桥段出海四级诊断' : '与情绪曲线分析'}。`,
+      analysis: active.outputs?.analysis || '',
+      outline: active.outputs?.outline || '',
+      script: active.outputs?.script || ''
+    },
+    messages: [
+      {
+        id: 'm-' + Date.now(),
+        role: 'director',
+        text: `已根据你的选择，将扒剧项目转入「${labels[targetKind]}」，并完整复用了刚才扒出的简体全集底稿与 ${active.attachments.length} 份素材。\n\n【总编剧初步建议】\n${sugs.map(s => '• ' + s).join('\n')}`,
+        time: '14:20',
+        suggestions: sugs
+      }
+    ],
+    card: null
+  };
+  state.projects.unshift(newProj);
+  state.activeId = newProj.id;
+  state.surface = 'workspace';
+  showToast(`已转入「${labels[targetKind]}」工作页面`);
+}
+
+function handleSend() {
+  const active = getActive();
+  if (!state.text.trim()) return;
+  const clean = state.text.trim();
+
+  if (!active) {
+    const nextBrief = state.pendingBrief ? state.pendingBrief + '\n' + clean : clean;
+    state.pendingBrief = nextBrief;
+    const inferred = state.kind || inferKind(nextBrief);
+    state.kind = inferred;
+    if (!state.title.trim()) {
+      state.title = clean.split(/[，。！？\n]/)[0].slice(0, 18);
+    }
+    const sugs = buildSuggestions(inferred, nextBrief, statedTotal(nextBrief), statedLocked(nextBrief));
+    state.preChat.push(
+      { id: 'u-' + Date.now(), role: 'user', text: clean, time: '14:22' },
+      {
+        id: 'd-' + Date.now(),
+        role: 'director',
+        text: `我先按总编剧视角把你的意思复述一遍，并给你提几条切入建议：\n1. 推荐流程：「★ ${labels[inferred]}」\n2. 集数与范围：${statedTotal(nextBrief) ? '全剧 ' + statedTotal(nextBrief) + ' 集' : '停点 A 拍板'}${statedLocked(nextBrief) ? `（前 ${statedLocked(nextBrief)} 集锁定一字不动，从第 ${statedLocked(nextBrief) + 1} 集续写）` : ''}\n3. 核心要点：“${clean}”`,
+        time: '14:22',
+        recommendedKind: inferred,
+        suggestions: sugs
+      }
+    );
+    state.text = '';
+    render();
+    return;
+  }
+
+  active.messages.push({ id: 'u-' + Date.now(), role: 'user', text: clean, time: '14:22' });
+  state.text = '';
+
+  // Recognize transcribe mode via chat text
+  if (active.kind === 'transcribe' && /(快速模式|详细模式|^快速$|^详细$)/.test(clean)) {
+    active.transcribeMode = clean.includes('详细') ? 'detailed' : 'fast';
+    active.outputs = generateTranscribeOutputs(active);
+    active.messages.push({
+      id: 'd-' + Date.now(),
+      role: 'director',
+      text: `收到！已将本剧扒剧模式设为「${active.transcribeMode === 'detailed' ? '详细模式（每秒一帧逐格看写）' : '快速模式（按整集看写并抽查）'}」，右侧输出已同步更新。`,
+      time: '14:22'
+    });
+    render();
+    return;
+  }
+
+  if (isProgressQuery(clean)) {
+    active.messages.push({
+      id: 'd-' + Date.now(),
+      role: 'director',
+      text: `当前正处在「${timelineByKind[active.kind][active.stepIndex || 0]}」阶段（已挂载 ${active.attachments.length} 份素材），你可以点顶部「⚡ 实时工作台与输出」直接看 6 大工位状态与实时繁简剧本产出；当前暂无可靠预计时间（不编造交付时间）。`,
+      time: '14:22'
+    });
+  } else {
+    const total = statedTotal(clean);
+    const locked = statedLocked(clean);
+    if (total) active.total = total;
+    if (locked) { active.lockedEpisodes = locked; active.startEpisode = locked + 1; }
+    active.requirements.push(`[补充要求 · 下一可更新节点生效] ${clean}`);
+    if (active.kind === 'transcribe') active.outputs = generateTranscribeOutputs(active);
+    const sugs = buildSuggestions(active.kind, clean, active.total, active.lockedEpisodes);
+    if ((state.apiConfig.mode === 'direct_llm' && state.apiConfig.apiKey) || (state.apiConfig.mode === 'custom_backend' && state.apiConfig.backendUrl)) {
+      state.isTyping = true;
+      state.typingStatus = `正在请求真实模型接口 (${state.apiConfig.mode === 'direct_llm' ? state.apiConfig.directorModel : '生产后端'})…`;
+      state.cardReady = false;
+      render();
+      const contextFiles = active.attachments.map(a => `${a.name}(第${a.episode || '?'}集, ${a.durationSec || 68}秒)`).join('、');
+      requestRealModelOrBackend(
+        `当前项目：《${active.title}》（流程：${labels[active.kind]}，已传素材：${contextFiles || '无'}）。用户刚刚说：${clean}`,
+        `你是短剧工作台的总编剧。请针对用户的要求给出具体的短剧改编/扒剧执行回复与2条专业建议。`
+      ).then(realReply => {
+        playDirectorTurn({
+          text: realReply || `记下了，已写入「要求台账」。`,
+          statusLabel: '正在流式输出真实模型回复…',
+          suggestions: sugs
+        });
+      });
+      return;
+    }
+    playDirectorTurn({
+      text: `记下了，已写入「要求台账」${locked ? `（前 ${locked} 集锁定，从第 ${locked + 1} 集续写）` : ''}。结合你刚说的「${clean.slice(0, 22)}」，我整理了两条建议供你点选：`,
+      statusLabel: '总编剧正在思考与整理建议…',
+      suggestions: sugs
+    });
+    return;
+  }
+}
+
+function handleCreateProject() {
+  const k = state.kind || 'transcribe';
+  const rawBrief = state.pendingBrief || state.text;
+  const projTitle = state.title.trim() || (rawBrief ? rawBrief.split(/[，。！？\n]/)[0].slice(0, 18) : `${labels[k]}新项目`);
+  const total = statedTotal(rawBrief) || (k === 'transcribe' ? 45 : null);
+  const locked = statedLocked(rawBrief);
+  const sugs = buildSuggestions(k, rawBrief, total, locked);
+  const newProj = {
+    id: 'proj-' + Date.now(),
+    title: projTitle,
+    kind: k,
+    total,
+    lockedEpisodes: locked,
+    startEpisode: locked ? locked + 1 : 1,
+    confirmed: k !== 'transcribe',
+    transcribeMode: '',
+    castLock: '男主：凯尔（Kale Norton）｜女主：南希（Nancy Percy）｜反派：丽莎（Lisa）',
+    manualGapText: '凯尔亮出全球仅三张的黑金无限额副卡，店长当场鞠躬核验通过',
+    stepIndex: k === 'transcribe' ? 0 : 1,
+    activeOutputTab: 'recap',
+    createdAt: new Date().toISOString(),
+    attachments: [],
+    requirements: rawBrief ? [`[初始说明] ${rawBrief}`] : [`[初始说明] 建立「${labels[k]}」项目`],
+    outputs: {},
+    messages: [
+      ...(rawBrief ? [{ id: 'u-' + Date.now(), role: 'user', text: rawBrief, time: '14:25' }] : []),
+      {
+        id: 'd-' + Date.now(),
+        role: 'director',
+        text: k === 'transcribe'
+          ? `已建立扒剧项目「${projTitle}」！请点击上方「📎 点击选择本地文件上传」（或直接把视频拖进页面），也可点击「🎬 一键载入 3 集测试视频包」立即体验补集号、选模式与导出繁简双版剧本。`
+          : `收到！已为你建立「${projTitle}」（${labels[k]}），并自动打开「⚡ 实时工作台与输出」页面。`,
+        time: '14:25',
+        suggestions: sugs
+      }
+    ],
+    card: null
+  };
+  newProj.outputs = k === 'transcribe' ? generateTranscribeOutputs(newProj) : {
+    recap: `【${projTitle} · 总编剧复述与立项确认单】\n• 选定流程：${labels[k]}`,
+    analysis: `【${projTitle} · 第一阶段实时输出】\n• 核心冲突线与人物关系张力已建档。`
+  };
+  state.projects.unshift(newProj);
+  state.activeId = newProj.id;
+  state.modal = '';
+  state.surface = k === 'transcribe' ? 'chat' : 'workspace';
+  state.text = '';
+  state.title = '';
+  state.pendingBrief = '';
+  state.preChat = [];
+  showToast(k === 'transcribe' ? '扒剧项目已就绪，请上传视频或载入测试包' : '已建立项目并进入实时工作页面');
+}
+
+
+try {
+  const savedCfg = localStorage.getItem('story_studio_api_config');
+  if (savedCfg) {
+    Object.assign(state.apiConfig, JSON.parse(savedCfg));
+  }
+} catch (_) {}
+if (window.location.hash === '#admin') {
+  state.surface = 'admin';
+}
+
+// Boot with a clean empty page, showing the live typing indicator first, then streaming the opening line, then revealing Step 0 card!
+playDirectorTurn({
+  text: '嗨！页面已清空，我们先跑「扒剧」流程，所有步骤都会一项项出现。第一步，请先上传你的分集视频或导出表（也可以点下方按钮载入测试视频）：',
+  statusLabel: '总编剧正在输入…'
+});
+</script>
+</body>
+</html>
