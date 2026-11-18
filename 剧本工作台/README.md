@@ -13,3 +13,7 @@ AI 短剧改编网站，包含聊天式建档与总编剧工作流。
 在线预览：https://director-studio-ayin.ayinx.chatgpt.site/
 
 部署时在解压目录参照 `README.md` 配置环境变量；不要提交真实密钥、素材或数据库。
+## 版本记录
+| 日期 | 归档目录 | 更新内容 |
+| --- | --- | --- |
+| 2026-11-18 | `versions/2026-11-18-step-by-step-and-grok-bot/` | 升级极简空白对话流、正在输入与打字机动效、逐项单步向导（一项项来）、移除前端费用审批卡、新增 Grok Bot 参谋建议、Apple HIG 实时工作页面与 `/admin` 后台 |
