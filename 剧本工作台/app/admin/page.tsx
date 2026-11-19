@@ -102,7 +102,7 @@ export default function AdminConsolePage() {
   const [loading, setLoading] = useState(true);
   const [authorized, setAuthorized] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [activeTab, setActiveTab] = useState<'accounts' | 'providers' | 'routes' | 'skills' | 'monitor'>('accounts');
+  const [activeTab, setActiveTab] = useState<'accounts' | 'providers' | 'routes' | 'skills' | 'monitor' | 'tiers'>('accounts');
   const [toast, setToast] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
@@ -775,6 +775,13 @@ export default function AdminConsolePage() {
             style={activeTab === 'skills' ? styles.tabActive : styles.tabBtn}
           >
             🧩 5. 提示词插件 (Skills) ({allSkillPlugins.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('tiers')}
+            style={activeTab === 'tiers' ? styles.tabActive : styles.tabBtn}
+          >
+            🎛️ 6. 创作档位配置 ({systemConfig?.creationTiers?.length || 0})
           </button>
         </div>
 
@@ -2940,6 +2947,98 @@ export default function AdminConsolePage() {
                           </div>
                         );
                       })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          </div>
+        )}
+
+        {/* TAB 6: Creation Tiers (前台脱敏档位与工位/模型映射) */}
+        {activeTab === 'tiers' && systemConfig && (
+          <div style={{ display: 'grid', gap: 20 }}>
+            <section style={styles.card}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 14 }}>
+                <div>
+                  <h2 style={{ margin: '0 0 4px', fontSize: 17 }}>🎛️ 创作档位配置（前台脱敏映射）</h2>
+                  <p style={{ margin: 0, color: '#939db0', fontSize: 13 }}>
+                    前台创作者仅可见脱敏后的档位名称与消耗倍率，底层中转通道、模型名与路由完全在此隔离配置。
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={busy}
+                  style={styles.primaryBtn}
+                  onClick={async () => {
+                    await adminAction(
+                      'save_creation_tiers',
+                      { creationTiers: systemConfig.creationTiers || [] },
+                      '创作档位映射已保存，前台下拉列表已即时同步'
+                    );
+                  }}
+                >
+                  💾 保存全部创作档位
+                </button>
+              </div>
+              <div style={{ display: 'grid', gap: 14 }}>
+                {(systemConfig.creationTiers || []).map((tier, idx) => (
+                  <div key={tier.id} style={{ padding: 16, borderRadius: 12, background: 'rgba(15,23,42,0.45)', border: '1px solid #263147', display: 'grid', gap: 10 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+                      <label style={styles.label}>
+                        前台显示名称
+                        <input
+                          style={styles.input}
+                          value={tier.name}
+                          onChange={(e) => {
+                            const next = [...(systemConfig.creationTiers || [])];
+                            next[idx] = { ...tier, name: e.target.value };
+                            setSystemConfig((prev) => (prev ? { ...prev, creationTiers: next } : prev));
+                          }}
+                        />
+                      </label>
+                      <label style={styles.label}>
+                        消耗倍率提示
+                        <input
+                          style={styles.input}
+                          value={tier.costHint}
+                          onChange={(e) => {
+                            const next = [...(systemConfig.creationTiers || [])];
+                            next[idx] = { ...tier, costHint: e.target.value };
+                            setSystemConfig((prev) => (prev ? { ...prev, creationTiers: next } : prev));
+                          }}
+                        />
+                      </label>
+                      <label style={styles.label}>
+                        绑定中转渠道 ID
+                        <select
+                          style={styles.input}
+                          value={tier.providerId || ''}
+                          onChange={(e) => {
+                            const next = [...(systemConfig.creationTiers || [])];
+                            next[idx] = { ...tier, providerId: e.target.value };
+                            setSystemConfig((prev) => (prev ? { ...prev, creationTiers: next } : prev));
+                          }}
+                        >
+                          <option value="">跟随工位默认渠道</option>
+                          {(systemConfig.providers || []).map((pr) => (
+                            <option key={pr.id} value={pr.id}>{pr.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label style={styles.label}>
+                        绑定底层模型（仅后台可见）
+                        <input
+                          style={styles.input}
+                          value={tier.model || ''}
+                          placeholder="留空则跟随工位模型"
+                          onChange={(e) => {
+                            const next = [...(systemConfig.creationTiers || [])];
+                            next[idx] = { ...tier, model: e.target.value };
+                            setSystemConfig((prev) => (prev ? { ...prev, creationTiers: next } : prev));
+                          }}
+                        />
+                      </label>
                     </div>
                   </div>
                 ))}

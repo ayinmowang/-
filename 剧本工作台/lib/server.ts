@@ -47,7 +47,7 @@ export function getMaxUploadBytes(kind?: Kind): number {
   if (Number.isFinite(rawMb) && rawMb > 0) {
     return Math.floor(rawMb * 1024 * 1024);
   }
-  if (kind === 'transcribe') {
+  if (!kind || kind === 'transcribe') {
     return 4096 * 1024 * 1024;
   }
   return 200 * 1024 * 1024;
