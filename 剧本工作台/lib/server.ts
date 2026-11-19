@@ -6,6 +6,9 @@ import type {
   AdminSystemConfig,
   ApiAuditLog,
   ApiProviderConfig,
+  CommerceOrder,
+  CommercePlan,
+  CommerceSubscription,
   CreationTierConfig,
   CreatorPromptCatalog,
   CreatorPromptSummary,
@@ -32,6 +35,9 @@ interface PersistentStoreData {
   sessions: Record<string, { accountId: string; username: string; createdAt: string }>;
   systemConfig: AdminSystemConfig;
   auditLogs: ApiAuditLog[];
+  plans: CommercePlan[];
+  subscriptions: CommerceSubscription[];
+  orders: CommerceOrder[];
 }
 
 const DATA_DIR = path.join(process.cwd(), '.data');
@@ -547,6 +553,15 @@ function loadPersistentStore(): PersistentStoreData {
         g.__STUDIO_PERSISTENT_STORE__.systemConfig.creationTiers = createDefaultCreationTiers();
       }
     }
+    if (!Array.isArray(g.__STUDIO_PERSISTENT_STORE__.plans)) {
+      g.__STUDIO_PERSISTENT_STORE__.plans = [];
+    }
+    if (!Array.isArray(g.__STUDIO_PERSISTENT_STORE__.subscriptions)) {
+      g.__STUDIO_PERSISTENT_STORE__.subscriptions = [];
+    }
+    if (!Array.isArray(g.__STUDIO_PERSISTENT_STORE__.orders)) {
+      g.__STUDIO_PERSISTENT_STORE__.orders = [];
+    }
     return g.__STUDIO_PERSISTENT_STORE__;
   }
 
@@ -557,6 +572,9 @@ function loadPersistentStore(): PersistentStoreData {
     sessions: {},
     systemConfig: createDefaultSystemConfig(),
     auditLogs: [],
+    plans: [],
+    subscriptions: [],
+    orders: [],
   };
 
   try {
@@ -589,6 +607,9 @@ function loadPersistentStore(): PersistentStoreData {
             }
           : initial.systemConfig,
         auditLogs: Array.isArray(parsed.auditLogs) ? parsed.auditLogs : [],
+        plans: Array.isArray(parsed.plans) ? parsed.plans : [],
+        subscriptions: Array.isArray(parsed.subscriptions) ? parsed.subscriptions : [],
+        orders: Array.isArray(parsed.orders) ? parsed.orders : [],
       };
     }
   } catch (err) {

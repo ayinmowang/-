@@ -390,7 +390,63 @@ async function main() {
     const adminRoute = await import('../app/api/admin/route.ts');
     const studioRoute = await import('../app/api/studio/route.ts');
     const uploadRoute = await import('../app/api/upload/route.ts');
+    const subscriptionsRoute = await import('../app/api/subscriptions/route.ts');
+    const purchaseRoute = await import('../app/api/purchase/route.ts');
+    const ordersRoute = await import('../app/api/orders/route.ts');
 
+    async function subscriptionsGet(token) {
+      return subscriptionsRoute.GET(
+        new Request('http://localhost/api/subscriptions', {
+          headers: token ? { 'x-studio-token': token } : {},
+        })
+      );
+    }
+
+    async function subscriptionsPost(token, body) {
+      return subscriptionsRoute.POST(
+        new Request('http://localhost/api/subscriptions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(token ? { 'x-studio-token': token } : {}) },
+          body: JSON.stringify(body),
+        })
+      );
+    }
+
+    async function purchaseGet(token) {
+      return purchaseRoute.GET(
+        new Request('http://localhost/api/purchase', {
+          headers: token ? { 'x-studio-token': token } : {},
+        })
+      );
+    }
+
+    async function purchasePost(token, body) {
+      return purchaseRoute.POST(
+        new Request('http://localhost/api/purchase', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(token ? { 'x-studio-token': token } : {}) },
+          body: JSON.stringify(body),
+        })
+      );
+    }
+
+    async function ordersGet(token) {
+      return ordersRoute.GET(
+        new Request('http://localhost/api/orders', {
+          headers: token ? { 'x-studio-token': token } : {},
+        })
+      );
+    }
+
+    async function ordersPost(token, body) {
+      return ordersRoute.POST(
+        new Request('http://localhost/api/orders', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(token ? { 'x-studio-token': token } : {}) },
+          body: JSON.stringify(body),
+        })
+      );
+    }
     async function loginKey(key) {
       const res = await authRoute.POST(
         new Request('http://localhost/api/auth', {
@@ -490,7 +546,7 @@ async function main() {
     // =========================================================================
     console.log('\n=== Tier 1: Feature Coverage (3.0 Upgrade) ===');
 
-    await runTest('T1-01', 'T1', 'R1: 6 top-level routes + /login exist, warm paper CSS tokens present, forbidden SaaS/game menus absent', async () => {
+    await runTest('T1-01', 'T1', 'R1: top-level routes + /login + commerce routes exist, warm paper CSS tokens present, forbidden game menus absent', async () => {
       const requiredPages = [
         'app/page.tsx',
         'app/login/page.tsx',
@@ -498,6 +554,9 @@ async function main() {
         'app/breakdown/page.tsx',
         'app/usage/page.tsx',
         'app/redeem/page.tsx',
+        'app/subscriptions/page.tsx',
+        'app/purchase/page.tsx',
+        'app/orders/page.tsx',
         'app/profile/page.tsx',
         'app/admin/page.tsx',
       ];
@@ -505,7 +564,7 @@ async function main() {
         assert.equal(fs.existsSync(path.join(ROOT_DIR, rel)), true, `Missing required route file: ${rel}`);
       }
 
-      const forbiddenNavTerms = ['墨笔行', '充值/会员', '我的订阅', '我的订单', '游戏收益'];
+      const forbiddenNavTerms = ['墨笔行', '游戏收益'];
       const uiFiles = [
         ...listFilesRecursive(path.join(ROOT_DIR, 'components'), ['.ts', '.tsx']),
         ...listFilesRecursive(path.join(ROOT_DIR, 'app'), ['.tsx']).filter((f) => !f.includes(`${path.sep}api${path.sep}`)),
@@ -520,8 +579,21 @@ async function main() {
       const shellPath = path.join(ROOT_DIR, 'components', 'WarmShell.tsx');
       assert.equal(fs.existsSync(shellPath), true, 'components/WarmShell.tsx must exist');
       const shellSrc = fs.readFileSync(shellPath, 'utf8');
-      for (const route of ['/studio', '/breakdown', '/usage', '/redeem', '/profile', '/admin']) {
+      for (const route of [
+        '/studio',
+        '/breakdown',
+        '/usage',
+        '/redeem',
+        '/subscriptions',
+        '/purchase',
+        '/orders',
+        '/profile',
+        '/admin',
+      ]) {
         assert.equal(shellSrc.includes(route), true, `WarmShell.tsx missing navigation route ${route}`);
+      }
+      for (const label of ['我的订阅', '充值 / 会员', '我的订单']) {
+        assert.equal(shellSrc.includes(label), true, `WarmShell.tsx missing navigation label ${label}`);
       }
 
       const cssSrc = fs.readFileSync(path.join(ROOT_DIR, 'app', 'globals.css'), 'utf8');
@@ -530,6 +602,191 @@ async function main() {
       assert.equal(/#d49b54/i.test(cssSrc), true, 'globals.css missing ochre-gold token #D49B54');
       assert.equal(cssSrc.includes('prefers-reduced-motion'), true, 'globals.css must support prefers-reduced-motion');
     });
+
+    await runTest('T1-01B', 'T1', 'Commerce: unauthenticated access returns 401 AUTH_REQUIRED and authenticated GET + pages work', async () => {
+      for (const route of ['/subscriptions', '/purchase', '/orders']) {
+        assert.equal(
+          fs.existsSync(path.join(ROOT_DIR, 'app', route.slice(1), 'page.tsx')),
+          true,
+          `Missing page file for ${route}`
+        );
+      }
+
+      const unauthChecks = [
+        ['/api/subscriptions', () => subscriptionsGet('')],
+        ['/api/purchase', () => purchaseGet('')],
+        ['/api/orders', () => ordersGet('')],
+      ];
+      for (const [apiPath, fn] of unauthChecks) {
+        const unauthRes = await fn();
+        assert.equal(unauthRes.status, 401, `Expected 401 without token on ${apiPath}`);
+        const unauthJson = await unauthRes.json();
+        assert.equal(
+          unauthJson?.error ?? unauthJson?.code,
+          'AUTH_REQUIRED',
+          `Expected AUTH_REQUIRED on ${apiPath}`
+        );
+      }
+
+      const subRes = await subscriptionsGet(creator1Token);
+      assert.equal(subRes.status, 200, 'GET /api/subscriptions should succeed for authenticated creator');
+      const subJson = await subRes.json();
+      assertCreatorRedlineClean(subJson, 'GET /api/subscriptions');
+
+      const purRes = await purchaseGet(creator1Token);
+      assert.equal(purRes.status, 200, 'GET /api/purchase should succeed for authenticated creator');
+      const purJson = await purRes.json();
+      assertCreatorRedlineClean(purJson, 'GET /api/purchase');
+
+      const ordRes = await ordersGet(creator1Token);
+      assert.equal(ordRes.status, 200, 'GET /api/orders should succeed for authenticated creator');
+      const ordJson = await ordRes.json();
+      assertCreatorRedlineClean(ordJson, 'GET /api/orders');
+    });
+
+    await runTest('T1-01C', 'T1', 'Commerce: order creation, admin confirmation idempotency, non-admin isolation, order cancellation & subscription renewal toggle', async () => {
+      const purchaseCatalogRes = await purchaseGet(creator1Token);
+      assert.equal(purchaseCatalogRes.status, 200, 'GET /api/purchase failed');
+      const purchaseCatalogJson = await purchaseCatalogRes.json();
+      assertCreatorRedlineClean(purchaseCatalogJson, 'GET /api/purchase catalog');
+
+      const enabledPlans = (purchaseCatalogJson?.plans || []).filter((p) => p && p.enabled !== false);
+      assert.equal(enabledPlans.length > 0, true, 'Expected at least one enabled commerce plan');
+      const targetPlan = enabledPlans[0];
+      assert.equal(typeof targetPlan.id, 'string', 'Target plan must have string id');
+      assert.equal(typeof targetPlan.creditUsd, 'number', 'Target plan must have numeric creditUsd');
+
+      const subBeforeRes = await subscriptionsGet(creator1Token);
+      assert.equal(subBeforeRes.status, 200, 'GET /api/subscriptions before purchase failed');
+      const subBeforeJson = await subBeforeRes.json();
+      assertCreatorRedlineClean(subBeforeJson, 'GET /api/subscriptions before purchase');
+      const capBefore = Number(subBeforeJson?.budgetCapUsd ?? subBeforeJson?.account?.budgetCapUsd ?? 0);
+
+      // 1. Creator creates pending order
+      const createOrderRes = await purchasePost(creator1Token, { planId: targetPlan.id });
+      assert.equal([200, 201].includes(createOrderRes.status), true, 'POST /api/purchase should create pending order');
+      const createOrderJson = await createOrderRes.json();
+      assertCreatorRedlineClean(createOrderJson, 'POST /api/purchase');
+      const createdOrder = createOrderJson?.order || createOrderJson;
+      const orderId = createdOrder?.id;
+      assert.equal(typeof orderId, 'string', 'Created order must have id');
+      assert.equal(createdOrder?.status, 'pending', 'Newly created order status must be pending');
+
+      // 2. Non-admin cannot confirm_order or save_plans, and budget must not increase
+      const nonAdminConfirm = await adminPost(creator2Token, { operation: 'confirm_order', orderId });
+      assert.equal([401, 403].includes(nonAdminConfirm.status), true, 'Non-admin confirm_order must be rejected');
+
+      const nonAdminSavePlans = await adminPost(creator2Token, { operation: 'save_plans', plans: enabledPlans });
+      assert.equal([401, 403].includes(nonAdminSavePlans.status), true, 'Non-admin save_plans must be rejected');
+
+      const subAfterUnauthorizedRes = await subscriptionsGet(creator1Token);
+      assert.equal(subAfterUnauthorizedRes.status, 200);
+      const subAfterUnauthorizedJson = await subAfterUnauthorizedRes.json();
+      assertCreatorRedlineClean(subAfterUnauthorizedJson, 'GET /api/subscriptions after rejected non-admin confirm');
+      const capAfterUnauthorized = Number(
+        subAfterUnauthorizedJson?.budgetCapUsd ?? subAfterUnauthorizedJson?.account?.budgetCapUsd ?? 0
+      );
+      assert.equal(capAfterUnauthorized, capBefore, 'budgetCapUsd must not change after unauthorized confirm attempt');
+
+      // 3. Admin confirms order -> paid & budgetCapUsd += creditUsd; repeat confirm -> alreadyPaid=true & idempotent
+      const confirmRes1 = await adminPost(adminToken, { operation: 'confirm_order', orderId });
+      assert.equal(confirmRes1.status, 200, 'Admin confirm_order should succeed');
+      const confirmJson1 = await confirmRes1.json();
+      const confirmedOrder1 = confirmJson1?.confirmedOrder || confirmJson1?.order || confirmJson1;
+      assert.equal(confirmedOrder1?.status, 'paid', 'Confirmed order status must be paid');
+
+      const subAfterConfirm1Res = await subscriptionsGet(creator1Token);
+      assert.equal(subAfterConfirm1Res.status, 200);
+      const subAfterConfirm1Json = await subAfterConfirm1Res.json();
+      assertCreatorRedlineClean(subAfterConfirm1Json, 'GET /api/subscriptions after first confirm');
+      const capAfterConfirm1 = Number(
+        subAfterConfirm1Json?.budgetCapUsd ?? subAfterConfirm1Json?.account?.budgetCapUsd ?? 0
+      );
+      assert.equal(
+        Math.abs(capAfterConfirm1 - (capBefore + Number(targetPlan.creditUsd))) < 1e-6,
+        true,
+        `Expected budgetCapUsd to increase by ${targetPlan.creditUsd}`
+      );
+
+      const confirmRes2 = await adminPost(adminToken, { operation: 'confirm_order', orderId });
+      assert.equal(confirmRes2.status, 200, 'Second confirm_order call should succeed idempotently');
+      const confirmJson2 = await confirmRes2.json();
+      assert.equal(confirmJson2?.alreadyPaid, true, 'Second confirm_order call must return alreadyPaid=true');
+
+      const subAfterConfirm2Res = await subscriptionsGet(creator1Token);
+      assert.equal(subAfterConfirm2Res.status, 200);
+      const subAfterConfirm2Json = await subAfterConfirm2Res.json();
+      assertCreatorRedlineClean(subAfterConfirm2Json, 'GET /api/subscriptions after repeat confirm');
+      const capAfterConfirm2 = Number(
+        subAfterConfirm2Json?.budgetCapUsd ?? subAfterConfirm2Json?.account?.budgetCapUsd ?? 0
+      );
+      assert.equal(
+        Math.abs(capAfterConfirm2 - capAfterConfirm1) < 1e-6,
+        true,
+        'Repeat confirm_order must not double-credit budgetCapUsd'
+      );
+
+      // 4. Paid order cannot be cancelled -> PAID_ORDER_CANNOT_CANCEL
+      const cancelPaidRes = await ordersPost(creator1Token, { operation: 'cancel', orderId });
+      assert.equal(cancelPaidRes.status >= 400 && cancelPaidRes.status < 500, true, 'Cancelling paid order must fail');
+      const cancelPaidJson = await cancelPaidRes.json();
+      assert.equal(
+        cancelPaidJson?.error ?? cancelPaidJson?.code,
+        'PAID_ORDER_CANNOT_CANCEL',
+        'Cancelling paid order must return error PAID_ORDER_CANNOT_CANCEL'
+      );
+      assertCreatorRedlineClean(cancelPaidJson, 'POST /api/orders cancel paid');
+
+      // 5. Creator cancels own pending order successfully
+      const pendingOrderRes = await purchasePost(creator1Token, { planId: targetPlan.id });
+      assert.equal([200, 201].includes(pendingOrderRes.status), true, 'Second pending order creation should succeed');
+      const pendingOrderJson = await pendingOrderRes.json();
+      assertCreatorRedlineClean(pendingOrderJson, 'POST /api/purchase second order');
+      const pendingOrderId = (pendingOrderJson?.order || pendingOrderJson)?.id;
+      assert.equal(typeof pendingOrderId, 'string', 'Second pending order must have id');
+
+      const cancelPendingRes = await ordersPost(creator1Token, { operation: 'cancel', orderId: pendingOrderId });
+      assert.equal(cancelPendingRes.status, 200, 'Cancelling own pending order should succeed');
+      const cancelPendingJson = await cancelPendingRes.json();
+      assertCreatorRedlineClean(cancelPendingJson, 'POST /api/orders cancel pending');
+      const cancelledOrder = cancelPendingJson?.order || cancelPendingJson;
+      assert.equal(cancelledOrder?.status, 'cancelled', 'Cancelled order status must be cancelled');
+
+      // 6. Subscription cancellation sets renewEnabled=false without decreasing budgetCapUsd
+      const subsListRes = await subscriptionsGet(creator1Token);
+      assert.equal(subsListRes.status, 200, 'GET /api/subscriptions failed');
+      const subsListJson = await subsListRes.json();
+      assertCreatorRedlineClean(subsListJson, 'GET /api/subscriptions list');
+      const subs = subsListJson?.subscriptions || [];
+      if (subs.length > 0) {
+        const activeSub = subs.find((s) => s && s.renewEnabled !== false) || subs[0];
+        const cancelSubRes = await subscriptionsPost(creator1Token, {
+          operation: 'cancel',
+          subscriptionId: activeSub.id,
+        });
+        assert.equal(cancelSubRes.status, 200, 'Cancelling subscription renewal should succeed');
+        const cancelSubJson = await cancelSubRes.json();
+        assertCreatorRedlineClean(cancelSubJson, 'POST /api/subscriptions cancel');
+        const updatedSub =
+          cancelSubJson?.subscription ||
+          (cancelSubJson?.subscriptions || []).find((s) => s.id === activeSub.id);
+        assert.equal(updatedSub?.renewEnabled, false, 'Cancelled subscription must set renewEnabled=false');
+
+        const subAfterCancelRes = await subscriptionsGet(creator1Token);
+        assert.equal(subAfterCancelRes.status, 200);
+        const subAfterCancelJson = await subAfterCancelRes.json();
+        assertCreatorRedlineClean(subAfterCancelJson, 'GET /api/subscriptions after subscription cancel');
+        const capAfterSubCancel = Number(
+          subAfterCancelJson?.budgetCapUsd ?? subAfterCancelJson?.account?.budgetCapUsd ?? 0
+        );
+        assert.equal(
+          capAfterSubCancel >= capAfterConfirm1 - 1e-6,
+          true,
+          'Cancelling subscription must not decrease budgetCapUsd'
+        );
+      }
+    });
+
 
     await runTest('T1-02', 'T1', 'R2: /api/admin save_creation_tiers creates and persists custom tier mappings', async () => {
       const tiersPayload = [

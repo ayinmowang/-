@@ -418,3 +418,74 @@ export interface PublicAccountProfile {
   globalRules?: string;
   themePreference?: 'light' | 'dark';
 }
+
+/**
+ * Commercialization Types (Plans, Orders, Subscriptions)
+ */
+export type CommercePlanKind = 'subscription' | 'topup';
+
+export type CommercePlanPeriod = 'monthly' | 'yearly' | 'once';
+
+export type CommerceOrderStatus = 'pending' | 'paid' | 'cancelled';
+
+export type CommerceSubscriptionStatus = 'active' | 'cancelled' | 'expired';
+
+export interface CommercePlan {
+  id: string;
+  name: string;
+  description: string;
+  kind: CommercePlanKind;
+  period: CommercePlanPeriod;
+  priceUsd: number;
+  creditUsd: number;
+  paymentChannelSlot?: string;
+  enabled: boolean;
+  order: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreatorPlanSummary {
+  id: string;
+  name: string;
+  description: string;
+  kind: CommercePlanKind;
+  period: CommercePlanPeriod;
+  priceUsd: number;
+  creditUsd: number;
+  paymentChannelSlot?: string;
+  order: number;
+}
+
+export interface CommerceOrder {
+  id: string;
+  accountId: string;
+  planId: string;
+  planName: string;
+  kind: CommercePlanKind;
+  period: CommercePlanPeriod;
+  status: CommerceOrderStatus;
+  priceUsd: number;
+  creditUsd: number;
+  paymentChannel: string;
+  createdAt: string;
+  paidAt?: string;
+  cancelledAt?: string;
+  confirmedByAccountId?: string;
+  idempotencyKey?: string;
+}
+
+export interface CommerceSubscription {
+  id: string;
+  accountId: string;
+  planId: string;
+  planName: string;
+  status: CommerceSubscriptionStatus;
+  period: CommercePlanPeriod;
+  creditUsd: number;
+  startedAt: string;
+  currentPeriodEnd?: string;
+  cancelledAt?: string;
+  renewEnabled: boolean;
+  orderId?: string;
+}

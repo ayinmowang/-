@@ -102,8 +102,24 @@ export default function AdminConsolePage() {
   const [loading, setLoading] = useState(true);
   const [authorized, setAuthorized] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [activeTab, setActiveTab] = useState<'accounts' | 'providers' | 'routes' | 'skills' | 'monitor' | 'tiers'>('accounts');
-  const [toast, setToast] = useState('');
+  const [activeTab, setActiveTab] = useState<
+    'accounts' | 'providers' | 'routes' | 'skills' | 'monitor' | 'tiers' | 'plans' | 'orders'
+  >('accounts');
+  const [plansList, setPlansList] = useState<any[]>([]);
+  const [ordersList, setOrdersList] = useState<any[]>([]);
+  const [subscriptionsList, setSubscriptionsList] = useState<any[]>([]);
+  const [planForm, setPlanForm] = useState({
+    id: '',
+    planName: '',
+    priceUsd: '',
+    creditUsd: '',
+    period: 'monthly',
+    status: 'active',
+    description: '',
+  });
+  const [billingBusy, setBillingBusy] = useState(false);
+  const [billingMsg, setBillingMsg] = useState('');
+  const [billingErr, setBillingErr] = useState('');  const [toast, setToast] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
   // Admin Login Gate state
@@ -200,8 +216,100 @@ export default function AdminConsolePage() {
     if (data.systemConfig) setSystemConfig(data.systemConfig);
     if (Array.isArray(data.projectsSummary)) setProjectsSummary(data.projectsSummary);
     if (Array.isArray(data.auditLogs)) setAuditLogs(data.auditLogs);
+    if (Array.isArray(data.plans)) setPlansList(data.plans);
+    if (Array.isArray(data.orders)) setOrdersList(data.orders);
+    if (Array.isArray(data.subscriptions)) setSubscriptionsList(data.subscriptions);
   }
 
+  async function handleSavePlan(e: React.FormEvent) {
+    e.preventDefault();
+    setBillingErr('');
+    setBillingMsg('');
+    const priceNum = Number(planForm.priceUsd);
+    const creditNum = Number(planForm.creditUsd);
+    if (!planForm.planName.trim()) {
+      setBillingErr('请填写套餐名称（planName）');
+      return;
+    }
+    if (!Number.isFinite(priceNum) || priceNum <= 0) {
+      setBillingErr('套餐价格（priceUsd）必须为大于 0 的正数');
+      return;
+    }
+    if (!Number.isFinite(creditNum) || creditNum <= 0) {
+      setBillingErr('包含额度（creditUsd）必须为大于 0 的正数');
+      return;
+    }
+    setBillingBusy(true);
+    try {
+      const res = await fetch('/api/admin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          operation: 'save_plans',
+          plan: {
+            id: planForm.id || undefined,
+            name: planForm.planName.trim(),
+            kind: planForm.period === 'once' ? 'topup' : 'subscription',
+            period: planForm.period,
+            priceUsd: priceNum,
+            creditUsd: creditNum,
+            enabled: planForm.status !== 'disabled' && planForm.status !== 'inactive',            description: planForm.description.trim(),
+          },
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        throw new Error(json.message || json.error || '保存套餐失败');
+      }
+      setBillingMsg(`套餐「${planForm.planName.trim()}」已保存`);
+      setPlanForm({
+        id: '',
+        planName: '',
+        priceUsd: '',
+        creditUsd: '',
+        period: 'monthly',
+        status: 'active',
+        description: '',
+      });
+      await fetchAdminSnapshot();
+    } catch (err: any) {
+      setBillingErr(err.message || '保存失败');
+    } finally {
+      setBillingBusy(false);
+    }
+  }
+
+  async function handleConfirmOrder(order: any) {
+    setBillingErr('');
+    setBillingMsg('');
+    if (!order || !order.id) return;
+    if (order.status !== 'pending') {
+      setBillingMsg(`订单 ${order.id} 已入账或非待审核状态，无需重复确认`);
+      return;
+    }
+    setBillingBusy(true);
+    try {
+      const res = await fetch('/api/admin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          operation: 'confirm_order',
+          orderId: order.id,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        throw new Error(json.message || json.error || '确认入账失败');
+      }
+      setBillingMsg(`订单 ${order.id} 已确认入账，额度与订阅周期已生效`);
+      await fetchAdminSnapshot();
+
+    } catch (err: any) {
+      setBillingErr(err.message || '确认入账失败');
+    } finally {
+      setBillingBusy(false);
+    }
+  }
   useEffect(() => {
     fetchAdminSnapshot();
   }, []);
@@ -783,8 +891,21 @@ export default function AdminConsolePage() {
           >
             🎛️ 6. 创作档位配置 ({systemConfig?.creationTiers?.length || 0})
           </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('plans')}
+            style={activeTab === 'plans' ? styles.tabActive : styles.tabBtn}
+          >
+            💎 7. 套餐与价格额度 ({plansList.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('orders')}
+            style={activeTab === 'orders' ? styles.tabActive : styles.tabBtn}
+          >
+            🧾 8. 订单审核入账 ({ordersList.filter((o) => o.status === 'pending').length} 待审 / {ordersList.length})
+          </button>
         </div>
-
         {toast && <div style={styles.toastBox}>{toast}</div>}
         {errorMsg && <div style={styles.errorBox}>⚠ {errorMsg}</div>}
 
@@ -3046,11 +3167,265 @@ export default function AdminConsolePage() {
             </section>
           </div>
         )}
+
+        {activeTab === 'plans' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+            <section style={styles.card}>
+              <h2 style={styles.sectionTitle}>7. 套餐与价格额度配置（save_plans）</h2>
+              {billingErr ? (
+                <div style={{ color: '#b91c1c', background: '#fef2f2', padding: '10px 14px', borderRadius: 8, marginBottom: 12, fontSize: 13 }}>
+                  {billingErr}
+                </div>
+              ) : null}
+              {billingMsg ? (
+                <div style={{ color: '#15803d', background: '#f0fdf4', padding: '10px 14px', borderRadius: 8, marginBottom: 12, fontSize: 13 }}>
+                  {billingMsg}
+                </div>
+              ) : null}
+
+              <form onSubmit={handleSavePlan} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 20 }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>套餐名称（planName）*</label>
+                  <input
+                    type="text"
+                    value={planForm.planName}
+                    onChange={(e) => setPlanForm({ ...planForm, planName: e.target.value })}
+                    placeholder="如：专业月卡"
+                    style={styles.input}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>标价 USD（priceUsd）*</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    value={planForm.priceUsd}
+                    onChange={(e) => setPlanForm({ ...planForm, priceUsd: e.target.value })}
+                    placeholder="如：19.90"
+                    style={styles.input}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>发放额度 USD（creditUsd）*</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    value={planForm.creditUsd}
+                    onChange={(e) => setPlanForm({ ...planForm, creditUsd: e.target.value })}
+                    placeholder="如：25.00"
+                    style={styles.input}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>周期（period）</label>
+                  <select
+                    value={planForm.period}
+                    onChange={(e) => setPlanForm({ ...planForm, period: e.target.value })}
+                    style={styles.input}
+                  >
+                    <option value="monthly">monthly（月度）</option>
+                    <option value="quarterly">quarterly（季度）</option>
+                    <option value="yearly">yearly（年度）</option>
+                    <option value="one_time">one_time（单次额度）</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>状态（status）</label>
+                  <select
+                    value={planForm.status}
+                    onChange={(e) => setPlanForm({ ...planForm, status: e.target.value })}
+                    style={styles.input}
+                  >
+                    <option value="active">active（上架）</option>
+                    <option value="disabled">disabled（下架）</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>备注说明</label>
+                  <input
+                    type="text"
+                    value={planForm.description}
+                    onChange={(e) => setPlanForm({ ...planForm, description: e.target.value })}
+                    placeholder="可选说明"
+                    style={styles.input}
+                  />
+                </div>
+                <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
+                  <button type="submit" disabled={billingBusy} style={styles.primaryBtn}>
+                    {planForm.id ? '更新套餐' : '新增套餐'}
+                  </button>
+                  {planForm.id ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPlanForm({
+                          id: '',
+                          planName: '',
+                          priceUsd: '',
+                          creditUsd: '',
+                          period: 'monthly',
+                          status: 'active',
+                          description: '',
+                        })
+                      }
+                      style={styles.secondaryBtn}
+                    >
+                      取消编辑
+                    </button>
+                  ) : null}
+                </div>
+              </form>
+
+              <div style={{ overflowX: 'auto' }}>
+                <table style={styles.table}>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}>套餐 ID</th>
+                      <th style={styles.th}>planName</th>
+                      <th style={styles.th}>priceUsd</th>
+                      <th style={styles.th}>creditUsd</th>
+                      <th style={styles.th}>period</th>
+                      <th style={styles.th}>status</th>
+                      <th style={styles.th}>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {plansList.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} style={{ ...styles.td, textAlign: 'center', color: '#78716c' }}>
+                          暂无套餐配置
+                        </td>
+                      </tr>
+                    ) : (
+                      plansList.map((p) => (
+                        <tr key={p.id}>
+                          <td style={styles.td}>{p.id}</td>
+                          <td style={styles.td}>{p.planName}</td>
+                          <td style={styles.td}>${Number(p.priceUsd || 0).toFixed(2)}</td>
+                          <td style={styles.td}>${Number(p.creditUsd || 0).toFixed(2)}</td>
+                          <td style={styles.td}>{p.period}</td>
+                          <td style={styles.td}>{p.status}</td>
+                          <td style={styles.td}>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setPlanForm({
+                                  id: p.id,
+                                  planName: p.planName || '',
+                                  priceUsd: String(p.priceUsd ?? ''),
+                                  creditUsd: String(p.creditUsd ?? ''),
+                                  period: p.period || 'monthly',
+                                  status: p.status || 'active',
+                                  description: p.description || '',
+                                })
+                              }
+                              style={styles.secondaryBtn}
+                            >
+                              编辑
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        )}
+
+        {activeTab === 'orders' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+            <section style={styles.card}>
+              <h2 style={styles.sectionTitle}>8. 订单审核入账（confirm_order）</h2>
+              {billingErr ? (
+                <div style={{ color: '#b91c1c', background: '#fef2f2', padding: '10px 14px', borderRadius: 8, marginBottom: 12, fontSize: 13 }}>
+                  {billingErr}
+                </div>
+              ) : null}
+              {billingMsg ? (
+                <div style={{ color: '#15803d', background: '#f0fdf4', padding: '10px 14px', borderRadius: 8, marginBottom: 12, fontSize: 13 }}>
+                  {billingMsg}
+                </div>
+              ) : null}
+
+              <div style={{ fontSize: 13, color: '#78716c', marginBottom: 14 }}>
+                当前活跃订阅总数：{subscriptionsList.filter((s) => s.status === 'active').length} / 全部订阅记录：{subscriptionsList.length}
+              </div>
+
+              <div style={{ overflowX: 'auto' }}>
+                <table style={styles.table}>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}>订单 ID</th>
+                      <th style={styles.th}>用户</th>
+                      <th style={styles.th}>planName</th>
+                      <th style={styles.th}>priceUsd</th>
+                      <th style={styles.th}>creditUsd</th>
+                      <th style={styles.th}>period</th>
+                      <th style={styles.th}>渠道槽</th>
+                      <th style={styles.th}>status</th>
+                      <th style={styles.th}>审核操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ordersList.length === 0 ? (
+                      <tr>
+                        <td colSpan={9} style={{ ...styles.td, textAlign: 'center', color: '#78716c' }}>
+                          暂无订单记录
+                        </td>
+                      </tr>
+                    ) : (
+                      ordersList.map((ord) => {
+                        const isPending = ord.status === 'pending';
+                        return (
+                          <tr key={ord.id}>
+                            <td style={styles.td}>{ord.id}</td>
+                            <td style={styles.td}>{ord.username || ord.accountId || '-'}</td>
+                            <td style={styles.td}>{ord.planName}</td>
+                            <td style={styles.td}>${Number(ord.priceUsd || 0).toFixed(2)}</td>
+                            <td style={styles.td}>${Number(ord.creditUsd || 0).toFixed(2)}</td>
+                            <td style={styles.td}>{ord.period}</td>
+                            <td style={styles.td}>{ord.paymentChannel || 'manual_admin'}</td>
+                            <td style={styles.td}>
+                              {isPending ? 'pending（待管理员确认入账）' : `${ord.status}（已入账）`}
+                            </td>
+                            <td style={styles.td}>
+                              {isPending ? (
+                                <button
+                                  type="button"
+                                  disabled={billingBusy}
+                                  onClick={() => handleConfirmOrder(ord)}
+                                  style={styles.primaryBtn}
+                                >
+                                  确认入账
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => handleConfirmOrder(ord)}
+                                  style={styles.secondaryBtn}
+                                >
+                                  已入账
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        )}
       </div>
     </main>
   );
 }
-
 const styles: Record<string, React.CSSProperties> = {
   shell: {
     minHeight: '100vh',

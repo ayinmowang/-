@@ -11,6 +11,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
   Clapperboard,
+  CreditCard,
   Droplets,
   Gift,
   LogIn,
@@ -18,7 +19,9 @@ import {
   Menu,
   Moon,
   PenTool,
+  Receipt,
   RefreshCw,
+  Repeat,
   Shield,
   Sun,
   User,
@@ -26,8 +29,16 @@ import {
 } from 'lucide-react';
 import type { PublicAccountProfile } from '../lib/types';
 
-export type WarmNavKey = 'studio' | 'breakdown' | 'usage' | 'redeem' | 'profile' | 'admin';
-
+export type WarmNavKey =
+  | 'studio'
+  | 'breakdown'
+  | 'usage'
+  | 'subscriptions'
+  | 'purchase'
+  | 'orders'
+  | 'redeem'
+  | 'profile'
+  | 'admin';
 export interface WarmNotificationItem {
   id: string;
   title: string;
@@ -61,6 +72,9 @@ const NAV_ITEMS: Array<{
   { key: 'studio', label: '创作台', href: '/studio', icon: PenTool },
   { key: 'breakdown', label: '拆书 · 扒剧', href: '/breakdown', icon: Clapperboard },
   { key: 'usage', label: '用量与额度', href: '/usage', icon: BarChart3 },
+  { key: 'subscriptions', label: '我的订阅', href: '/subscriptions', icon: Repeat },
+  { key: 'purchase', label: '充值 / 会员', href: '/purchase', icon: CreditCard },
+  { key: 'orders', label: '我的订单', href: '/orders', icon: Receipt },
   { key: 'redeem', label: '兑换 / 邀请码', href: '/redeem', icon: Gift },
   { key: 'profile', label: '个人资料', href: '/profile', icon: User },
   { key: 'admin', label: '管理后台', href: '/admin', icon: Shield, adminOnly: true },

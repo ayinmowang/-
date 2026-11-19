@@ -1,4 +1,9 @@
 import {
+  adminConfirmOrder,
+  adminSavePlan,
+  listAllCommerceForAdmin,
+} from '../../../lib/commerce';
+import {
   callStationLLM,
   createSkillPlugin,
   deleteSkillPlugin,
@@ -72,6 +77,7 @@ function buildAdminSnapshot(adminAcc: StudioAccount) {
     ...acc,
     projectCount: projectCountByOwner[acc.username] || 0,
   }));
+  const commerce = listAllCommerceForAdmin();
 
   return {
     authorized: true,
@@ -85,6 +91,9 @@ function buildAdminSnapshot(adminAcc: StudioAccount) {
     },
     projectsSummary,
     auditLogs: store.auditLogs.slice(0, 100),
+    plans: commerce.plans,
+    orders: commerce.orders,
+    subscriptions: commerce.subscriptions,
   };
 }
 
@@ -778,8 +787,61 @@ export async function POST(request: Request) {
       return Response.json(buildAdminSnapshot(adminAcc));
     }
 
+    // 20. Save (create / update / disable) commerce plan
+    if (op === 'save_plans') {
+      const planPayload =
+        body.plan && typeof body.plan === 'object' && !Array.isArray(body.plan) ? body.plan : body;
+      try {
+        const savedPlan = adminSavePlan(planPayload);
+        return Response.json({
+          ...buildAdminSnapshot(adminAcc),
+          savedPlan,
+        });
+      } catch (err: any) {
+        const code = String(err?.message || 'INVALID_INPUT');
+        return Response.json({ error: code }, { status: 422 });
+      }
+    }
+
+    // 21. List all commerce plans, orders, and subscriptions
+    if (op === 'list_commerce') {
+      const commerce = listAllCommerceForAdmin();
+      return Response.json({
+        authorized: true,
+        ...commerce,
+      });
+    }
+
+    // 22. Confirm pending order and credit budgetCapUsd idempotently
+    if (op === 'confirm_order') {
+      const orderId = String(body.orderId || body.id || '').trim();
+      if (!orderId) {
+        return Response.json({ error: 'INVALID_INPUT' }, { status: 400 });
+      }
+      try {
+        const result = await adminConfirmOrder({
+          orderId,
+          adminAccountId: adminAcc.id,
+        });
+        return Response.json({
+          ...buildAdminSnapshot(adminAcc),
+          confirmedOrder: result.order,
+          confirmedSubscription: result.subscription,
+          alreadyPaid: result.alreadyPaid,
+          accountBudgetCapUsd: result.accountBudgetCapUsd,
+        });
+      } catch (err: any) {
+        const code = String(err?.message || 'CONFIRM_ORDER_FAILED');
+        const status = code === 'ORDER_NOT_FOUND' || code === 'ACCOUNT_NOT_FOUND' ? 404 : 422;
+        return Response.json({ error: code }, { status });
+      }
+    }
+
     throw new Error('INVALID_INPUT');
-  } catch (e) {
+  } catch (e: any) {
+    if (e?.message === 'AUTH_REQUIRED' || e?.message === 'FORBIDDEN_ADMIN_ONLY') {
+      return Response.json({ authorized: false, error: e.message }, { status: 401 });
+    }
     return failure(e);
   }
 }
