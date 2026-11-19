@@ -1971,3 +1971,13 @@ select:focus-visible {
     scroll-behavior: auto !important;
   }
 }
+
+
+/* 3.0 Three-Pane Workbench Responsive Stacking (< 960px) */
+@media (max-width: 960px) {
+  .v3-three-pane {
+    grid-template-columns: 1fr !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+}

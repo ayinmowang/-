@@ -110,7 +110,7 @@ export default function UsagePage() {
       account={data?.account || null}
       authenticated={!authRequired && Boolean(data?.account)}
     >
-      <div style={{ maxWidth: 1180, margin: '0 auto', padding: '24px 20px 48px' }}>
+      <div style={{ width: '100%', maxWidth: 1180, margin: '0 auto', padding: '24px 20px 48px' }}>
         {authRequired ? (
           <div
             style={{

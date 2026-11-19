@@ -79,7 +79,7 @@ export default function RedeemPage() {
       account={account}
       authenticated={Boolean(account)}
     >
-      <div style={{ maxWidth: 760, margin: '0 auto', padding: '28px 20px 56px' }}>
+      <div style={{ width: '100%', maxWidth: 760, margin: '0 auto', padding: '28px 20px 56px' }}>
         <div
           style={{
             background: 'var(--warm-card, #fff)',

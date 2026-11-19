@@ -86,7 +86,7 @@ export default function ProfilePage() {
       account={account}
       authenticated={!authRequired && Boolean(account)}
     >
-      <div style={{ maxWidth: 820, margin: '0 auto', padding: '24px 20px 56px', display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div style={{ width: '100%', maxWidth: 820, margin: '0 auto', padding: '24px 20px 56px', display: 'flex', flexDirection: 'column', gap: 18 }}>
         {authRequired ? (
           <div style={{ background: 'var(--warm-card, #fff)', border: '1px solid var(--warm-border, #e6dfd3)', borderRadius: 16, padding: 36, textAlign: 'center' }}>
             <h2 style={{ fontFamily: 'serif', marginBottom: 8 }}>请先登录管理个人资料</h2>

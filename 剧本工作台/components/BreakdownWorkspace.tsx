@@ -388,7 +388,7 @@ export default function BreakdownWorkspace() {
         account={account}
         authenticated={Boolean(account)}
       >
-        <div style={{ maxWidth: 1180, margin: '0 auto', padding: '24px 20px 56px' }}>
+        <div style={{ width: '100%', maxWidth: 1180, margin: '0 auto', padding: '24px 20px 56px' }}>
           {/* Warm Hero Banner */}
           <div
             style={{
@@ -769,7 +769,9 @@ export default function BreakdownWorkspace() {
       fullBleed
     >
       <div
+        className="v3-three-pane"
         style={{
+          width: '100%',
           display: 'grid',
           gridTemplateColumns: '240px minmax(0, 1fr) 360px',
           height: 'calc(100vh - 58px)',
