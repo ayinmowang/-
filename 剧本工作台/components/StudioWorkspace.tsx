@@ -98,6 +98,7 @@ export default function StudioWorkspace() {
   const [leftMode, setLeftMode] = useState<LeftMode>('toc');
   const [leftDropOpen, setLeftDropOpen] = useState(false);
   const [selectedEpId, setSelectedEpId] = useState<string>('');
+  const [selectedLockedSlot, setSelectedLockedSlot] = useState<number | null>(null);
   const [selectedAsset, setSelectedAsset] = useState<{ tree: 'outline' | 'characters' | 'world'; node: StudioAssetNode } | null>(null);
 
   // Center editor
@@ -320,6 +321,7 @@ export default function StudioWorkspace() {
             setLeftMode('toc');
             setSelectedAsset(null);
             if (matchedEp) {
+              setSelectedLockedSlot(null);
               setSelectedEpId(matchedEp.id);
               setEpTitle(matchedEp.title);
               setEpBody(matchedEp.body || '');
@@ -509,6 +511,7 @@ export default function StudioWorkspace() {
       if (full.tierCatalog) setTierCatalog(full.tierCatalog);
       if (full.promptCatalog) setPromptCatalog(full.promptCatalog);
       setSelectedAsset(null);
+      setSelectedLockedSlot(null);
       syncProject(full, false);
     } catch (e: any) {
       setError(e.message || '打开项目失败');
@@ -534,6 +537,7 @@ export default function StudioWorkspace() {
       setShowCreateModal(false);
       setNewTitle('');
       setNewBrief('');
+      setSelectedLockedSlot(null);
       syncProject(created, false);
       setToast('新作品已建立，可以开始创作');
     } catch (err: any) {
@@ -544,10 +548,19 @@ export default function StudioWorkspace() {
     }
   }
 
-  const currentEpisode: StudioEpisode | null =
-    active?.episodes?.find((e) => e.id === selectedEpId) || active?.episodes?.[0] || null;
+  const isLockedSlotSelected = Boolean(
+    selectedLockedSlot !== null &&
+      active?.lockedEpisodes &&
+      selectedLockedSlot >= 1 &&
+      selectedLockedSlot <= active.lockedEpisodes
+  );
+  const currentEpisode: StudioEpisode | null = isLockedSlotSelected
+    ? active?.episodes?.find((e) => e.episodeNumber === selectedLockedSlot) || null
+    : active?.episodes?.find((e) => e.id === selectedEpId) || active?.episodes?.[0] || null;
   const isCurrentLocked = Boolean(
-    currentEpisode && (currentEpisode.locked || (active?.lockedEpisodes && currentEpisode.episodeNumber <= active.lockedEpisodes))
+    isLockedSlotSelected ||
+      (currentEpisode &&
+        (currentEpisode.locked || (active?.lockedEpisodes && currentEpisode.episodeNumber <= active.lockedEpisodes)))
   );
 
   async function saveCurrentContent() {
@@ -607,6 +620,7 @@ export default function StudioWorkspace() {
       });
       const createdEp = (updated.episodes || []).find((e) => e.episodeNumber === nextNum);
       setSelectedAsset(null);
+      setSelectedLockedSlot(null);
       setActive(updated);
       if (createdEp) {
         setSelectedEpId(createdEp.id);
@@ -1122,43 +1136,121 @@ export default function StudioWorkspace() {
 
           <div style={{ flex: 1, overflowY: 'auto', padding: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
             {leftMode === 'toc' &&
-              (active.episodes || []).map((ep) => {
-                const locked = ep.locked || Boolean(active.lockedEpisodes && ep.episodeNumber <= active.lockedEpisodes);
-                const isSel = !selectedAsset && ep.id === currentEpisode?.id;
-                return (
-                  <button
-                    key={ep.id}
-                    type="button"
-                    onClick={() => {
-                      setSelectedAsset(null);
-                      setSelectedEpId(ep.id);
-                      setEpTitle(ep.title);
-                      setEpBody(ep.body || '');
-                    }}
-                    style={{
-                      textAlign: 'left',
-                      padding: '9px 10px',
-                      borderRadius: 10,
-                      border: isSel ? '1.5px solid #8C3B2B' : '1px solid transparent',
-                      background: isSel ? 'var(--warm-card, #fff)' : 'transparent',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      gap: 6,
-                      fontSize: 13,
-                    }}
-                  >
-                    <span style={{ fontWeight: isSel ? 700 : 500, color: isSel ? '#8C3B2B' : 'inherit', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {ep.title}
-                    </span>
-                    <span style={{ fontSize: 11, opacity: 0.65, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-                      {locked && <Lock size={11} color="#b45309" />}
-                      {ep.body?.length || 0}字
-                    </span>
-                  </button>
-                );
-              })}
+              (() => {
+                const lockedCount = Math.max(0, Number(active.lockedEpisodes) || 0);
+                const realEpisodes = active.episodes || [];
+                const byNum = new Map<number, StudioEpisode>();
+                for (const ep of realEpisodes) {
+                  byNum.set(ep.episodeNumber, ep);
+                }
+
+                type TocEntry =
+                  | { kind: 'real'; episodeNumber: number; ep: StudioEpisode; locked: boolean }
+                  | { kind: 'placeholder'; episodeNumber: number };
+
+                const entries: TocEntry[] = [];
+                for (let n = 1; n <= lockedCount; n++) {
+                  const existing = byNum.get(n);
+                  if (existing) {
+                    entries.push({ kind: 'real', episodeNumber: n, ep: existing, locked: true });
+                    byNum.delete(n);
+                  } else {
+                    entries.push({ kind: 'placeholder', episodeNumber: n });
+                  }
+                }
+                for (const ep of byNum.values()) {
+                  const locked = Boolean(ep.locked || (lockedCount > 0 && ep.episodeNumber <= lockedCount));
+                  entries.push({ kind: 'real', episodeNumber: ep.episodeNumber, ep, locked });
+                }
+                entries.sort((a, b) => a.episodeNumber - b.episodeNumber);
+
+                return entries.map((entry) => {
+                  if (entry.kind === 'placeholder') {
+                    const n = entry.episodeNumber;
+                    const isSel = !selectedAsset && selectedLockedSlot === n;
+                    return (
+                      <button
+                        key={`locked-slot-${n}`}
+                        type="button"
+                        data-locked="true"
+                        aria-label={`第${n}集 锁定（一字不改）`}
+                        onClick={() => {
+                          setSelectedAsset(null);
+                          setSelectedEpId('');
+                          setSelectedLockedSlot(n);
+                          setEpTitle(`第 ${n} 集`);
+                          setEpBody('');
+                        }}
+                        style={{
+                          textAlign: 'left',
+                          padding: '9px 10px',
+                          borderRadius: 10,
+                          border: isSel ? '1.5px solid #8C3B2B' : '1px solid transparent',
+                          background: isSel ? 'var(--warm-card, #fff)' : 'transparent',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 6,
+                          fontSize: 13,
+                        }}
+                      >
+                        <span style={{ fontWeight: isSel ? 700 : 500, color: isSel ? '#8C3B2B' : 'inherit', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {`第 ${n} 集`}
+                        </span>
+                        <span style={{ fontSize: 11, opacity: 0.75, display: 'inline-flex', alignItems: 'center', gap: 3, flexShrink: 0, color: '#b45309' }}>
+                          <Lock size={11} color="#b45309" />
+                          <span>锁定（一字不改）</span>
+                        </span>
+                      </button>
+                    );
+                  }
+
+                  const { ep, locked } = entry;
+                  const isSel = !selectedAsset && ep.id === currentEpisode?.id;
+                  return (
+                    <button
+                      key={ep.id}
+                      type="button"
+                      data-locked={locked ? 'true' : 'false'}
+                      aria-label={locked ? `第${ep.episodeNumber}集 ${ep.title} 锁定（一字不改）` : `第${ep.episodeNumber}集 ${ep.title}`}
+                      onClick={() => {
+                        setSelectedLockedSlot(null);
+                        setSelectedAsset(null);
+                        setSelectedEpId(ep.id);
+                        setEpTitle(ep.title);
+                        setEpBody(ep.body || '');
+                      }}
+                      style={{
+                        textAlign: 'left',
+                        padding: '9px 10px',
+                        borderRadius: 10,
+                        border: isSel ? '1.5px solid #8C3B2B' : '1px solid transparent',
+                        background: isSel ? 'var(--warm-card, #fff)' : 'transparent',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: 6,
+                        fontSize: 13,
+                      }}
+                    >
+                      <span style={{ fontWeight: isSel ? 700 : 500, color: isSel ? '#8C3B2B' : 'inherit', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {ep.title}
+                      </span>
+                      <span style={{ fontSize: 11, opacity: 0.65, display: 'inline-flex', alignItems: 'center', gap: 3, flexShrink: 0 }}>
+                        {locked && (
+                          <>
+                            <Lock size={11} color="#b45309" />
+                            <span style={{ color: '#b45309' }}>锁定（一字不改）</span>
+                          </>
+                        )}
+                        {ep.body?.length || 0}字
+                      </span>
+                    </button>
+                  );
+                });
+              })()}
 
             {leftMode !== 'toc' &&
               (active[leftMode === 'outline' ? 'outlineNodes' : leftMode === 'characters' ? 'characterNodes' : 'worldNodes'] || []).map((node) => {
@@ -1256,6 +1348,7 @@ export default function StudioWorkspace() {
                   onChange={(e) => {
                     const found = (active.episodes || []).find((x) => x.id === e.target.value);
                     if (found) {
+                      setSelectedLockedSlot(null);
                       setSelectedEpId(found.id);
                       setEpTitle(found.title);
                       setEpBody(found.body || '');

@@ -398,49 +398,76 @@ async function findActionButton(page, buttonLabel) {
 }
 
 async function verifyLockedEpisodeIfVisible(page) {
-  const lockTrigger = page
-    .locator('button, [role="button"], [data-locked], [class*="lock"]')
-    .filter({ hasText: /已锁定|锁定集|锁集|锁定/ })
-    .first();
+  const openLockedEp1Entry = async () => {
+    const leftModeBtn = page.getByRole('button', { name: /作品目录|大纲|角色|背景设定/ }).first();
+    await leftModeBtn.waitFor({ state: 'visible', timeout: 10000 });
+    await leftModeBtn.click();
 
-  if ((await lockTrigger.count()) === 0 || !(await lockTrigger.isVisible().catch(() => false))) {
-    console.log('[step] No locked episode visible; skipping locked episode readonly check');
-    return;
+    const tocOption = page.getByRole('button', { name: /^作品目录$/ }).first();
+    if (await tocOption.isVisible().catch(() => false)) {
+      await tocOption.click();
+    } else {
+      await page.getByText('作品目录', { exact: true }).first().click();
+    }
+
+    const lockedEp1Btn = page
+      .locator('button[data-locked="true"]')
+      .filter({ hasText: /第\s*1\s*集|锁定（一字不改）/ })
+      .first();
+    await lockedEp1Btn.waitFor({ state: 'visible', timeout: 10000 });
+    await lockedEp1Btn.click();
+  };
+
+  await openLockedEp1Entry();
+
+  const lockBannerVisible = await page
+    .getByText(/锁定（一字不改）|锁定稿（只读保护）/)
+    .first()
+    .isVisible()
+    .catch(() => false);
+  assert.equal(lockBannerVisible, true, '锁定第 1 集后必须可见「锁定（一字不改）」或「锁定稿（只读保护）」');
+
+  const editor = page.locator('textarea[placeholder="开始撰写本集剧本正文…"]').first();
+  await editor.waitFor({ state: 'visible', timeout: 10000 });
+
+  const isReadOnlyProp = await editor.evaluate((el) => Boolean(el.readOnly) || el.getAttribute('aria-readonly') === 'true');
+  assert.equal(isReadOnlyProp, true, '锁定分集主编辑器必须为 readOnly 或 aria-readonly');
+
+  const enabledUnlockBtns = await page
+    .getByRole('button', { name: /解锁|解除锁定|取消锁定/ })
+    .evaluateAll((els) => els.filter((el) => !el.disabled && el.offsetParent !== null).length);
+  assert.equal(enabledUnlockBtns, 0, '锁定分集不得出现启用的解锁按钮');
+
+  const originalRaw = await editor.inputValue();
+
+  await editor.fill(`${originalRaw}\n[篡改测试]`, { force: true }).catch(() => {});
+  await editor.type('篡改', { delay: 10 }).catch(() => {});
+  assert.equal(await editor.inputValue(), originalRaw, '只读锁定编辑器禁止被 fill/type 篡改');
+
+  const modeBtn = page.getByRole('button', { name: /自动模式|计划模式/ }).first();
+  await modeBtn.waitFor({ state: 'visible', timeout: 10000 });
+  const modeText = (await modeBtn.innerText()).trim();
+  if (modeText.includes('计划模式')) {
+    await modeBtn.click();
+    await page.getByRole('button', { name: /自动模式/ }).first().waitFor({ state: 'visible', timeout: 10000 });
   }
 
-  await lockTrigger.click();
-  await page.waitForTimeout(500);
-
-  const readonlyState = await page.evaluate(() => {
-    const textareas = Array.from(document.querySelectorAll('textarea'));
-    const editables = Array.from(document.querySelectorAll('[contenteditable]'));
-    const hasReadonlyTextarea = textareas.some(
-      (ta) => ta.readOnly || ta.disabled || ta.getAttribute('aria-readonly') === 'true'
-    );
-    const hasReadonlyEditable = editables.some(
-      (el) =>
-        el.getAttribute('contenteditable') === 'false' ||
-        el.getAttribute('aria-readonly') === 'true'
-    );
-    const lockBanner = /已锁定|只读|不可编辑/.test(document.body?.innerText || '');
-    return {
-      textareaCount: textareas.length,
-      editableCount: editables.length,
-      hasReadonlyTextarea,
-      hasReadonlyEditable,
-      lockBanner,
-    };
-  });
-
-  assert.ok(
-    readonlyState.hasReadonlyTextarea ||
-      readonlyState.hasReadonlyEditable ||
-      readonlyState.lockBanner ||
-      (readonlyState.textareaCount === 0 && readonlyState.editableCount === 0),
-    `Locked episode editor must be read-only, got state: ${JSON.stringify(readonlyState)}`
+  const writeFullEpBtn = page.getByRole('button', { name: /写整集正文/ }).first();
+  await writeFullEpBtn.waitFor({ state: 'visible', timeout: 10000 });
+  await page.waitForFunction(
+    (btn) => btn && !btn.disabled,
+    await writeFullEpBtn.elementHandle(),
+    { timeout: 30000 }
   );
+  await writeFullEpBtn.click();
 
-  await inspectPageSafety(page, 'locked-readonly');
+  await waitForRightPaneStatus(page, 'locked-ep1:写整集正文');
+
+  await openLockedEp1Entry();
+  const afterRaw = await editor.inputValue();
+  assert.equal(afterRaw, originalRaw, '执行「写整集正文」后第 1 集锁定正文必须逐字保持不变');
+
+  await inspectPageSafety(page, 'locked-ep1');
   await saveScreenshot(page, '07-locked-readonly.png');
 }
 
@@ -568,7 +595,7 @@ async function run() {
     await inspectPageSafety(page, 'plan-readonly');
     await saveScreenshot(page, '06-plan-readonly.png');
 
-    // 5. Locked episode read-only check if visible
+    // 5. Locked episode read-only check (mandatory; missing entry fails)
     await verifyLockedEpisodeIfVisible(page);
 
     console.log('[acceptance] All step2 browser acceptance checks passed.');
