@@ -3,7 +3,7 @@
 
 > **交付时间**：2026-11-19  
 > **仓库地址**：`[https://github.com/ayinmowang/-](https://github.com/ayinmowang/-)`（分支 `main`，部署根目录：`剧本工作台`）  
-> **验收状态**：**3.0 M1–M4 已完成；商业化扩展第 1 步范围已实现（第 2–6 步未开始），本步测试与构建以验收命令 `npm test && node tests/commerce-migration.mjs && node tests/v3-e2e.mjs && npm run build` 为准**
+> **验收状态**：**3.0 M1–M4 已完成；商业化扩展第 1 步已实现（商业化第 2–6 步未开始）。工作台增量六步第 1 步已交付 `main` `0efc381`，第 2 步（自动写回 / 计划只读 / 前 N 锁 / SSE 阶段）已完成，第 3 步尚未开始。**验收命令：`node tests/step2-writeback-lock.mjs` + fixture 浏览器验收，以及 `npm test && node tests/commerce-migration.mjs && node tests/v3-e2e.mjs && npm run build`。
 
 ---
 
@@ -31,6 +31,13 @@
 
 ---
 
+
+6. **总编剧自动写回与计划只读（增量六步第 2 步 ✅）**：
+   - 自动模式 5 类生成（大纲 / 角色卡 / 背景设定 / 挂卡续写 / 整集正文）写入 `outlineNodes` / `characterNodes` / `worldNodes` / `episodes`（`body` 与 `content` 一致）并同步中栏。
+   - 计划模式服务端只读，`ai_apply_writeback` / `director_generate` 不改资产；前 N 集锁定不可由客户端伪造解锁。
+   - 右栏 SSE 阶段：思考中 → 起稿中 → 正在写入 → 已写入完成（计划模式为「已给出规划（未写入）」），错误脱敏。
+   - 接口：`director_generate`、`director_cancel`；实现 `lib/director-generate.ts`。测试：`tests/step2-writeback-lock.mjs`、`tests/step2-browser-acceptance.mjs`。
+
 ## 二、测试与验收说明
 
 - **保留既有测试**：原有 4 套 `npm test` 套件全部保留。
@@ -47,7 +54,8 @@
 
 ## 三、后续迭代方向（第 2–6 步及体验打磨）
 
-当前商业化扩展第 1 步已落地，第 2–6 步尚未开始，后续可按以下方向推进：
+工作台增量六步第 2 步已完成，**不要自动开始第 3 步**，待本步成果确认后再继续。商业化扩展第 1 步已落地、其第 2–6 步仍未开始（与工作台增量六步相互独立）。后续可按以下方向推进：
+0. **工作台增量六步 · 第 3 步**：仅在第 2 步被确认后再开始（范围以当时用户指令为准）。
 1. **商业化第 2–6 步深化**：按规划逐步推进套餐权益细化、自动化续订调度、真实支付渠道扩展槽对接、财务对账报表与多级分销/邀请返佣闭环。
 2. **移动端自适应抽屉增强**：在 `< 960px` 窄屏下为三栏工作台的左栏与右栏增加一键抽屉切换按钮。
 3. **多集并发扒剧进度条**：单次上传 10+ 集视频时，在界面显示逐集并行还原进度与一键打包分集 `.zip`。

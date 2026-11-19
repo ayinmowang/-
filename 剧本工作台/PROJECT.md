@@ -111,6 +111,19 @@ Every feature from the Step 0 Survey (`F1`–`F22` + `E1`–`E8`) is assigned to
 - `app/page.tsx` MUST contain `'提示词'`, `'BUDGET_EXCEEDED'`, `'SLOT_NOT_ALLOWED'`, `'ACCOUNT_DISABLED'`, `'已停用或已移除的提示词'`.
 - `app/admin/page.tsx` MUST contain `'BINARY_CONTENT_REJECTED'`, `'INVALID_PLUGIN_FILE_TYPE'`.
 
+### 6. 总编剧自动写回 / 计划只读 / SSE 阶段（3.0 增量六步 · 第 2 步）
+- `POST /api/studio` `operation: 'director_generate'`
+  - 入参：`id`、`version`、`task`（`outline` | `characters` | `world` | `hook` | `episode` | `chat`）、`text`、`client_id`、`stream?`、`episodeId?`、`episodeNumber?`
+  - 鉴权/归属校验与既有 studio 路由一致；计划模式以服务端已持久化的 `p.executionMode` 为准（忽略请求体伪造的 `executionMode`）
+  - 自动模式：将大纲 / 角色卡 / 背景设定 / 挂卡续写 / 整集正文写入对应 `outlineNodes` / `characterNodes` / `worldNodes` / `episodes`，正文字段同时写 `body` 与 `content`
+  - 计划模式：严格只读，不写资产，返回 `wrote=false`，对话可回规划；右栏终端态为「已给出规划（未写入）」
+  - 前 N 集锁定（`episodeNumber <= lockedEpisodes` 或 `ep.locked`）在全部自动写回/续写路径禁止改写，逐字 diff=0；客户端无法通过 `toggle_episode_lock locked:false` 解锁前 N 集（`403 EPISODE_LOCKED`）
+  - 忙时：同项目不同 `client_id` 并发返回 `409 PROJECT_BUSY`；相同 `client_id` 幂等，不重复写入；失败/取消恢复快照，不落半截产物
+  - `stream: true` 时返回 SSE：`stage`（思考中 → 起稿中 → 正在写入 → 已写入完成，含整数 `elapsedSec`）→ `done` / `error`；错误与载荷经脱敏，客户端不可见模型名、密钥、中转 URL、token、提示词
+- `POST /api/studio` `operation: 'director_cancel'`：仅中止当前运行，不删除忙时登记，避免写回半截产物
+- `ai_apply_writeback` 继续保持根级 `withCatalogs` 与既有入参兼容；写回授权只看存储模式，不把 `body.executionMode` 写回项目
+- 实现：`lib/director-generate.ts` + `app/api/studio/route.ts` 增量 + `components/StudioWorkspace.tsx` 右栏真实阶段绑定；测试：`tests/step2-writeback-lock.mjs`、`tests/step2-browser-acceptance.mjs`（`STUDIO_LLM_FIXTURE=1`）
+
 ---
 
 ## Code Layout
@@ -119,7 +132,7 @@ Every feature from the Step 0 Survey (`F1`–`F22` + `E1`–`E8`) is assigned to
 - `lib/server.ts` — Store persistence, auth/session, `sanitizeForClient`, Skill resolver, Key-model-family affinity cache, `callStationLLM`
 - `app/api/auth/route.ts` — Login, invite registration, logout, session
 - `app/api/admin/route.ts` — Admin CRUD, providers, 6-station routes, Skill plugins, Creation Tiers
-- `app/api/studio/route.ts` — Projects, workflows, minimal `transcribe`, asset/episode updates, `studio_tool`, `tierCatalog`
+- `app/api/studio/route.ts` — Projects, workflows, minimal `transcribe`, asset/episode updates, `studio_tool`, `tierCatalog`, `director_generate` / `director_cancel`
 - `app/api/upload/route.ts` — Streaming upload, attachment download, `?export=1` (MD) & `?export=docx` (OpenXML `.docx`)
 - `app/api/usage/route.ts` — Account/admin usage & quota analytics (model-free)
 - `app/api/redeem/route.ts` — Invite/key redemption & workspace switch
@@ -132,3 +145,11 @@ Every feature from the Step 0 Survey (`F1`–`F22` + `E1`–`E8`) is assigned to
 - `app/page.tsx`, `app/login/page.tsx`, `app/studio/page.tsx`, `app/breakdown/page.tsx`, `app/usage/page.tsx`, `app/redeem/page.tsx`, `app/profile/page.tsx`, `app/admin/page.tsx` — Next.js App Router pages
 - `tests/` — Existing 4 suites (`studio.test.mjs`, `e2e-verify.mjs`, `skill-plugin-e2e.mjs`, `tier5-adversarial.mjs`) + new `tests/v3-e2e.mjs`
 - `scripts/push-to-github.mjs` — Gitless GitHub REST push to `ayinmowang/-` (`main`)
+
+## 3.0 工作台增量六步（与「商业化扩展第 2–6 步」相互独立）
+
+- **第 1 步（已交付）**：基线 `main` `0efc3811b85ca6ad2030f3cd24bb5b7a970f127b`。执行模式与写回授权按服务端持久化状态生效。
+- **第 2 步（本步已完成，勿自动进入第 3 步）**：
+  - 自动模式下总编剧 5 类产物写入左资产树与中编辑器；右栏阶段与读秒绑定真实 SSE/后台事件，而非假计时。
+  - 计划模式服务端严格只读；前 N 集锁定正文在所有自动写回/续写路径逐字 diff=0，客户端伪造解锁无效。
+  - 验收：`node tests/step2-writeback-lock.mjs`、`STUDIO_LLM_FIXTURE=1` 下 `tests/step2-browser-acceptance.mjs`（端口 3199），以及 `npm test && node tests/commerce-migration.mjs && node tests/v3-e2e.mjs && npm run build`（均需在外层备份/恢复 `.data/studio-store.json` 与 buckets 后核哈希）。

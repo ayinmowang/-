@@ -121,15 +121,328 @@ export default function StudioWorkspace() {
   const importFileRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  type DirectorTask = 'chat' | 'outline' | 'characters' | 'world' | 'hook' | 'episode';
+
+  const ALLOWED_STAGE_LABELS = new Set([
+    '思考中',
+    '起稿中',
+    '正在写入',
+    '已写入完成',
+    '已给出规划（未写入）',
+  ]);
+
+  function sanitizeClientError(raw: unknown): string {
+    const msg = typeof raw === 'string' ? raw : (raw as any)?.message || (raw as any)?.error || '';
+    const text = String(msg || '').trim();
+    if (!text) return '生成失败，请稍后重试';
+    if (
+      /https?:\/\/|sk-[a-zA-Z0-9_-]+|api[_-]?key|bearer\s+[a-zA-Z0-9._-]+|token/i.test(text)
+    ) {
+      return '请求异常，请检查网络或稍后重试';
+    }
+    return text.slice(0, 120);
+  }
+
+  function findAssetNodeById(
+    nodes: StudioAssetNode[] | undefined,
+    nodeId?: string
+  ): StudioAssetNode | null {
+    if (!nodes || nodes.length === 0) return null;
+    if (nodeId) {
+      const exact = nodes.find((n) => n.id === nodeId);
+      if (exact) return exact;
+    }
+    return nodes[nodes.length - 1] || nodes[0];
+  }
+
+  const [directorStage, setDirectorStage] = useState<string>('');
+  const [serverElapsedBase, setServerElapsedBase] = useState<{ sec: number; at: number } | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const clientIdRef = useRef<string>('');
+  const lastIntentKeyRef = useRef<string>('');
+
+  function cancelDirectorStream() {
+    const ctrl = abortRef.current;
+    abortRef.current = null;
+    if (ctrl) {
+      ctrl.abort();
+    }
+    const cid = clientIdRef.current;
+    if (active && cid) {
+      fetch('/api/studio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          operation: 'director_cancel',
+          id: active.id,
+          client_id: cid,
+          runId: cid,
+        }),
+      }).catch(() => {});
+    }
+    setBusy(false);
+    setBusyText('');
+    setDirectorStage('');
+    setServerElapsedBase(null);
+  }
+
+  async function runDirectorStream(params: {
+    task: DirectorTask;
+    text: string;
+    clearInput?: boolean;
+  }) {
+    if (!active || busy) return;
+    const cleanText = params.text.trim();
+    if (!cleanText) return;
+
+    const currentEp =
+      (active.episodes || []).find((e) => e.id === selectedEpId) || (active.episodes || [])[0];
+    const epIndex = currentEp
+      ? Math.max(0, (active.episodes || []).findIndex((e) => e.id === currentEp.id))
+      : -1;
+
+    const intentKey = `${active.id}:${active.version}:${params.task}:${currentEp?.id || ''}:${cleanText}`;
+    if (!clientIdRef.current || lastIntentKeyRef.current !== intentKey) {
+      clientIdRef.current = crypto.randomUUID();
+      lastIntentKeyRef.current = intentKey;
+    }
+
+    if (params.clearInput) {
+      setChatText('');
+    }
+    setError('');
+    setBusy(true);
+    setDirectorStage('thinking');
+    setBusyText('思考中');
+    setElapsedSec(0);
+    setServerElapsedBase({ sec: 0, at: Date.now() });
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    const payload: Record<string, any> = {
+      operation: 'director_generate',
+      id: active.id,
+      version: active.version,
+      task: params.task,
+      text: cleanText,
+      client_id: clientIdRef.current,
+      stream: true,
+    };
+
+    if ((params.task === 'hook' || params.task === 'episode') && currentEp) {
+      payload.episodeId = currentEp.id;
+      payload.episodeNumber =
+        typeof (currentEp as any).number === 'number'
+          ? (currentEp as any).number
+          : epIndex >= 0
+          ? epIndex + 1
+          : 1;
+    }
+
+    let finished = false;
+
+    try {
+      const res = await fetch('/api/studio', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        let errPayload: any = null;
+        try {
+          errPayload = await res.json();
+        } catch {}
+        throw new Error(errPayload?.message || errPayload?.error || `REQUEST_FAILED_${res.status}`);
+      }
+
+      if (!res.body) {
+        throw new Error('STREAM_UNAVAILABLE');
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+
+      const applyDoneResult = (doneData: any) => {
+        if (controller.signal.aborted) return;
+        const nextProject: Project | null =
+          doneData?.project && doneData.project.id
+            ? doneData.project
+            : doneData?.id && Array.isArray(doneData?.episodes)
+            ? doneData
+            : null;
+
+        const target = doneData?.target;
+        const wrote = Boolean(doneData?.wrote ?? target?.wrote);
+
+        if (nextProject) {
+          syncProject(nextProject, true);
+        }
+
+        if (nextProject && wrote && target && typeof target === 'object') {
+          const targetTree = target.tree || target.kind || target.type;
+          const treeKey =
+            targetTree === 'outline' || targetTree === 'outlineNodes'
+              ? 'outlineNodes'
+              : targetTree === 'characters' || targetTree === 'characterNodes'
+              ? 'characterNodes'
+              : targetTree === 'world' || targetTree === 'worldNodes'
+              ? 'worldNodes'
+              : null;
+          const leftModeKey =
+            treeKey === 'outlineNodes' ? 'outline' : treeKey === 'characterNodes' ? 'characters' : treeKey === 'worldNodes' ? 'world' : null;
+          if (treeKey && leftModeKey) {
+            const treeNodes = (nextProject as any)[treeKey] as StudioAssetNode[] | undefined;
+            const targetNode = findAssetNodeById(treeNodes, target.nodeId || target.id);
+            setLeftMode(leftModeKey);
+            if (targetNode) {
+              setSelectedAsset({ tree: leftModeKey, node: targetNode });
+              setEpTitle(targetNode.title || '');
+              setEpBody((targetNode.body || (targetNode as any).content || '').toString());
+            }
+          } else if (
+            targetTree === 'episode' ||
+            targetTree === 'episodes' ||
+            target.episodeId
+          ) {
+            const targetEpId = target.episodeId || target.id || currentEp?.id;
+            const epList = nextProject.episodes || [];
+            const matchedEp =
+              epList.find((e) => e.id === targetEpId) ||
+              (typeof target.episodeNumber === 'number' ? epList[target.episodeNumber - 1] : null) ||
+              epList[0];
+            setLeftMode('toc');
+            setSelectedAsset(null);
+            if (matchedEp) {
+              setSelectedEpId(matchedEp.id);
+              setEpTitle(matchedEp.title);
+              setEpBody(matchedEp.body || '');
+            }
+          }
+        }
+
+        clientIdRef.current = '';
+        lastIntentKeyRef.current = '';
+      };
+
+      const dispatchSseBlock = (rawBlock: string) => {
+        if (controller.signal.aborted) return;
+        const lines = rawBlock.split(/\r?\n/);
+        let eventName = 'message';
+        const dataLines: string[] = [];
+
+        for (const line of lines) {
+          if (!line || line.startsWith(':')) continue;
+          if (line.startsWith('event:')) {
+            eventName = line.slice(6).trim();
+          } else if (line.startsWith('data:')) {
+            dataLines.push(line.slice(5).trim());
+          }
+        }
+
+        if (dataLines.length === 0) return;
+        const rawData = dataLines.join('\n');
+        let parsed: any = null;
+        try {
+          parsed = JSON.parse(rawData);
+        } catch {
+          return;
+        }
+
+        const effectiveEvent = parsed?.event || eventName;
+
+        if (effectiveEvent === 'stage') {
+          if (typeof parsed?.stage === 'string') {
+            setDirectorStage(parsed.stage);
+          }
+          if (typeof parsed?.label === 'string' && ALLOWED_STAGE_LABELS.has(parsed.label)) {
+            setBusyText(parsed.label);
+          }
+          if (typeof parsed?.elapsedSec === 'number' && Number.isFinite(parsed.elapsedSec)) {
+            const sec = Math.max(0, Math.floor(parsed.elapsedSec));
+            setElapsedSec(sec);
+            setServerElapsedBase({ sec, at: Date.now() });
+          }
+        } else if (effectiveEvent === 'error') {
+          finished = true;
+          throw new Error(parsed?.message || parsed?.error || 'DIRECTOR_STREAM_ERROR');
+        } else if (effectiveEvent === 'done') {
+          finished = true;
+          applyDoneResult(parsed);
+          if (typeof parsed?.label === 'string' && ALLOWED_STAGE_LABELS.has(parsed.label)) {
+            setBusyText(parsed.label);
+          } else if (parsed?.wrote === false) {
+            setBusyText('已给出规划（未写入）');
+          } else if (parsed?.ok !== false) {
+            setBusyText('已写入完成');
+          }
+        }
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (controller.signal.aborted) {
+          try {
+            await reader.cancel();
+          } catch {}
+          return;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split(/\r?\n\r?\n/);
+        buffer = parts.pop() || '';
+        for (const part of parts) {
+          dispatchSseBlock(part);
+        }
+      }
+
+      if (buffer.trim() && !controller.signal.aborted) {
+        dispatchSseBlock(buffer);
+      }
+
+      if (!finished && !controller.signal.aborted) {
+        setError('连接意外中断，请点击重试继续完成');
+      }
+    } catch (e: any) {
+      if (controller.signal.aborted || e?.name === 'AbortError') {
+        return;
+      }
+      setError(sanitizeClientError(e));
+    } finally {
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        setBusy(false);
+        setServerElapsedBase(null);
+        if (!finished) {
+          setBusyText('');
+          setDirectorStage('');
+        }
+      }
+    }
+  }
+
+
   useEffect(() => {
     if (!busy) {
       setElapsedSec(0);
       return;
     }
-    const start = Date.now();
-    const id = setInterval(() => setElapsedSec(Math.max(1, Math.floor((Date.now() - start) / 1000))), 1000);
+    const baseSec = serverElapsedBase?.sec ?? 0;
+    const baseAt = serverElapsedBase?.at ?? Date.now();
+    const tick = () => {
+      const delta = Math.max(0, Math.floor((Date.now() - baseAt) / 1000));
+      setElapsedSec(baseSec + delta);
+    };
+    tick();
+    const id = setInterval(tick, 1000);
     return () => clearInterval(id);
-  }, [busy]);
+  }, [busy, serverElapsedBase]);
 
   useEffect(() => {
     if (!toast) return;
@@ -384,28 +697,61 @@ export default function StudioWorkspace() {
     }
   }
 
-  async function sendChat(overridePrompt?: string) {
+  const DIRECTOR_ACTION_BUTTONS: Array<{
+    task: Exclude<DirectorTask, 'chat'>;
+    label: string;
+    prompt: string;
+  }> = [
+    {
+      task: 'outline',
+      label: '生成大纲',
+      prompt: '请根据当前项目定位与设定，生成结构完整、节奏紧凑的分集故事大纲。',
+    },
+    {
+      task: 'characters',
+      label: '生成角色卡',
+      prompt: '请根据当前故事核心冲突，生成立体鲜明的主要角色小传与人物关系卡。',
+    },
+    {
+      task: 'world',
+      label: '生成背景设定',
+      prompt: '请完善当前故事的世界观、时代背景、核心规则与关键场景设定。',
+    },
+    {
+      task: 'hook',
+      label: '挂卡续写',
+      prompt: '请紧接当前这一集的末尾剧情与卡片设定，保持文风一致继续往下写。',
+    },
+    {
+      task: 'episode',
+      label: '写整集正文',
+      prompt: '请根据大纲与角色设定，完整写出当前这一集的剧本正文，注意开篇冲突与结尾悬念。',
+    },
+  ];
+
+  async function triggerDirectorAction(
+    task: Exclude<DirectorTask, 'chat'>,
+    defaultPrompt: string
+  ) {
+    if (!active || busy) return;
+    const customNote = chatText.trim();
+    const finalPrompt = customNote ? `${defaultPrompt}\n补充要求：${customNote}` : defaultPrompt;
+    await runDirectorStream({
+      task,
+      text: finalPrompt,
+      clearInput: Boolean(customNote),
+    });
+  }
+
+  async function sendChat(overridePrompt?: string, overrideTask?: DirectorTask) {
     if (!active || busy) return;
     const text = (overridePrompt ?? chatText).trim();
     if (!text) return;
-    if (!overridePrompt) setChatText('');
-    setBusy(true);
-    setBusyText(active.executionMode === 'plan' ? '总编剧正在思考规划建议（计划模式，不修改正文）…' : '总编剧正在响应并准备同步写入…');
-    try {
-      const updated = await studioApi('/api/studio', {
-        operation: 'message',
-        id: active.id,
-        version: active.version,
-        text,
-        client_id: crypto.randomUUID(),
-      });
-      syncProject(updated, true);
-    } catch (e: any) {
-      setError(e.message || '发送失败');
-    } finally {
-      setBusy(false);
-      setBusyText('');
-    }
+    await runDirectorStream({
+      task: overrideTask ?? 'chat',
+      text,
+      clearInput: !overridePrompt,
+    });
   }
 
   function wrapSelection(prefix: string, suffix: string) {
@@ -1042,23 +1388,23 @@ export default function StudioWorkspace() {
           <div style={{ flex: 1, overflowY: 'auto', padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
             {rightTab === 'chat' && (
               <>
-                {active.messages.length <= 1 && (
+                                {active.messages.length <= 1 && (
                   <div style={{ textAlign: 'center', padding: '12px 6px' }}>
                     <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>✦ 你的总编剧搭档</div>
                     <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 14 }}>下一段好故事，从这里开始</div>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, textAlign: 'left' }}>
                       {[
-                        ['梳理全剧逻辑', '找出矛盾，把事件线对上', '请通读当前已有剧集和大纲，找出前后矛盾，并梳理一条能对上的事件线。'],
-                        ['打磨这一集', '逐句看节奏、前3秒与尾钩', '请逐段打磨当前这一集，优化前3秒冲突和结尾钩子，并给出改写建议。'],
-                        ['给本集挂卡写', '承接剧情，保住文风续写', '请按当前文风续写一段承接剧情，让本集自然衔接下一集。'],
-                        ['一起找漏洞', '找出漏洞并给3个新情节改法', '请找出当前故事里的漏洞，并给出三个能长出新冲突的改法。'],
-                      ].map(([t, hint, pr]) => (
+                        ['梳理全剧逻辑', '找出矛盾，把事件线对上', '请通读当前已有剧集和大纲，找出前后矛盾，并梳理一条能对上的事件线。', 'chat' as DirectorTask],
+                        ['打磨这一集', '逐句看节奏、前3秒与尾钩', '请逐段打磨当前这一集，优化前3秒冲突和结尾钩子，并给出改写建议。', 'chat' as DirectorTask],
+                        ['给本集挂卡写', '承接剧情，保住文风续写', '请按当前文风续写一段承接剧情，让本集自然衔接下一集。', 'hook' as DirectorTask],
+                        ['一起找漏洞', '找出漏洞并给3个新情节改法', '请找出当前故事里的漏洞，并给出三个能长出新冲突的改法。', 'chat' as DirectorTask],
+                      ].map(([t, hint, pr, task]) => (
                         <button
                           key={t}
                           type="button"
                           disabled={busy}
-                          onClick={() => sendChat(pr)}
-                          style={{ padding: 10, borderRadius: 10, border: '1px solid #e6dfd3', background: 'var(--warm-surface, #faf7f2)', cursor: 'pointer', textAlign: 'left' }}
+                          onClick={() => sendChat(pr, task as DirectorTask)}
+                          style={{ padding: 10, borderRadius: 10, border: '1px solid #e6dfd3', background: 'var(--warm-surface, #faf7f2)', cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.6 : 1, textAlign: 'left' }}
                         >
                           <div style={{ fontWeight: 700, fontSize: 12 }}>{t}</div>
                           <div style={{ fontSize: 11, opacity: 0.68, marginTop: 2 }}>{hint}</div>
@@ -1067,6 +1413,39 @@ export default function StudioWorkspace() {
                     </div>
                   </div>
                 )}
+
+                {/* 5 个总编剧定向生成按钮（另起一行，保留暖色风格） */}
+                <div
+                  aria-label="总编剧快捷生成"
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: 6,
+                    padding: '6px 2px',
+                  }}
+                >
+                  {DIRECTOR_ACTION_BUTTONS.map((btn) => (
+                    <button
+                      key={btn.task}
+                      type="button"
+                      disabled={busy}
+                      onClick={() => triggerDirectorAction(btn.task, btn.prompt)}
+                      style={{
+                        padding: '6px 10px',
+                        borderRadius: 999,
+                        border: '1px solid #D49B54',
+                        background: 'var(--warm-surface, #faf7f2)',
+                        color: '#8C3B2B',
+                        fontSize: 12,
+                        fontWeight: 600,
+                        cursor: busy ? 'not-allowed' : 'pointer',
+                        opacity: busy ? 0.55 : 1,
+                      }}
+                    >
+                      ✦ {btn.label}
+                    </button>
+                  ))}
+                </div>
 
                 {active.messages.map((m) => (
                   <div
@@ -1088,12 +1467,19 @@ export default function StudioWorkspace() {
                   </div>
                 ))}
 
-                {busy && (
-                  <div role="status" style={{ padding: 12, borderRadius: 12, background: 'rgba(212,155,84,0.14)', border: '1px solid #D49B54', fontSize: 12 }}>
+                {(busy || ALLOWED_STAGE_LABELS.has(busyText)) && (
+                  <div
+                    role="status"
+                    data-stage={directorStage || undefined}
+                    style={{ padding: 12, borderRadius: 12, background: 'rgba(212,155,84,0.14)', border: '1px solid #D49B54', fontSize: 12 }}
+                  >
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700, color: '#8C3B2B' }}>
-                      <LoaderCircle className="spin" size={14} /> 正在处理 · 已用时 {elapsedSec} 秒
+                      {busy ? (<><LoaderCircle className="spin" size={14} /> 正在处理 · 已用时 {elapsedSec} 秒</>) : null}
+                      {!busy && busyText ? busyText : null}
                     </div>
-                    <div style={{ marginTop: 4, opacity: 0.82 }}>{busyText}</div>
+                    {busy && busyText ? (
+                      <div style={{ marginTop: 4, opacity: 0.82 }}>{busyText}</div>
+                    ) : null}
                   </div>
                 )}
               </>
@@ -1208,6 +1594,7 @@ export default function StudioWorkspace() {
             <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
               <textarea
                 rows={2}
+                disabled={busy}
                 value={chatText}
                 onChange={(e) => setChatText(e.target.value)}
                 onKeyDown={(e) => {
@@ -1219,23 +1606,46 @@ export default function StudioWorkspace() {
                 placeholder="输入指令或创作要求…"
                 style={{ flex: 1, padding: '8px 10px', borderRadius: 10, border: '1px solid #d8cfc0', background: 'var(--warm-card, #fff)', fontSize: 13, resize: 'none' }}
               />
-              <button
-                type="button"
-                disabled={busy || !chatText.trim()}
-                onClick={() => sendChat()}
-                aria-label="发送"
-                style={{ alignSelf: 'flex-end', padding: '9px 12px', borderRadius: 10, border: 'none', background: '#8C3B2B', color: '#fff', cursor: 'pointer' }}
-              >
-                <Send size={15} />
-              </button>
+              {busy ? (
+                <button
+                  type="button"
+                  onClick={cancelDirectorStream}
+                  aria-label="停止生成"
+                  style={{
+                    alignSelf: 'flex-end',
+                    padding: '9px 12px',
+                    borderRadius: 10,
+                    border: '1px solid #8C3B2B',
+                    background: 'var(--warm-card, #fff)',
+                    color: '#8C3B2B',
+                    fontSize: 12,
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  停止
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={busy || !chatText.trim()}
+                  onClick={() => sendChat()}
+                  aria-label="发送"
+                  style={{ alignSelf: 'flex-end', padding: '9px 12px', borderRadius: 10, border: 'none', background: '#8C3B2B', color: '#fff', cursor: 'pointer' }}
+                >
+                  <Send size={15} />
+                </button>
+              )}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
               {/* Desensitized Creation Tier Dropdown */}
               <select
                 aria-label="创作档位"
+                disabled={busy}
                 value={selectedTier?.id || ''}
                 onChange={(e) => updateExecution({ preferredTierId: e.target.value })}
-                style={{ padding: '4px 8px', borderRadius: 999, border: '1px solid #d8cfc0', background: 'var(--warm-card, #fff)', fontSize: 11, fontWeight: 600 }}
+                style={{ padding: '4px 8px', borderRadius: 999, border: '1px solid #d8cfc0', background: 'var(--warm-card, #fff)', fontSize: 11, fontWeight: 600, opacity: busy ? 0.6 : 1 }}
               >
                 {tierCatalog.map((t) => (
                   <option key={t.id} value={t.id}>
@@ -1247,10 +1657,10 @@ export default function StudioWorkspace() {
               {/* Thinking Level Dropdown */}
               <select
                 aria-label="思考强度"
-                disabled={selectedTier ? !selectedTier.supportsThinking : false}
+                disabled={busy || (selectedTier ? !selectedTier.supportsThinking : false)}
                 value={active.thinkingLevel || 'medium'}
                 onChange={(e) => updateExecution({ thinkingLevel: e.target.value as ThinkingLevel })}
-                style={{ padding: '4px 8px', borderRadius: 999, border: '1px solid #d8cfc0', background: 'var(--warm-card, #fff)', fontSize: 11, fontWeight: 600 }}
+                style={{ padding: '4px 8px', borderRadius: 999, border: '1px solid #d8cfc0', background: 'var(--warm-card, #fff)', fontSize: 11, fontWeight: 600, opacity: busy ? 0.6 : 1 }}
               >
                 {(['off', 'low', 'medium', 'high', 'xhigh', 'max'] as ThinkingLevel[]).map((lv) => (
                   <option key={lv} value={lv}>
@@ -1262,6 +1672,7 @@ export default function StudioWorkspace() {
               {/* Auto / Plan Mode Toggle */}
               <button
                 type="button"
+                disabled={busy}
                 onClick={() => updateExecution({ executionMode: active.executionMode === 'plan' ? 'auto' : 'plan' })}
                 title={active.executionMode === 'plan' ? '计划模式：仅对话规划，不写入正文' : '自动模式：允许自动写入模块'}
                 style={{
@@ -1272,12 +1683,14 @@ export default function StudioWorkspace() {
                   color: '#8C3B2B',
                   fontSize: 11,
                   fontWeight: 700,
-                  cursor: 'pointer',
+                  cursor: busy ? 'not-allowed' : 'pointer',
+                  opacity: busy ? 0.6 : 1,
                 }}
               >
                 {active.executionMode === 'plan' ? '📋 计划模式' : '📝 自动模式'}
               </button>
             </div>
+
           </div>
         </aside>
       </div>

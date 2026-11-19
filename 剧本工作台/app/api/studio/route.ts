@@ -42,6 +42,23 @@ import type {
   StudioEpisodeSnapshot,
   StudioAssetNode,
 } from '../../../lib/types';
+import {
+  isValidDirectorTask,
+  hasProcessedClientId,
+  recordProcessedClientId,
+  projectIsPlanMode,
+  snapshotAssetState,
+  restoreAssetState,
+  redactDirectorError,
+  isProjectBusy,
+  acquireProjectRun,
+  releaseProjectRun,
+  cancelProjectRun,
+  runDirectorGenerate,
+  createDirectorSseResponse,
+  type StudioProjectLike,
+} from '../../../lib/director-generate';
+
 
 const KIND_LABELS: Record<Kind, string> = {
   foreign: '国外迭代国外',
@@ -1211,6 +1228,9 @@ export async function POST(request: Request) {
     if (!Array.isArray(p.processedClientIds)) p.processedClientIds = [];
 
     if (body.operation === 'set_execution') {
+      if (isProjectBusy(p.id)) {
+        return Response.json({ error: 'PROJECT_BUSY' }, { status: 409 });
+      }
       const execControls = validateExecutionControls(body, p);
       p.preferredTierId = execControls.preferredTierId;
       p.thinkingLevel = execControls.thinkingLevel;
@@ -1427,13 +1447,25 @@ export async function POST(request: Request) {
     }
 
     if (body.operation === 'toggle_episode_lock') {
+      if (isProjectBusy(p.id)) {
+        return Response.json({ error: 'PROJECT_BUSY' }, { status: 409 });
+      }
       const targetId = typeof body.episodeId === 'string' ? body.episodeId.trim() : '';
       const targetEpNum = body.episodeNumber !== undefined ? Number(body.episodeNumber) : undefined;
       const existing = p.episodes.find(
         (e: any) => (targetId && e.id === targetId) || (targetEpNum !== undefined && e.episodeNumber === targetEpNum)
       );
       if (!existing) throw new Error('NOT_FOUND');
-      existing.locked = typeof body.locked === 'boolean' ? body.locked : !existing.locked;
+      const nextLocked = typeof body.locked === 'boolean' ? body.locked : !existing.locked;
+      if (
+        nextLocked === false &&
+        typeof p.lockedEpisodes === 'number' &&
+        p.lockedEpisodes > 0 &&
+        existing.episodeNumber <= p.lockedEpisodes
+      ) {
+        return Response.json({ error: 'EPISODE_LOCKED' }, { status: 403 });
+      }
+      existing.locked = nextLocked;
       existing.updatedAt = new Date().toISOString();
       const saved = await saveProject(p, user);
       return Response.json(withCatalogs(saved));
@@ -1519,15 +1551,22 @@ export async function POST(request: Request) {
     }
 
     if (body.operation === 'ai_apply_writeback') {
-      const execControls = validateExecutionControls(body, p);
-      if (execControls.executionMode === 'plan') {
+      if (isProjectBusy(p.id)) {
+        return Response.json({ error: 'PROJECT_BUSY' }, { status: 409 });
+      }
+      if (projectIsPlanMode(p)) {
         return Response.json({ error: 'PLAN_MODE_READ_ONLY' }, { status: 403 });
       }
-      p.executionMode = execControls.executionMode;
+
+      const clientId = typeof body.client_id === 'string' ? body.client_id.trim() : '';
+      if (clientId && hasProcessedClientId(p, clientId)) {
+        return Response.json(withCatalogs(p));
+      }
+
+      const execControls = validateExecutionControls(body, p);
       p.preferredTierId = execControls.preferredTierId;
       p.thinkingLevel = execControls.thinkingLevel;
 
-      const hasContentArg = body.content !== undefined;
       const nextText = String(body.body ?? body.content ?? '');
       const now = new Date().toISOString();
 
@@ -1546,19 +1585,18 @@ export async function POST(request: Request) {
         }
         if (existing) {
           const prevText = typeof existing.body === 'string' ? existing.body : (existing as any).content || '';
-          const shouldMirrorContent = hasContentArg || 'content' in existing;
           const snap: StudioEpisodeSnapshot & { content?: string } = {
             id: 'snap-' + crypto.randomUUID(),
             at: now,
             body: prevText,
+            content: prevText,
             wordCount: prevText.length,
             note: 'AI 写回前快照',
-            ...(shouldMirrorContent ? { content: prevText } : {}),
           };
           existing.snapshots = [snap, ...(Array.isArray(existing.snapshots) ? existing.snapshots : [])].slice(0, 20);
           if (body.title !== undefined) existing.title = String(body.title).trim().slice(0, 200);
           existing.body = nextText;
-          if (shouldMirrorContent) (existing as any).content = nextText;
+          (existing as any).content = nextText;
           existing.updatedAt = now;
         } else {
           const epNum =
@@ -1570,11 +1608,11 @@ export async function POST(request: Request) {
             episodeNumber: epNum,
             title: String(body.title || `第 ${epNum} 集`).trim().slice(0, 200),
             body: nextText,
+            content: nextText,
             locked: false,
             snapshots: [],
             updatedAt: now,
           };
-          if (hasContentArg) createdEp.content = nextText;
           p.episodes.push(createdEp);
         }
       } else if (body.tree && body.nodeId) {
@@ -1588,24 +1626,243 @@ export async function POST(request: Request) {
             : '';
         if (!treeKey) throw new Error('INVALID_INPUT');
         const idx = p[treeKey].findIndex((n: any) => n.id === body.nodeId);
-        const normalized = normalizeAssetNodeInput(
+        const normalized: any = normalizeAssetNodeInput(
           {
             id: body.nodeId,
             title: body.title,
-            body: body.body,
-            ...(hasContentArg ? { content: body.content } : {}),
+            body: nextText,
+            content: nextText,
           },
           p[treeKey].length,
           idx >= 0 ? p[treeKey][idx] : undefined
         );
+        normalized.body = nextText;
+        normalized.content = nextText;
+        normalized.updatedAt = now;
         if (idx >= 0) p[treeKey][idx] = normalized;
         else p[treeKey].push(normalized);
       } else {
         throw new Error('INVALID_INPUT');
       }
 
+      if (clientId) {
+        recordProcessedClientId(p, clientId);
+      }
       const saved = await saveProject(p, user);
       return Response.json(withCatalogs(saved));
+    }
+
+    if (body.operation === 'director_cancel') {
+      const runId =
+        typeof body.client_id === 'string' && body.client_id.trim()
+          ? body.client_id.trim()
+          : typeof body.runId === 'string' && body.runId.trim()
+            ? body.runId.trim()
+            : undefined;
+      const cancelled = cancelProjectRun(p.id, runId);
+      return Response.json({ ...withCatalogs(p), cancelled });
+    }
+
+    if (body.operation === 'director_generate') {
+      if (!isValidDirectorTask(body.task)) {
+        throw new Error('INVALID_INPUT');
+      }
+      const task = body.task;
+      const text = typeof body.text === 'string' ? body.text : '';
+      const clientId =
+        typeof body.client_id === 'string' && body.client_id.trim()
+          ? body.client_id.trim()
+          : typeof body.clientId === 'string' && body.clientId.trim()
+            ? body.clientId.trim()
+            : undefined;
+      const episodeId = typeof body.episodeId === 'string' && body.episodeId.trim() ? body.episodeId.trim() : undefined;
+      const episodeNumber =
+        typeof body.episodeNumber === 'number' && Number.isFinite(body.episodeNumber)
+          ? Math.floor(body.episodeNumber)
+          : undefined;
+      const runId =
+        clientId ||
+        (typeof body.runId === 'string' && body.runId.trim()
+          ? body.runId.trim()
+          : `run_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`);
+
+      const wantsSse =
+        body.stream === true ||
+        (typeof request !== 'undefined' && (request.headers.get('accept') || '').includes('text/event-stream'));
+
+      const fixtureMode = process.env.STUDIO_LLM_FIXTURE === '1';
+      const alreadyProcessed = Boolean(clientId && hasProcessedClientId(p as unknown as StudioProjectLike, clientId));
+
+      if (alreadyProcessed) {
+        if (wantsSse) {
+          return createDirectorSseResponse({
+            signal: typeof request !== 'undefined' ? request.signal : undefined,
+            async execute(emit) {
+              const res = await runDirectorGenerate({
+                project: p as unknown as StudioProjectLike,
+                task,
+                text,
+                clientId,
+                episodeId,
+                episodeNumber,
+                fixtureMode,
+                alreadyProcessed: true,
+                onStage: (payload) => emit.stage(payload),
+              });
+              emit.done({
+                ...withCatalogs(p),
+                wrote: false,
+                idempotent: true,
+                target: res.target,
+                stages: res.stages,
+              });
+            },
+          });
+        }
+        const res = await runDirectorGenerate({
+          project: p as unknown as StudioProjectLike,
+          task,
+          text,
+          clientId,
+          episodeId,
+          episodeNumber,
+          fixtureMode,
+          alreadyProcessed: true,
+        });
+        return Response.json({
+          ...withCatalogs(p),
+          wrote: false,
+          idempotent: true,
+          target: res.target,
+          stages: res.stages,
+        });
+      }
+
+      const acquired = acquireProjectRun(p.id, runId, typeof request !== 'undefined' ? request.signal : undefined);
+      if (!acquired.ok) {
+        return Response.json({ error: 'PROJECT_BUSY' }, { status: 409 });
+      }
+
+      const account = getActiveAccountOrDefault(request);
+      const tierId = typeof p.preferredTierId === 'string' ? p.preferredTierId : undefined;
+      const thinkingLevel = typeof p.thinkingLevel === 'string' ? p.thinkingLevel : undefined;
+
+      if (wantsSse) {
+        return createDirectorSseResponse({
+          signal: acquired.controller.signal,
+          async execute(emit) {
+            const snap = snapshotAssetState(p as unknown as StudioProjectLike);
+            try {
+              const res = await runDirectorGenerate({
+                project: p as unknown as StudioProjectLike,
+                task,
+                text,
+                clientId,
+                episodeId,
+                episodeNumber,
+                signal: acquired.controller.signal,
+                onStage: (payload) => emit.stage(payload),
+                account,
+                thinkingLevel,
+                tierId,
+                fixtureMode,
+                alreadyProcessed: false,
+              });
+
+              if (!res.ok) {
+                restoreAssetState(p as unknown as StudioProjectLike, snap);
+                emit.error(redactDirectorError(res.error ?? 'GENERATION_FAILED'));
+                return;
+              }
+
+              const planMode = projectIsPlanMode(p as unknown as StudioProjectLike);
+              if (planMode) {
+                restoreAssetState(p as unknown as StudioProjectLike, snap);
+              }
+
+              if (clientId) {
+                recordProcessedClientId(p as unknown as StudioProjectLike, clientId);
+              }
+              const saved = await saveProject(p, user);
+              emit.done({
+                ...withCatalogs(saved),
+                wrote: planMode ? false : res.wrote,
+                idempotent: res.idempotent,
+                target: res.target,
+                stages: res.stages,
+              });
+            } catch (err) {
+              restoreAssetState(p as unknown as StudioProjectLike, snap);
+              emit.error(redactDirectorError(err));
+            } finally {
+              releaseProjectRun(p.id, runId);
+            }
+          },
+        });
+      }
+
+      const snap = snapshotAssetState(p as unknown as StudioProjectLike);
+      try {
+        const res = await runDirectorGenerate({
+          project: p as unknown as StudioProjectLike,
+          task,
+          text,
+          clientId,
+          episodeId,
+          episodeNumber,
+          signal: acquired.controller.signal,
+          account,
+          thinkingLevel,
+          tierId,
+          fixtureMode,
+          alreadyProcessed: false,
+        });
+
+        if (!res.ok) {
+          restoreAssetState(p as unknown as StudioProjectLike, snap);
+          const errPayload = redactDirectorError(res.error ?? 'GENERATION_FAILED');
+          const status =
+            errPayload.code === 'PLAN_MODE_READ_ONLY' || errPayload.code === 'EPISODE_LOCKED'
+              ? 403
+              : errPayload.code === 'PROJECT_BUSY'
+                ? 409
+                : errPayload.code === 'INVALID_INPUT'
+                  ? 400
+                  : 500;
+          return Response.json({ error: errPayload.code }, { status });
+        }
+
+        const planMode = projectIsPlanMode(p as unknown as StudioProjectLike);
+        if (planMode) {
+          restoreAssetState(p as unknown as StudioProjectLike, snap);
+        }
+
+        if (clientId) {
+          recordProcessedClientId(p as unknown as StudioProjectLike, clientId);
+        }
+        const saved = await saveProject(p, user);
+        return Response.json({
+          ...withCatalogs(saved),
+          wrote: planMode ? false : res.wrote,
+          idempotent: res.idempotent,
+          target: res.target,
+          stages: res.stages,
+        });
+      } catch (err) {
+        restoreAssetState(p as unknown as StudioProjectLike, snap);
+        const errPayload = redactDirectorError(err);
+        const status =
+          errPayload.code === 'PLAN_MODE_READ_ONLY' || errPayload.code === 'EPISODE_LOCKED'
+            ? 403
+            : errPayload.code === 'PROJECT_BUSY'
+              ? 409
+              : errPayload.code === 'INVALID_INPUT'
+                ? 400
+                : 500;
+        return Response.json({ error: errPayload.code }, { status });
+      } finally {
+        releaseProjectRun(p.id, runId);
+      }
     }
 
     if (body.operation === 'studio_tool') {
