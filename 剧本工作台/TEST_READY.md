@@ -1,31 +1,34 @@
-# E2E Test Suite Ready (`TEST_READY.md`)
+# 3.0 E2E Test Suite Ready (`TEST_READY.md`)
 
-The opaque-box 4-tier E2E test suite for the Skill plugin system, 4-workflow slot architecture, multi-type & 200 MB upload pipeline, LLM prompt injection/fallback, and strict redline sanitization is ready for M4 verification.
+The opaque-box 4-tier E2E test suite for **剧本工作台 3.0 融合升级** is syntax-verified and ready for M1–M4 implementation verification and M5 final acceptance.
 
 ## Test Artifacts
-- `TEST_INFRA.md` — 4-tier opaque-box methodology, `PROJECT.md` Feature Inventory mapping (F1–F8), and coverage thresholds.
-- `tests/skill-plugin-e2e.mjs` — Node.js ESM E2E test suite using the `node:module` TS-extensionless hook (compatible with Node v24 without extra test dependencies) and deterministic mocked `fetch` + automatic `.data/` restoration.
+- `TEST_INFRA.md` — 4-tier opaque-box methodology (`ORIGINAL_REQUEST.md` R1–R4 + `PROJECT.md` Interface Contracts), `F1`–`F22` Feature Inventory mapping, `.data/` `%TEMP%` protection protocol, and coverage thresholds.
+- `tests/v3-e2e.mjs` — Standalone Node.js ESM 4-tier E2E test suite (33 test cases) using the `node:module` `register()` TS-extensionless hook (compatible with Node v24 without extra dependencies), pure-Node ZIP/OpenXML `.docx` parser, deterministic `globalThis.fetch` mocks, and `os.tmpdir()` `.data/studio-store.json` + `.data/buckets/` backup/restore in `try { ... } finally { ... }`.
 
 ## How to Run
 ```powershell
-# Run the Skill Plugin, Upload & Redline E2E suite
-node tests/skill-plugin-e2e.mjs
+# Run the 3.0 4-Tier E2E Suite (self-contained os.tmpdir() store/bucket backup & restore)
+node tests/v3-e2e.mjs
 
-# Run existing contract & multi-account E2E tests
+# Run existing 4-suite baseline (always wrap .data/ in %TEMP% backup/restore)
 npm.cmd test
+
+# Production build check
+npm.cmd run build
 ```
 
-## Syntax & Baseline Check
-- `node --check tests/skill-plugin-e2e.mjs` -> **PASS** (exit code `0`).
-- `node tests/studio.test.mjs` -> **PASS** (`ALL_CONTRACT_TESTS_PASSED`).
-- Pre-M1/M2/M3 dry run of `node tests/skill-plugin-e2e.mjs` executed cleanly with `6 passed, 27 failed` (expected failures on unimplemented M1–M3 contracts) and `.data/` completely cleaned up (`Test-Path .data` -> `False`).
+## Syntax & Baseline Integrity Check
+- `node --check tests/v3-e2e.mjs` -> **PASS** (exit code `0`).
+- `.data/studio-store.json` verified untouched (`https://code28.ccwu.cc/v1` with `2` API keys intact).
+- Note: M1–M4 implementation milestones are currently pending; `tests/v3-e2e.mjs` is authored against `ORIGINAL_REQUEST.md` R1–R4 and `PROJECT.md` Interface Contracts for execution after M1–M4 complete.
 
 ## Tier 1–4 Test Coverage Summary (33 Total Tests)
 
 | Tier | Description | Test Count | Test IDs |
 |------|-------------|------------|----------|
-| **Tier 1** | Feature Coverage (admin `.md`/`.txt` CRUD, 4-flow slot topology, `promptCatalog`, `create`/`set_prompts`, fallback, LLM injection, >20 MB upload, UTF-8 `filename*=`) | **12** | `T1-01` – `T1-12` |
-| **Tier 2** | Boundary & Corner Cases (`.MD`/`.TXT` + UTF-8 BOM, binary/empty/ext rejection, `transcribe` rejecting `secondary`, disabled/deleted fallback, `409` stale version, `413` >200 MB, diverse formats, locked episode immutability, non-admin guard) | **11** | `T2-01` – `T2-11` |
-| **Tier 3** | Cross-Feature Interactions (upload->create->inject->switch->export, `transcribe`->`transfer_iteration`->slots, `switch_kind`+`set_prompts`, `replace_skill_plugin` hot reload, multi-account catalog/isolation) | **5** | `T3-01` – `T3-05` |
-| **Tier 4** | Real-World Scenarios & Redline Audits (4 end-to-end workflow runs + strict redline leak audit on creator APIs, `export=1` `.md`, and `app/page.tsx` UI source) | **5** | `T4-01` – `T4-05` |
+| **Tier 1** | Feature Coverage (6 routes + no `墨笔行`/SaaS menus + warm CSS, `save_creation_tiers`, desensitized `tierCatalog`, `thinkingLevel` & `executionMode`, asset trees + `episodes`/`snapshots`, `/breakdown` minimal UI, clean `transcribe` auto-deliver, `lib/docx.ts` + `?export=docx` OpenXML & `?export=1` MD, unconstrained streaming upload + >30 MB degradation, Key-model-family affinity cache, `/api/usage` model-free, `/api/redeem`, `/api/profile`, `studio_tool`) | **14** | `T1-01` – `T1-14` |
+| **Tier 2** | Boundary & Negative Cases (invalid/disabled tier IDs, `plan` mode writeback block, locked episode edit/delete rejection, missing episode & anomaly confirmation card, empty/corrupt `.docx` resilience, non-admin `/api/admin` `save_creation_tiers` rejection, `thinkingLevel` boundaries, `studio_tool` `ai_rate` <120 chars & unknown tool, `STUDIO_MAX_UPLOAD_MB` dynamic cap, `/api/usage`/`/api/redeem`/`/api/profile` auth & validation) | **10** | `T2-01` – `T2-10` |
+| **Tier 3** | Cross-Feature Pairwise (Breakdown -> `.docx` -> `transfer_iteration` `foreign`/`domestic`, `creationTier` + `thinkingLevel` + Skill plugin + `globalRules` + `projectRules` pairwise, `plan` -> `auto` writeback transition, multi-station `/api/usage` sanitization, Key affinity + provider 503 failover) | **5** | `T3-01` – `T3-05` |
+| **Tier 4** | Real-World E2E Scenarios & Redlines (Multi-episode breakdown -> ZIP/OpenXML `.docx` parse -> transfer -> locked continuation, legacy `T4-03` confirm guard + `?export=1` compatibility, comprehensive creator redline leak audit across 3.0 APIs & `.docx`, static redlines on `app/page.tsx` & `app/admin/page.tsx`) | **4** | `T4-01` – `T4-04` |
 | **Total** | | **33** | |

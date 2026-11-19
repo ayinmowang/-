@@ -7,6 +7,8 @@ import {
   flushPersistentStore,
   generateRandomCode,
   getStore,
+  invalidateProviderModelCache,
+  normalizeCreationTiers,
   replaceSkillPlugin,
   resolveAccountFromRequest,
   setDefaultSkillPlugin,
@@ -79,6 +81,7 @@ function buildAdminSnapshot(adminAcc: StudioAccount) {
     systemConfig: {
       ...store.systemConfig,
       skillPlugins: Array.isArray(store.systemConfig.skillPlugins) ? store.systemConfig.skillPlugins : [],
+      creationTiers: normalizeCreationTiers(store.systemConfig.creationTiers),
     },
     projectsSummary,
     auditLogs: store.auditLogs.slice(0, 100),
@@ -361,13 +364,18 @@ export async function POST(request: Request) {
         }
       }
 
+      invalidateProviderModelCache(updatedProvider.id);
       flushPersistentStore();
       return Response.json(buildAdminSnapshot(adminAcc));
     }
 
     // 8. Delete API Provider
     if (op === 'delete_provider') {
-      store.systemConfig.providers = store.systemConfig.providers.filter((p) => p.id !== body.id);
+      const deletedId = String(body.id || '').trim();
+      store.systemConfig.providers = store.systemConfig.providers.filter((p) => p.id !== deletedId);
+      if (deletedId) {
+        invalidateProviderModelCache(deletedId);
+      }
       flushPersistentStore();
       return Response.json(buildAdminSnapshot(adminAcc));
     }
@@ -741,6 +749,32 @@ export async function POST(request: Request) {
       const id = String(body.id || '').trim();
       if (!id) throw new Error('INVALID_INPUT');
       deleteSkillPlugin(id);
+      return Response.json(buildAdminSnapshot(adminAcc));
+    }
+
+    // 19. Save Creation Tiers mapping config
+    if (op === 'save_creation_tiers') {
+      const rawTiers = body.creationTiers ?? body.tiers;
+      if (!Array.isArray(rawTiers)) {
+        throw new Error('INVALID_INPUT');
+      }
+      const validStations = new Set(['director', 'analyst', 'vision', 'planner', 'writer', 'polisher']);
+      for (const item of rawTiers) {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) {
+          throw new Error('INVALID_INPUT');
+        }
+        if (typeof item.id !== 'string' || !item.id.trim()) {
+          throw new Error('INVALID_INPUT');
+        }
+        if (typeof item.name !== 'string' || !item.name.trim()) {
+          throw new Error('INVALID_INPUT');
+        }
+        if (item.station !== undefined && !validStations.has(String(item.station).trim())) {
+          throw new Error('INVALID_INPUT');
+        }
+      }
+      store.systemConfig.creationTiers = normalizeCreationTiers(rawTiers);
+      flushPersistentStore();
       return Response.json(buildAdminSnapshot(adminAcc));
     }
 

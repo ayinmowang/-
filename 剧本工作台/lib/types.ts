@@ -8,6 +8,10 @@ export type StationRoleKey = 'director' | 'analyst' | 'vision' | 'planner' | 'wr
 
 export type PromptSlotKey = 'primary' | 'secondary';
 
+export type ThinkingLevel = 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+export type ExecutionMode = 'auto' | 'plan';
+
 export interface SkillPluginRecord {
   id: string;
   kind: Kind; // 'foreign' | 'domestic' | 'transcribe' | 'original'
@@ -46,6 +50,33 @@ export type CreatorPromptCatalog = Record<
     secondary?: CreatorPromptSummary[];
   }
 >;
+
+export interface CreationTierConfig {
+  id: string;
+  name: string;
+  badge: string;
+  description: string;
+  costHint: string;
+  station: StationRoleKey;
+  providerId?: string;
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+  supportsThinking: boolean;
+  enabled: boolean;
+  isDefault: boolean;
+  order: number;
+}
+
+export interface CreatorTierSummary {
+  id: string;
+  name: string;
+  badge: string;
+  description: string;
+  costHint: string;
+  supportsThinking: boolean;
+  isDefault: boolean;
+}
 
 export interface FlowOption {
   kind: Kind;
@@ -193,6 +224,44 @@ export interface RemoteState {
   };
 }
 
+export interface StudioVolume {
+  id: string;
+  title: string;
+  order: number;
+}
+
+export interface StudioEpisodeSnapshot {
+  id: string;
+  at: string;
+  body: string;
+  wordCount?: number;
+  note?: string;
+}
+
+export interface StudioEpisode {
+  id: string;
+  volumeId?: string;
+  episodeNumber: number;
+  title: string;
+  body: string;
+  locked: boolean;
+  updatedAt: string;
+  snapshots?: StudioEpisodeSnapshot[];
+}
+
+export interface StudioAssetNode {
+  id: string;
+  title: string;
+  category?: string;
+  parentId?: string;
+  order?: number;
+  summary?: string;
+  body: string;
+  tags?: string[];
+  meta?: Record<string, string>;
+  updatedAt: string;
+}
+
 export interface Project {
   id: string;
   owner?: string;
@@ -219,6 +288,15 @@ export interface Project {
   remoteId?: string;
   remote?: RemoteState;
   promptSelections?: ProjectPromptSelections;
+  volumes?: StudioVolume[];
+  episodes?: StudioEpisode[];
+  outlineNodes?: StudioAssetNode[];
+  characterNodes?: StudioAssetNode[];
+  worldNodes?: StudioAssetNode[];
+  projectRules?: string;
+  preferredTierId?: string;
+  thinkingLevel?: ThinkingLevel;
+  executionMode?: ExecutionMode;
 }
 
 /**
@@ -239,6 +317,8 @@ export interface StudioAccount {
   note: string;
   createdAt: string;
   lastLoginAt?: string;
+  globalRules?: string;
+  themePreference?: 'light' | 'dark';
 }
 
 export interface InviteKeyRecord {
@@ -309,6 +389,8 @@ export interface ApiAuditLog {
   estimatedCostUsd: number;
   status: 'success' | 'fallback' | 'failed';
   error?: string;
+  tierId?: string;
+  tierName?: string;
 }
 
 export interface AdminSystemConfig {
@@ -321,6 +403,7 @@ export interface AdminSystemConfig {
   providers: ApiProviderConfig[];
   routes: Record<StationRoleKey, StationRouteConfig>;
   skillPlugins?: SkillPluginRecord[];
+  creationTiers?: CreationTierConfig[];
 }
 
 export interface PublicAccountProfile {
@@ -332,4 +415,6 @@ export interface PublicAccountProfile {
   budgetUsedUsd: number;
   allowedFlows: Kind[];
   accessKeyMasked: string;
+  globalRules?: string;
+  themePreference?: 'light' | 'dark';
 }

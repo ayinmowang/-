@@ -11,14 +11,22 @@ import {
 } from '../../../lib/server';
 import type { StudioAccount } from '../../../lib/types';
 
+function toPublicAccountWithDefaults(acc: StudioAccount) {
+  return {
+    ...toPublicProfile(acc),
+    globalRules: typeof acc.globalRules === 'string' ? acc.globalRules : '',
+    themePreference: acc.themePreference === 'dark' ? ('dark' as const) : ('light' as const),
+  };
+}
+
 function buildSessionResponse(payload: any, token?: string, clearCookie = false): Response {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
   if (clearCookie) {
-    headers['Set-Cookie'] = 'studio_session=; Path=/; Max-Age=0; SameSite=Lax';
+    headers['Set-Cookie'] = 'studio_session=; Path=/; Max-Age=0; SameSite=Lax; HttpOnly';
   } else if (token) {
-    headers['Set-Cookie'] = `studio_session=${encodeURIComponent(token)}; Path=/; Max-Age=${60 * 60 * 24 * 30}; SameSite=Lax`;
+    headers['Set-Cookie'] = `studio_session=${encodeURIComponent(token)}; Path=/; Max-Age=${60 * 60 * 24 * 30}; SameSite=Lax; HttpOnly`;
   }
   return new Response(JSON.stringify(payload), { status: 200, headers });
 }
@@ -33,7 +41,7 @@ export async function GET(request: Request) {
       authenticated: Boolean(resolved),
       requireAuthOnFrontend: store.systemConfig.requireAuthOnFrontend,
       allowInviteRegistration: store.systemConfig.allowInviteRegistration,
-      account: activeAcc ? toPublicProfile(activeAcc) : null,
+      account: activeAcc ? toPublicAccountWithDefaults(activeAcc) : null,
     });
   } catch (e) {
     return failure(e);
@@ -44,7 +52,17 @@ export async function POST(request: Request) {
   try {
     const store = getStore();
     const body: any = await request.json().catch(() => ({}));
-    const action = String(body.action || '');
+    const rawAction = String(body.action || '').trim();
+    const action =
+      rawAction === 'login'
+        ? body.key !== undefined && body.username === undefined
+          ? 'login_key'
+          : 'login_password'
+        : rawAction === 'register'
+        ? 'register_with_invite'
+        : rawAction === 'redeem'
+        ? 'login_key'
+        : rawAction;
 
     // 1. Login with Username + Password
     if (action === 'login_password') {
@@ -63,7 +81,7 @@ export async function POST(request: Request) {
         {
           ok: true,
           token,
-          account: toPublicProfile(acc),
+          account: toPublicAccountWithDefaults(acc),
         },
         token
       );
@@ -71,7 +89,7 @@ export async function POST(request: Request) {
 
     // 2. Login with Exclusive Access Key OR Admin-generated Invite Code
     if (action === 'login_key') {
-      const rawKey = String(body.key || '').trim();
+      const rawKey = String(body.key ?? body.code ?? '').trim();
       if (!rawKey) throw new Error('INVALID_CREDENTIALS');
 
       // 2a. Check if it matches an existing account's exclusive accessKey
@@ -85,7 +103,7 @@ export async function POST(request: Request) {
           {
             ok: true,
             token,
-            account: toPublicProfile(byAccessKey),
+            account: toPublicAccountWithDefaults(byAccessKey),
           },
           token
         );
@@ -107,7 +125,7 @@ export async function POST(request: Request) {
             {
               ok: true,
               token,
-              account: toPublicProfile(boundAcc),
+              account: toPublicAccountWithDefaults(boundAcc),
             },
             token
           );
@@ -138,6 +156,8 @@ export async function POST(request: Request) {
         note: `通过邀请码 ${invite.code} 快捷激活`,
         createdAt: now,
         lastLoginAt: now,
+        globalRules: '',
+        themePreference: 'light',
       };
       store.accounts.push(newAcc);
       invite.usedCount += 1;
@@ -153,7 +173,7 @@ export async function POST(request: Request) {
         {
           ok: true,
           token,
-          account: toPublicProfile(newAcc),
+          account: toPublicAccountWithDefaults(newAcc),
           autoProvisioned: {
             username: newAcc.username,
             password: newAcc.password,
@@ -166,7 +186,10 @@ export async function POST(request: Request) {
 
     // 3. Register / Activate personal Username + Password using an Admin Invite Code
     if (action === 'register_with_invite') {
-      const inviteCode = String(body.inviteCode || '').trim();
+      if (!store.systemConfig.allowInviteRegistration) {
+        return Response.json({ error: 'INVITE_REGISTRATION_DISABLED' }, { status: 403 });
+      }
+      const inviteCode = String(body.inviteCode ?? body.code ?? '').trim();
       const username = String(body.username || '').trim().toLowerCase();
       const displayName = String(body.displayName || username).trim();
       const password = String(body.password || '').trim();
@@ -199,6 +222,8 @@ export async function POST(request: Request) {
         note: `使用邀请码 ${invite.code} 注册激活`,
         createdAt: now,
         lastLoginAt: now,
+        globalRules: '',
+        themePreference: 'light',
       };
 
       store.accounts.push(newAcc);
@@ -215,7 +240,7 @@ export async function POST(request: Request) {
         {
           ok: true,
           token,
-          account: toPublicProfile(newAcc),
+          account: toPublicAccountWithDefaults(newAcc),
           exclusiveKey: newAcc.accessKey,
         },
         token

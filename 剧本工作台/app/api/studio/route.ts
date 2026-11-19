@@ -14,11 +14,17 @@ import {
   failure,
   sanitizeForClient,
   getStore,
+  flushPersistentStore,
   buildCreatorPromptCatalog,
+  buildCreatorTierCatalog,
+  resolveCreationTier,
+  normalizeCreationTiers,
   resolveWorkflowSkillPrompts,
   getAllowedSlotsForKind,
   isValidKind,
   getMaxUploadBytes,
+  inspectBucketMediaFile,
+  formatVideoMetadataSummary,
   type MultimodalAttachmentInput,
 } from '../../../lib/server';
 import type {
@@ -29,6 +35,12 @@ import type {
   ProjectPromptSelections,
   StationRoleKey,
   StudioAccount,
+  ThinkingLevel,
+  ExecutionMode,
+  StudioVolume,
+  StudioEpisode,
+  StudioEpisodeSnapshot,
+  StudioAssetNode,
 } from '../../../lib/types';
 
 const KIND_LABELS: Record<Kind, string> = {
@@ -37,6 +49,13 @@ const KIND_LABELS: Record<Kind, string> = {
   original: '原创',
   transcribe: '扒剧',
 };
+
+const VALID_THINKING_LEVELS: readonly ThinkingLevel[] = ['off', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+const VALID_EXECUTION_MODES: readonly ExecutionMode[] = ['auto', 'plan'] as const;
+const MULTIMODAL_VIDEO_CAP_BYTES = 30 * 1024 * 1024;
+const MULTIMODAL_IMAGE_CAP_BYTES = 10 * 1024 * 1024;
+const TEXT_ATTACHMENT_CAP_BYTES = 5 * 1024 * 1024;
+const DOC_ATTACHMENT_CAP_BYTES = 20 * 1024 * 1024;
 
 function formatRequirements(reqs: Project['requirements']): string {
   if (!Array.isArray(reqs) || reqs.length === 0) return '无';
@@ -121,6 +140,85 @@ function normalizeCreatePromptSelections(
   return result;
 }
 
+function validateExecutionControls(
+  body: any,
+  currentProject?: any
+): { preferredTierId?: string; thinkingLevel: ThinkingLevel; executionMode: ExecutionMode } {
+  const store = getStore();
+  const tiers = normalizeCreationTiers(store.systemConfig.creationTiers);
+  const enabledTiers = tiers.filter((t) => t.enabled);
+  const defaultTier = enabledTiers.find((t) => t.isDefault) || enabledTiers[0];
+
+  let preferredTierId: string | undefined;
+  if (body?.preferredTierId !== undefined && body?.preferredTierId !== null) {
+    if (typeof body.preferredTierId !== 'string') throw new Error('INVALID_INPUT');
+    const trimmed = body.preferredTierId.trim();
+    if (trimmed) {
+      const matched = enabledTiers.find((t) => t.id === trimmed);
+      if (!matched) throw new Error('INVALID_INPUT');
+      preferredTierId = matched.id;
+    } else {
+      preferredTierId = defaultTier?.id;
+    }
+  } else if (
+    typeof currentProject?.preferredTierId === 'string' &&
+    enabledTiers.some((t) => t.id === currentProject.preferredTierId)
+  ) {
+    preferredTierId = currentProject.preferredTierId;
+  } else {
+    preferredTierId = defaultTier?.id;
+  }
+
+  const chosenTier = enabledTiers.find((t) => t.id === preferredTierId) || defaultTier;
+
+  let thinkingLevel: ThinkingLevel = currentProject?.thinkingLevel || 'off';
+  if (body?.thinkingLevel !== undefined && body?.thinkingLevel !== null) {
+    if (typeof body.thinkingLevel !== 'string') throw new Error('INVALID_INPUT');
+    const rawThink = body.thinkingLevel.trim();
+    if (rawThink) {
+      if (!(VALID_THINKING_LEVELS as readonly string[]).includes(rawThink)) {
+        throw new Error('INVALID_INPUT');
+      }
+      thinkingLevel = rawThink as ThinkingLevel;
+    }
+  }
+  if (chosenTier && !chosenTier.supportsThinking) {
+    thinkingLevel = 'off';
+  }
+
+  let executionMode: ExecutionMode = currentProject?.executionMode === 'plan' ? 'plan' : 'auto';
+  if (body?.executionMode !== undefined && body?.executionMode !== null) {
+    if (typeof body.executionMode !== 'string') throw new Error('INVALID_INPUT');
+    const rawMode = body.executionMode.trim();
+    if (rawMode) {
+      if (!(VALID_EXECUTION_MODES as readonly string[]).includes(rawMode)) {
+        throw new Error('INVALID_INPUT');
+      }
+      executionMode = rawMode as ExecutionMode;
+    }
+  }
+
+  return { preferredTierId, thinkingLevel, executionMode };
+}
+
+function ensureWorkspaceDefaults<T extends Record<string, any>>(p: T): T {
+  if (!p || typeof p !== 'object') return p;
+  if (!Array.isArray(p.volumes)) (p as any).volumes = [];
+  if (!Array.isArray(p.episodes)) (p as any).episodes = [];
+  if (!Array.isArray(p.outlineNodes)) (p as any).outlineNodes = [];
+  if (!Array.isArray(p.characterNodes)) (p as any).characterNodes = [];
+  if (!Array.isArray(p.worldNodes)) (p as any).worldNodes = [];
+  if (typeof p.projectRules !== 'string') (p as any).projectRules = '';
+  if (p.executionMode !== 'auto' && p.executionMode !== 'plan') (p as any).executionMode = 'auto';
+  if (
+    typeof p.thinkingLevel !== 'string' ||
+    !(VALID_THINKING_LEVELS as readonly string[]).includes(p.thinkingLevel)
+  ) {
+    (p as any).thinkingLevel = 'off';
+  }
+  return p;
+}
+
 function extractTextFromZipXmlBuffer(buf: Buffer): string {
   try {
     // Minimal ZIP local file header parser to extract XML text from .docx (word/document.xml) or .xlsx (xl/sharedStrings.xml)
@@ -168,7 +266,8 @@ function extractTextFromZipXmlBuffer(buf: Buffer): string {
 async function extractProjectAttachmentsForLLM(
   project: Project,
   user: string,
-  includeVideoMultimodal: boolean
+  includeVideoMultimodal: boolean,
+  extraKeyframes?: MultimodalAttachmentInput[]
 ): Promise<{ textSnippets: string[]; mediaAttachments: MultimodalAttachmentInput[] }> {
   const textSnippets: string[] = [];
   const mediaAttachments: MultimodalAttachmentInput[] = [];
@@ -176,51 +275,116 @@ async function extractProjectAttachmentsForLLM(
 
   for (const att of project.attachments || []) {
     try {
-      const obj = await bucket.get(`${user}/${project.id}/${att.id}`);
-      if (!obj) continue;
-      const ab = await obj.arrayBuffer();
-      const buf = Buffer.from(ab);
+      const bucketKey = `${user}/${project.id}/${att.id}`;
       const lowerName = String(att.name || '').toLowerCase();
+      const declaredSize = Number(att.size || 0);
 
+      // Video attachments: check size BEFORE loading full buffer to avoid OOM on >30MB videos
+      if (/\.(mp4|mov|webm|mkv|avi)$/i.test(lowerName)) {
+        if (declaredSize > MULTIMODAL_VIDEO_CAP_BYTES) {
+          const meta = await inspectBucketMediaFile(bucketKey, att.name);
+          textSnippets.push(
+            `${formatVideoMetadataSummary(meta)}${att.episode ? `（对应第 ${att.episode} 集）` : ''}`
+          );
+          continue;
+        }
+        if (!includeVideoMultimodal || declaredSize < 4096 || mediaAttachments.length >= 6) {
+          continue;
+        }
+        const obj = await bucket.get(bucketKey);
+        if (!obj) continue;
+        const ab = await obj.arrayBuffer();
+        const buf = Buffer.from(ab);
+        if (buf.length > MULTIMODAL_VIDEO_CAP_BYTES) {
+          const meta = await inspectBucketMediaFile(bucketKey, att.name);
+          textSnippets.push(formatVideoMetadataSummary(meta));
+          continue;
+        }
+        if (buf.length >= 4096) {
+          const mimeType = lowerName.endsWith('.mov')
+            ? 'video/quicktime'
+            : lowerName.endsWith('.webm')
+            ? 'video/webm'
+            : 'video/mp4';
+          mediaAttachments.push({
+            name: att.name,
+            mimeType,
+            base64: buf.toString('base64'),
+          });
+        }
+        continue;
+      }
+
+      // Image keyframes
+      if (/\.(png|jpg|jpeg|webp)$/i.test(lowerName)) {
+        if (!includeVideoMultimodal || declaredSize > MULTIMODAL_IMAGE_CAP_BYTES || mediaAttachments.length >= 6) {
+          continue;
+        }
+        const obj = await bucket.get(bucketKey);
+        if (!obj) continue;
+        const ab = await obj.arrayBuffer();
+        const buf = Buffer.from(ab);
+        if (buf.length > 0 && buf.length <= MULTIMODAL_IMAGE_CAP_BYTES) {
+          const mimeType = lowerName.endsWith('.png')
+            ? 'image/png'
+            : lowerName.endsWith('.webp')
+            ? 'image/webp'
+            : 'image/jpeg';
+          mediaAttachments.push({
+            name: att.name,
+            mimeType,
+            base64: buf.toString('base64'),
+          });
+        }
+        continue;
+      }
+
+      // Text / subtitle files
       if (/\.(txt|md|srt|ass|vtt|csv|json)$/i.test(lowerName)) {
+        if (declaredSize > TEXT_ATTACHMENT_CAP_BYTES) continue;
+        const obj = await bucket.get(bucketKey);
+        if (!obj) continue;
+        const ab = await obj.arrayBuffer();
+        const buf = Buffer.from(ab);
+        if (buf.length > TEXT_ATTACHMENT_CAP_BYTES) continue;
         const txt = buf.toString('utf8').replace(/^\uFEFF/, '').trim();
         if (txt) {
           textSnippets.push(
             `【附件《${att.name}》${att.episode ? `（第 ${att.episode} 集）` : ''}内容摘录】：\n${txt.slice(0, 12000)}`
           );
         }
-      } else if (/\.(docx|xlsx)$/i.test(lowerName) && buf.length >= 64) {
+        continue;
+      }
+
+      // Office documents (.docx / .xlsx)
+      if (/\.(docx|xlsx)$/i.test(lowerName)) {
+        if (declaredSize < 64 || declaredSize > DOC_ATTACHMENT_CAP_BYTES) continue;
+        const obj = await bucket.get(bucketKey);
+        if (!obj) continue;
+        const ab = await obj.arrayBuffer();
+        const buf = Buffer.from(ab);
+        if (buf.length < 64 || buf.length > DOC_ATTACHMENT_CAP_BYTES) continue;
         const xmlText = extractTextFromZipXmlBuffer(buf);
         if (xmlText) {
           textSnippets.push(
             `【文档附件《${att.name}》${att.episode ? `（第 ${att.episode} 集）` : ''}内容摘录】：\n${xmlText.slice(0, 12000)}`
           );
         }
-      } else if (
-        includeVideoMultimodal &&
-        /\.(mp4|mov|webm|mkv|avi|png|jpg|jpeg|webp)$/i.test(lowerName) &&
-        buf.length >= 4096 &&
-        buf.length <= 28 * 1024 * 1024 &&
-        mediaAttachments.length < 3
-      ) {
-        const mimeType = lowerName.endsWith('.mov')
-          ? 'video/quicktime'
-          : lowerName.endsWith('.webm')
-          ? 'video/webm'
-          : lowerName.endsWith('.png')
-          ? 'image/png'
-          : lowerName.endsWith('.jpg') || lowerName.endsWith('.jpeg')
-          ? 'image/jpeg'
-          : lowerName.endsWith('.webp')
-          ? 'image/webp'
-          : 'video/mp4';
-        mediaAttachments.push({
-          name: att.name,
-          mimeType,
-          base64: buf.toString('base64'),
-        });
       }
     } catch {}
+  }
+
+  if (includeVideoMultimodal && Array.isArray(extraKeyframes)) {
+    for (const kf of extraKeyframes) {
+      if (mediaAttachments.length >= 6) break;
+      if (kf && typeof kf.base64 === 'string' && kf.base64.trim() && typeof kf.mimeType === 'string') {
+        mediaAttachments.push({
+          name: kf.name || 'keyframe.jpg',
+          mimeType: kf.mimeType,
+          base64: kf.base64,
+        });
+      }
+    }
   }
 
   return { textSnippets, mediaAttachments };
@@ -231,15 +395,26 @@ async function callProjectStation(params: {
   station: StationRoleKey;
   userPrompt: string;
   account: StudioAccount;
+  extraKeyframes?: MultimodalAttachmentInput[];
 }): Promise<{ ok: boolean; text: string | null; error?: string }> {
   const store = getStore();
   const basePrompt = store.systemConfig.routes?.[params.station]?.systemPrompt || '';
   const { composedSystemPrompt } = resolveWorkflowSkillPrompts(store.systemConfig, params.project);
+  const resolvedTier = resolveCreationTier(
+    store.systemConfig,
+    params.project.preferredTierId,
+    params.station
+  );
+  const effectiveThinking: ThinkingLevel = resolvedTier.supportsThinking
+    ? params.project.thinkingLevel || 'off'
+    : 'off';
+
   const user = params.account?.username || 'ayin';
   const { textSnippets, mediaAttachments } = await extractProjectAttachmentsForLLM(
     params.project,
     user,
-    params.station === 'vision'
+    params.station === 'vision',
+    params.extraKeyframes
   );
 
   const enrichedUserPrompt =
@@ -247,22 +422,41 @@ async function callProjectStation(params: {
       ? `${params.userPrompt}\n\n${textSnippets.join('\n\n')}`
       : params.userPrompt;
 
+  const sysBlocks: string[] = [];
+  const skillComposed = composedSystemPrompt(basePrompt);
+  if (skillComposed.trim()) sysBlocks.push(skillComposed.trim());
+  if (typeof params.account?.globalRules === 'string' && params.account.globalRules.trim()) {
+    sysBlocks.push(`【创作者全局规矩】\n${params.account.globalRules.trim()}`);
+  }
+  if (typeof params.project?.projectRules === 'string' && params.project.projectRules.trim()) {
+    sysBlocks.push(`【本剧创作规则】\n${params.project.projectRules.trim()}`);
+  }
+
+  const tierCfg = resolvedTier.tier;
   return callStationLLM({
     station: params.station,
     account: params.account,
     projectId: params.project.id,
     project: params.project,
-    systemPromptOverride: composedSystemPrompt(basePrompt),
+    systemPromptOverride: sysBlocks.join('\n\n'),
     userPrompt: enrichedUserPrompt,
+    thinkingLevel: effectiveThinking,
+    tierId: tierCfg.id,
+    tierName: tierCfg.name,
+    ...(tierCfg.providerId?.trim() ? { providerIdOverride: tierCfg.providerId.trim() } : {}),
+    ...(tierCfg.model?.trim() ? { modelOverride: tierCfg.model.trim() } : {}),
+    ...(typeof tierCfg.temperature === 'number' ? { temperatureOverride: tierCfg.temperature } : {}),
+    ...(typeof tierCfg.maxTokens === 'number' ? { maxTokensOverride: tierCfg.maxTokens } : {}),
     ...(mediaAttachments.length > 0 ? { mediaAttachments } : {}),
   });
 }
 
-function withPromptCatalog<T extends Record<string, any>>(payload: T): T {
-  const store = getStore();
+function withCatalogs<T extends Record<string, any>>(payload: T): T {
+  const config = getStore().systemConfig;
   return sanitizeForClient({
     ...payload,
-    promptCatalog: buildCreatorPromptCatalog(store.systemConfig),
+    promptCatalog: buildCreatorPromptCatalog(config),
+    tierCatalog: buildCreatorTierCatalog(config),
   });
 }
 
@@ -415,18 +609,477 @@ function buildProgressReply(p: Project): string {
   return `当前没有后台任务在跑，正停在「${stageTitle}」（进度 ${done}/${total} 步）${cardTitle}；${etaText}。`;
 }
 
+function isEpisodeEffectivelyLocked(p: any, ep: any): boolean {
+  if (!ep) return false;
+  if (ep.locked) return true;
+  if (p?.lockedEpisodes && Number.isInteger(Number(ep.episodeNumber)) && Number(ep.episodeNumber) <= Number(p.lockedEpisodes)) {
+    return true;
+  }
+  return false;
+}
+
+function normalizeAssetNodeInput(raw: any, index: number, existing?: any): StudioAssetNode & { content?: string } {
+  const now = new Date().toISOString();
+  const text =
+    typeof raw?.body === 'string'
+      ? raw.body
+      : typeof raw?.content === 'string'
+      ? raw.content
+      : typeof existing?.body === 'string'
+      ? existing.body
+      : '';
+  const shouldMirrorContent = raw?.content !== undefined || Boolean(existing && 'content' in existing);
+  const node: StudioAssetNode & { content?: string } = {
+    id: String(raw?.id || existing?.id || `node-${crypto.randomUUID()}`).trim(),
+    title: String(raw?.title || existing?.title || `条目 ${index + 1}`).trim().slice(0, 200),
+    ...(raw?.category !== undefined || existing?.category !== undefined
+      ? { category: String(raw?.category ?? existing?.category ?? '').trim() }
+      : {}),
+    ...(raw?.parentId || existing?.parentId
+      ? { parentId: String(raw?.parentId ?? existing?.parentId) }
+      : {}),
+    order: Number.isFinite(Number(raw?.order)) ? Number(raw.order) : existing?.order ?? index + 1,
+    ...(raw?.summary !== undefined || existing?.summary !== undefined
+      ? { summary: String(raw?.summary ?? existing?.summary ?? '').trim() }
+      : {}),
+    body: text,
+    ...(Array.isArray(raw?.tags) ? { tags: raw.tags.map((t: unknown) => String(t)) } : existing?.tags ? { tags: existing.tags } : {}),
+    ...(raw?.meta && typeof raw.meta === 'object' ? { meta: raw.meta } : existing?.meta ? { meta: existing.meta } : {}),
+    updatedAt: now,
+  };
+  if (shouldMirrorContent) {
+    node.content = text;
+  }
+  return node;
+}
+
+function normalizeEpisodeInput(raw: any, index: number, existing?: any): StudioEpisode & { content?: string } {
+  const now = new Date().toISOString();
+  const text =
+    typeof raw?.body === 'string'
+      ? raw.body
+      : typeof raw?.content === 'string'
+      ? raw.content
+      : typeof existing?.body === 'string'
+      ? existing.body
+      : '';
+  const shouldMirrorContent = raw?.content !== undefined || Boolean(existing && 'content' in existing);
+  const epNumRaw = Number(raw?.episodeNumber ?? existing?.episodeNumber ?? index + 1);
+  const episodeNumber = Number.isInteger(epNumRaw) && epNumRaw >= 1 ? epNumRaw : index + 1;
+  const snapshots = Array.isArray(raw?.snapshots)
+    ? raw.snapshots
+    : Array.isArray(existing?.snapshots)
+    ? existing.snapshots
+    : undefined;
+
+  const ep: StudioEpisode & { content?: string } = {
+    id: String(raw?.id || existing?.id || `ep-${crypto.randomUUID()}`).trim(),
+    ...(raw?.volumeId || existing?.volumeId ? { volumeId: String(raw?.volumeId ?? existing?.volumeId) } : {}),
+    episodeNumber,
+    title: String(raw?.title || existing?.title || `第 ${episodeNumber} 集`).trim().slice(0, 200),
+    body: text,
+    locked: Boolean(raw?.locked),
+    updatedAt: now,
+    ...(snapshots ? { snapshots } : {}),
+  };
+  if (shouldMirrorContent) {
+    ep.content = text;
+  }
+  return ep;
+}
+
+function cloneNodesBodyOnly(nodes: any): StudioAssetNode[] {
+  if (!Array.isArray(nodes)) return [];
+  return nodes.map((n: any, idx: number) => {
+    const text = typeof n?.body === 'string' ? n.body : typeof n?.content === 'string' ? n.content : '';
+    return {
+      id: String(n?.id || `node-${idx + 1}`),
+      title: String(n?.title || `条目 ${idx + 1}`),
+      ...(n?.category ? { category: String(n.category) } : {}),
+      ...(n?.parentId ? { parentId: String(n.parentId) } : {}),
+      order: Number.isFinite(Number(n?.order)) ? Number(n.order) : idx + 1,
+      ...(n?.summary ? { summary: String(n.summary) } : {}),
+      body: text,
+      ...(Array.isArray(n?.tags) ? { tags: n.tags.map(String) } : {}),
+      ...(n?.meta && typeof n.meta === 'object' ? { meta: n.meta } : {}),
+      updatedAt: String(n?.updatedAt || new Date().toISOString()),
+    };
+  });
+}
+
+function cloneEpisodesBodyOnly(episodes: any): StudioEpisode[] {
+  if (!Array.isArray(episodes)) return [];
+  return episodes.map((ep: any, idx: number) => {
+    const text = typeof ep?.body === 'string' ? ep.body : typeof ep?.content === 'string' ? ep.content : '';
+    const epNum = Number.isInteger(Number(ep?.episodeNumber)) ? Number(ep.episodeNumber) : idx + 1;
+    return {
+      id: String(ep?.id || `ep-${epNum}`),
+      ...(ep?.volumeId ? { volumeId: String(ep.volumeId) } : {}),
+      episodeNumber: epNum,
+      title: String(ep?.title || `第 ${epNum} 集`),
+      body: text,
+      locked: Boolean(ep?.locked),
+      updatedAt: String(ep?.updatedAt || new Date().toISOString()),
+    };
+  });
+}
+
+async function runWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const idx = cursor++;
+      results[idx] = await worker(items[idx], idx);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+function populateTranscribeWorkspace(p: any, rawOutput: string): void {
+  const now = new Date().toISOString();
+  const cleanOutput = sanitizeForClient(rawOutput || '');
+
+  if (!Array.isArray(p.volumes) || p.volumes.length === 0) {
+    p.volumes = [{ id: 'vol-1', title: '第一卷', order: 1 }];
+  }
+
+  // Extract character section
+  const charMatch = cleanOutput.match(/(?:###?\s*人物[^\n]*|【全剧人物[^】]*】)\n([\s\S]*?)(?=\n(?:###?|【)|$)/);
+  const charText = charMatch ? charMatch[1].trim() : '';
+  const charLines = charText
+    .split('\n')
+    .map((l: string) => l.replace(/^[-*•\d.]+\s*/, '').trim())
+    .filter(Boolean);
+
+  if (charLines.length > 0) {
+    p.characterNodes = charLines.slice(0, 30).map((line: string, idx: number) => {
+      const [namePart, ...rest] = line.split(/[：:]/);
+      return {
+        id: `char-tr-${idx + 1}`,
+        title: (namePart || `角色 ${idx + 1}`).trim().slice(0, 60),
+        body: rest.join('：').trim() || line,
+        order: idx + 1,
+        updatedAt: now,
+      };
+    });
+  } else if (!Array.isArray(p.characterNodes) || p.characterNodes.length === 0) {
+    p.characterNodes = [
+      {
+        id: 'char-tr-1',
+        title: '核心角色锚定表',
+        body: '人物定位与声线锚定已完成整理，详见交付 Word 文档。',
+        order: 1,
+        updatedAt: now,
+      },
+    ];
+  }
+
+  // Extract synopsis section
+  const synMatch = cleanOutput.match(/(?:###?\s*故事梗概[^\n]*|【本集核心剧情梗概】|【剧情梗概】)\n([\s\S]*?)(?=\n(?:###?|【)|$)/);
+  const synText = synMatch ? synMatch[1].trim() : cleanOutput.slice(0, 600);
+  p.outlineNodes = [
+    {
+      id: 'out-tr-1',
+      title: '全剧剧情梗概',
+      body: synText || '已完成分集扒剧拆解。',
+      order: 1,
+      updatedAt: now,
+    },
+  ];
+
+  // Parse per-episode blocks or fall back to attachment episodes
+  const videoAtts = (p.attachments || [])
+    .filter((a: any) => /\.(mp4|mov|webm|mkv|avi)$/i.test(String(a.name || '')))
+    .sort((a: any, b: any) => (a.episode || 0) - (b.episode || 0));
+
+  const epHeaderRegex = /(?:^|\n)(?:###?\s*)?第\s*0*(\d{1,3})\s*集[^\n]*/g;
+  const matches = Array.from(cleanOutput.matchAll(epHeaderRegex));
+  const parsedEpMap = new Map<number, string>();
+  for (let i = 0; i < matches.length; i++) {
+    const m = matches[i];
+    const epNum = Number(m[1]);
+    const startIdx = m.index ?? 0;
+    const endIdx = i + 1 < matches.length ? (matches[i + 1].index ?? cleanOutput.length) : cleanOutput.length;
+    const slice = cleanOutput.slice(startIdx, endIdx).trim();
+    if (Number.isInteger(epNum) && epNum >= 1) {
+      const prev = parsedEpMap.get(epNum);
+      parsedEpMap.set(epNum, prev ? `${prev}\n\n${slice}` : slice);
+    }
+  }
+
+  const targetEpNums: number[] =
+    videoAtts.length > 0
+      ? Array.from(
+          new Set<number>(
+            videoAtts
+              .map((a: any, idx: number) => (Number.isInteger(a.episode) && a.episode > 0 ? Number(a.episode) : idx + 1))
+          )
+        ).sort((a, b) => a - b)
+      : parsedEpMap.size > 0
+      ? Array.from(parsedEpMap.keys()).sort((a, b) => a - b)
+      : [1];
+
+  p.episodes = targetEpNums.map((epNum) => ({
+    id: `ep-tr-${epNum}`,
+    volumeId: p.volumes[0]?.id || 'vol-1',
+    episodeNumber: epNum,
+    title: `第 ${epNum} 集`,
+    body: parsedEpMap.get(epNum) || cleanOutput || `第 ${epNum} 集扒剧还原正文`,
+    locked: false,
+    updatedAt: now,
+  }));
+
+  p.remote.outputs.synopsis = {
+    title: '故事梗概与分集扒剧还原稿',
+    content: synText || cleanOutput,
+    updatedAt: now,
+    version: 1,
+  };
+  p.remote.outputs.characters = {
+    title: '核心人物锚定表',
+    content: charText || '人物锚定表已归档。',
+    updatedAt: now,
+    version: 1,
+  };
+  p.remote.outputs.script = {
+    title: '分集扒剧还原正文',
+    content: cleanOutput || '全集扒剧正文已生成完毕。',
+    updatedAt: now,
+    version: 1,
+  };
+}
+
+function formatShortDramaScript(rawText: string): string {
+  const lines = String(rawText || '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  const formatted: string[] = [];
+  for (const line of lines) {
+    // Scene header standardization
+    const sceneMatch = line.match(
+      /^(?:第\s*0*(\d+)\s*集\s*)?(?:场次\s*)?(\d+[-_]\d+)\s*(内景|外景|内外景|内|外)\s+(.+?)(?:\s+(日|夜|黄昏|清晨))?$/
+    );
+    if (sceneMatch) {
+      const epPart = sceneMatch[1] ? `第${sceneMatch[1]}集 ` : '';
+      const locType =
+        sceneMatch[3] === '内' ? '内景' : sceneMatch[3] === '外' ? '外景' : sceneMatch[3];
+      const timePart = sceneMatch[5] || '日';
+      formatted.push(`${epPart}场次${sceneMatch[2].replace('_', '-')} ${locType} ${sceneMatch[4].trim()} ${timePart}`);
+      continue;
+    }
+
+    // Dialogue standardization: "角色: 台词" or "角色：「台词」"
+    const dlgMatch = line.match(/^([\u4e00-\u9fa5A-Za-z0-9_·]{1,16})\s*[:：]\s*[""“]?(.+?)[""”]?$/);
+    if (dlgMatch && !line.startsWith('▲')) {
+      const spoken = dlgMatch[2].replace(/^「|」$/g, '').trim();
+      formatted.push(`${dlgMatch[1]}：「${spoken}」`);
+      continue;
+    }
+
+    // Action line standardization
+    if (line.startsWith('▲')) {
+      formatted.push(`▲ ${line.slice(1).trim()}`);
+    } else if (/^第\s*\d+\s*集/.test(line) || /^场次/.test(line)) {
+      formatted.push(line);
+    } else {
+      formatted.push(`▲ ${line}`);
+    }
+  }
+  return formatted.join('\n');
+}
+
+function computeHeuristicAiRate(text: string): { humanRate: number; aiRate: number; reason: string } {
+  const clean = text.trim();
+  const sentences = clean.split(/[。！？!?\n]+/).map((s) => s.trim()).filter(Boolean);
+  const hasDialogueQuotes = (clean.match(/[「」“”"]/g) || []).length >= 2;
+  const hasActionMarks = clean.includes('▲');
+  const clichéHits = (
+    clean.match(/(不由得|总而言之|综上所述|显而易见|与此同时|不仅如此|值得注意的是|然而事实并非如此)/g) || []
+  ).length;
+  const uniqueChars = new Set(clean.replace(/\s+/g, '')).size;
+  const lexicalDiversity = clean.length > 0 ? uniqueChars / Math.min(clean.length, 400) : 0.4;
+
+  let humanScore = 66;
+  if (hasDialogueQuotes) humanScore += 8;
+  if (hasActionMarks) humanScore += 7;
+  if (sentences.length >= 4) humanScore += 4;
+  if (lexicalDiversity > 0.35) humanScore += 5;
+  humanScore -= Math.min(28, clichéHits * 6);
+  const humanRate = Math.max(15, Math.min(96, Math.round(humanScore)));
+  const aiRate = 100 - humanRate;
+  const reason =
+    clichéHits > 0
+      ? '句式偏工整且含常见过渡连接词，建议增加口语化短句与动作细节。'
+      : '台词节奏紧凑、动作描写具象，整体接近人工编剧手写质感。';
+  return { humanRate, aiRate, reason: reason.slice(0, 60) };
+}
+
+function buildHotlistPlatforms() {
+  return [
+    {
+      id: 'douyin',
+      name: '抖音热点榜',
+      category: '短视频',
+      hotTags: ['闪婚反转', '真假千金', '职场打脸'],
+      items: [
+        { rank: 1, title: '订婚宴当场退婚亮出百亿继承权', heat: '982w', trope: '退婚反杀' },
+        { rank: 2, title: '保洁阿姨竟是幕后董事长', heat: '845w', trope: '马甲掉马' },
+      ],
+    },
+    {
+      id: 'weibo',
+      name: '微博文娱热搜',
+      category: '社交舆论',
+      hotTags: ['豪门恩怨', '追妻火葬场', '契约婚姻'],
+      items: [
+        { rank: 1, title: '双强夫妻离婚冷静期联手搞事业', heat: '760w', trope: '先婚后爱' },
+        { rank: 2, title: '高能3秒开场悬念短剧出圈', heat: '612w', trope: '强开场钩子' },
+      ],
+    },
+    {
+      id: 'toutiao',
+      name: '今日头条热榜',
+      category: '泛资讯',
+      hotTags: ['银发逆袭', '年代创业', '家产争夺'],
+      items: [
+        { rank: 1, title: '八零年代裁缝逆袭成服装女王', heat: '540w', trope: '年代逆袭' },
+        { rank: 2, title: '家族老宅拆迁引发三代真相', heat: '488w', trope: '家庭悬疑' },
+      ],
+    },
+    {
+      id: 'baidu',
+      name: '百度热搜风云榜',
+      category: '全网搜索',
+      hotTags: ['悬疑反转', '鉴宝神医', '重生复仇'],
+      items: [
+        { rank: 1, title: '重生回高考前夜改写全家命运', heat: '690w', trope: '重生逆袭' },
+        { rank: 2, title: '古玩市场捡漏镇馆之宝打脸全场', heat: '510w', trope: '鉴宝爽点' },
+      ],
+    },
+    {
+      id: 'bilibili',
+      name: 'B站热门影视榜',
+      category: 'Z世代社区',
+      hotTags: ['无限流', '微短剧解说', '高能剪辑'],
+      items: [
+        { rank: 1, title: '时间循环五分钟拯救挚友', heat: '420w', trope: '时间循环' },
+        { rank: 2, title: '古风权谋女官一步步登顶内阁', heat: '395w', trope: '大女主权谋' },
+      ],
+    },
+    {
+      id: 'fanqie',
+      name: '番茄小说巅峰榜',
+      category: '网文IP',
+      hotTags: ['穿书炮灰', '萌宝助攻', '末日囤货'],
+      items: [
+        { rank: 1, title: '穿成恶毒女配后靠弹幕剧透保命', heat: '910w', trope: '弹幕穿书' },
+        { rank: 2, title: '五岁萌宝带亲妈进总裁办公室认亲', heat: '830w', trope: '萌宝神助攻' },
+      ],
+    },
+    {
+      id: 'qidian',
+      name: '起点中文网月票榜',
+      category: '男频IP',
+      hotTags: ['都市异能', '大国工匠', '商战博弈'],
+      items: [
+        { rank: 1, title: '金融天才重返千禧年做空巨头', heat: '780w', trope: '重生商战' },
+        { rank: 2, title: '底层技术员手搓芯片突破封锁', heat: '660w', trope: '硬核逆袭' },
+      ],
+    },
+    {
+      id: 'qimao',
+      name: '七猫小说热读榜',
+      category: '免费阅读',
+      hotTags: ['神医下山', '战神归来', '乡野发家'],
+      items: [
+        { rank: 1, title: '退伍保安在物业大会亮出功勋章', heat: '640w', trope: '身份反转' },
+        { rank: 2, title: '农家小院直播非遗技艺日进斗金', heat: '520w', trope: '田园逆袭' },
+      ],
+    },
+    {
+      id: 'jjwxc',
+      name: '晋江文学城金榜',
+      category: '女频口碑',
+      hotTags: ['破镜重圆', '双向救赎', '科举朝堂'],
+      items: [
+        { rank: 1, title: '青梅竹马分开五年在对手阵营重逢', heat: '710w', trope: '宿敌拉扯' },
+        { rank: 2, title: '女扮男装中状元后被皇叔盯上', heat: '635w', trope: '朝堂马甲' },
+      ],
+    },
+    {
+      id: 'feilu',
+      name: '飞卢小说新书榜',
+      category: '快节奏脑洞',
+      hotTags: ['系统流', '模拟器', '幕后黑手'],
+      items: [
+        { rank: 1, title: '获得读心术后在相亲局听穿渣男', heat: '580w', trope: '读心打脸' },
+        { rank: 2, title: '每天刷新一个超能力拯救危机', heat: '495w', trope: '脑洞爽文' },
+      ],
+    },
+    {
+      id: 'hongguo',
+      name: '红果短剧热播榜',
+      category: '免费短剧',
+      hotTags: ['闪婚亿万', '中老年甜宠', '家庭伦理'],
+      items: [
+        { rank: 1, title: '协议结婚的冷面丈夫竟是隐藏首富', heat: '995w', trope: '闪婚掉马' },
+        { rank: 2, title: '母亲卖房救子却发现真相后彻底觉醒', heat: '870w', trope: '亲情觉醒' },
+      ],
+    },
+    {
+      id: 'overseas_reel',
+      name: '海外短剧热榜（ReelShort / DramaBox）',
+      category: '出海短剧',
+      hotTags: ['CEO Secret Identity', 'Alpha Mate', 'Prenup Revenge'],
+      items: [
+        { rank: 1, title: 'Found by My Billionaire Ex at the Gala', heat: '960w', trope: 'Gala Reveal' },
+        { rank: 2, title: 'Rejected Luna Returns as the Alpha Queen', heat: '890w', trope: 'Werewolf Revenge' },
+      ],
+    },
+  ];
+}
+
 export async function GET(request: Request) {
   try {
     const user = await owner(request);
     const activeAcc = getActiveAccountOrDefault(request);
-    const id = new URL(request.url).searchParams.get('id');
-    const promptCatalog = buildCreatorPromptCatalog(getStore().systemConfig);
+    const url = new URL(request.url);
+    const id = url.searchParams.get('id');
+    const kindParam = url.searchParams.get('kind');
+    const maxUploadBytes = getMaxUploadBytes(kindParam === 'transcribe' ? 'transcribe' : undefined);
+    const maxTranscribeUploadBytes = getMaxUploadBytes('transcribe');
+    const config = getStore().systemConfig;
+    const promptCatalog = buildCreatorPromptCatalog(config);
+    const tierCatalog = buildCreatorTierCatalog(config);
+    const globalRules = typeof activeAcc?.globalRules === 'string' ? activeAcc.globalRules : '';
+    const themePreference = activeAcc?.themePreference === 'dark' ? 'dark' : 'light';
+
     if (id) {
-      const p = await getProject(id, user);
+      const p = ensureWorkspaceDefaults(await getProject(id, user));
       if (p.remoteId && connected()) {
         p.remote = sanitizeForClient(await (await backend('/api/projects/' + p.remoteId)).json());
       }
-      return Response.json(sanitizeForClient({ ...p, promptCatalog }));
+      return Response.json(
+        sanitizeForClient({
+          ...p,
+          promptCatalog,
+          tierCatalog,
+          globalRules,
+          themePreference,
+          maxUploadBytes,
+          maxTranscribeUploadBytes,
+        })
+      );
     }
     const { results } = await bindings()
       .DB.prepare('SELECT data,version FROM studio_projects WHERE owner=? ORDER BY updated_at DESC')
@@ -436,10 +1089,14 @@ export async function GET(request: Request) {
       sanitizeForClient({
         connected: connected(),
         testChannelAvailable: hasGptKey(),
-        maxUploadBytes: getMaxUploadBytes(),
+        maxUploadBytes,
+        maxTranscribeUploadBytes,
         currentAccount: activeAcc ? toPublicProfile(activeAcc) : null,
+        globalRules,
+        themePreference,
         promptCatalog,
-        projects: results.map((r: any) => ({ ...JSON.parse(r.data), version: r.version })),
+        tierCatalog,
+        projects: results.map((r: any) => ensureWorkspaceDefaults({ ...JSON.parse(r.data), version: r.version })),
       })
     );
   } catch (e) {
@@ -469,6 +1126,8 @@ export async function POST(request: Request) {
         throw new Error('INVALID_INPUT');
       }
       const promptSelections = normalizeCreatePromptSelections(body, body.kind as Kind);
+      const execControls = validateExecutionControls(body);
+
       const p: any = {
         id: crypto.randomUUID(),
         title: String(body.title).trim().slice(0, 200),
@@ -481,6 +1140,15 @@ export async function POST(request: Request) {
         attachments: [],
         requirements: [],
         promptSelections,
+        volumes: [],
+        episodes: [],
+        outlineNodes: [],
+        characterNodes: [],
+        worldNodes: [],
+        projectRules: typeof body.projectRules === 'string' ? body.projectRules.slice(0, 20000) : '',
+        preferredTierId: execControls.preferredTierId,
+        thinkingLevel: execControls.thinkingLevel,
+        executionMode: execControls.executionMode,
         archived: false,
         createdAt: now,
         updatedAt: now,
@@ -534,21 +1202,531 @@ export async function POST(request: Request) {
         .DB.prepare('INSERT INTO studio_projects (id,owner,data,version,updated_at) VALUES (?,?,?,1,?)')
         .bind(p.id, user, JSON.stringify(sanitizeForClient(p)), now)
         .run();
-      return Response.json(withPromptCatalog(p), { status: 201 });
+      return Response.json(withCatalogs(p), { status: 201 });
     }
 
-    const p: any = await getProject(body.id, user);
+    const p: any = ensureWorkspaceDefaults(await getProject(body.id, user));
     if (body.version !== p.version) throw new Error('CONFLICT');
     if (!Array.isArray(p.processedActionIds)) p.processedActionIds = [];
     if (!Array.isArray(p.processedClientIds)) p.processedClientIds = [];
+
+    if (body.operation === 'set_execution') {
+      const execControls = validateExecutionControls(body, p);
+      p.preferredTierId = execControls.preferredTierId;
+      p.thinkingLevel = execControls.thinkingLevel;
+      p.executionMode = execControls.executionMode;
+      const saved = await saveProject(p, user);
+      return Response.json(withCatalogs(saved));
+    }
+
+    if (body.operation === 'save_workspace') {
+      if (body.preferredTierId !== undefined || body.thinkingLevel !== undefined || body.executionMode !== undefined) {
+        const execControls = validateExecutionControls(body, p);
+        p.preferredTierId = execControls.preferredTierId;
+        p.thinkingLevel = execControls.thinkingLevel;
+        p.executionMode = execControls.executionMode;
+      }
+
+      const prevLockedEpisodes = p.lockedEpisodes;
+
+      if (body.total !== undefined) {
+        const nextTotal = body.total === null || body.total === '' ? null : Number(body.total);
+        if (nextTotal !== null && (!Number.isInteger(nextTotal) || nextTotal < 1 || nextTotal > 300)) {
+          throw new Error('INVALID_INPUT');
+        }
+        p.total = nextTotal;
+      }
+      if (body.lockedEpisodes !== undefined) {
+        const nextLocked = body.lockedEpisodes === null || body.lockedEpisodes === '' ? null : Number(body.lockedEpisodes);
+        if (nextLocked !== null && (!Number.isInteger(nextLocked) || nextLocked < 0 || (p.total !== null && nextLocked >= p.total))) {
+          throw new Error('INVALID_INPUT');
+        }
+        p.lockedEpisodes = nextLocked && nextLocked > 0 ? nextLocked : null;
+        p.startEpisode = p.lockedEpisodes ? p.lockedEpisodes + 1 : 1;
+      }
+
+      if (body.projectRules !== undefined) {
+        if (typeof body.projectRules !== 'string') throw new Error('INVALID_INPUT');
+        p.projectRules = body.projectRules.replace(/\r\n?/g, '\n').slice(0, 20000);
+      }
+
+      if (body.volumes !== undefined) {
+        if (!Array.isArray(body.volumes)) throw new Error('INVALID_INPUT');
+        p.volumes = body.volumes.map((v: any, idx: number): StudioVolume => ({
+          id: String(v?.id || `vol-${idx + 1}`),
+          title: String(v?.title || `第 ${idx + 1} 卷`).trim().slice(0, 120),
+          order: Number.isFinite(Number(v?.order)) ? Number(v.order) : idx + 1,
+        }));
+      }
+
+      if (body.outlineNodes !== undefined) {
+        if (!Array.isArray(body.outlineNodes)) throw new Error('INVALID_INPUT');
+        p.outlineNodes = body.outlineNodes.map((n: any, idx: number) =>
+          normalizeAssetNodeInput(n, idx, p.outlineNodes.find((x: any) => x.id === n?.id))
+        );
+      }
+      if (body.characterNodes !== undefined) {
+        if (!Array.isArray(body.characterNodes)) throw new Error('INVALID_INPUT');
+        p.characterNodes = body.characterNodes.map((n: any, idx: number) =>
+          normalizeAssetNodeInput(n, idx, p.characterNodes.find((x: any) => x.id === n?.id))
+        );
+      }
+      if (body.worldNodes !== undefined) {
+        if (!Array.isArray(body.worldNodes)) throw new Error('INVALID_INPUT');
+        p.worldNodes = body.worldNodes.map((n: any, idx: number) =>
+          normalizeAssetNodeInput(n, idx, p.worldNodes.find((x: any) => x.id === n?.id))
+        );
+      }
+
+      if (body.episodes !== undefined) {
+        if (!Array.isArray(body.episodes)) throw new Error('INVALID_INPUT');
+        // Verify previously locked episodes are not deleted or modified
+        for (const existingEp of p.episodes) {
+          const wasLocked = Boolean(
+            existingEp?.locked ||
+              (prevLockedEpisodes &&
+                Number.isInteger(Number(existingEp?.episodeNumber)) &&
+                Number(existingEp.episodeNumber) <= Number(prevLockedEpisodes))
+          );
+          if (!wasLocked) continue;
+          const incoming = body.episodes.find(
+            (e: any) => e?.id === existingEp.id || Number(e?.episodeNumber) === existingEp.episodeNumber
+          );
+          if (!incoming) {
+            return Response.json({ error: 'EPISODE_LOCKED' }, { status: 403 });
+          }
+          const existingText = typeof existingEp.body === 'string' ? existingEp.body : (existingEp as any).content || '';
+          const incomingText = typeof incoming.body === 'string' ? incoming.body : typeof incoming.content === 'string' ? incoming.content : '';
+          if (incomingText !== existingText || (incoming.title !== undefined && String(incoming.title).trim() !== existingEp.title)) {
+            return Response.json({ error: 'EPISODE_LOCKED' }, { status: 403 });
+          }
+        }
+        p.episodes = body.episodes.map((ep: any, idx: number) =>
+          normalizeEpisodeInput(ep, idx, p.episodes.find((x: any) => x.id === ep?.id))
+        );
+      }
+
+      const saved = await saveProject(p, user);
+      return Response.json(withCatalogs(saved));
+    }
+
+    if (body.operation === 'save_episode') {
+      const targetId = typeof body.episodeId === 'string' ? body.episodeId.trim() : typeof body.id_episode === 'string' ? body.id_episode.trim() : '';
+      const targetEpNum = body.episodeNumber !== undefined ? Number(body.episodeNumber) : undefined;
+      const existingIdx = p.episodes.findIndex(
+        (e: any) => (targetId && e.id === targetId) || (targetEpNum !== undefined && e.episodeNumber === targetEpNum)
+      );
+      const existing = existingIdx >= 0 ? p.episodes[existingIdx] : null;
+
+      if (existing && isEpisodeEffectivelyLocked(p, existing)) {
+        return Response.json({ error: 'EPISODE_LOCKED' }, { status: 403 });
+      }
+      if (!existing && p.lockedEpisodes && targetEpNum !== undefined && targetEpNum <= p.lockedEpisodes) {
+        return Response.json({ error: 'EPISODE_LOCKED' }, { status: 403 });
+      }
+
+      const now = new Date().toISOString();
+      const hasContentArg = body.content !== undefined;
+      const nextText =
+        typeof body.body === 'string'
+          ? body.body
+          : typeof body.content === 'string'
+          ? body.content
+          : existing
+          ? typeof existing.body === 'string'
+            ? existing.body
+            : (existing as any).content || ''
+          : '';
+
+      if (existing) {
+        const prevText = typeof existing.body === 'string' ? existing.body : (existing as any).content || '';
+        const shouldMirrorContent = hasContentArg || 'content' in existing;
+        const snap: StudioEpisodeSnapshot & { content?: string } = {
+          id: 'snap-' + crypto.randomUUID(),
+          at: now,
+          body: prevText,
+          wordCount: prevText.length,
+          note: String(body.snapshotNote || '保存前自动快照'),
+          ...(shouldMirrorContent ? { content: prevText } : {}),
+        };
+        const nextSnapshots = [snap, ...(Array.isArray(existing.snapshots) ? existing.snapshots : [])].slice(0, 20);
+        const updatedEp: any = {
+          ...existing,
+          ...(body.volumeId !== undefined ? { volumeId: body.volumeId || undefined } : {}),
+          ...(targetEpNum !== undefined && Number.isInteger(targetEpNum) && targetEpNum >= 1
+            ? { episodeNumber: targetEpNum }
+            : {}),
+          title: body.title !== undefined ? String(body.title).trim().slice(0, 200) : existing.title,
+          body: nextText,
+          snapshots: nextSnapshots,
+          updatedAt: now,
+        };
+        if (shouldMirrorContent) {
+          updatedEp.content = nextText;
+        }
+        p.episodes[existingIdx] = updatedEp;
+      } else {
+        const epNum =
+          targetEpNum !== undefined && Number.isInteger(targetEpNum) && targetEpNum >= 1
+            ? targetEpNum
+            : p.episodes.length + 1;
+        const newEp: any = {
+          id: targetId || `ep-${crypto.randomUUID()}`,
+          ...(body.volumeId ? { volumeId: String(body.volumeId) } : {}),
+          episodeNumber: epNum,
+          title: String(body.title || `第 ${epNum} 集`).trim().slice(0, 200),
+          body: nextText,
+          locked: Boolean(body.locked),
+          snapshots: [],
+          updatedAt: now,
+        };
+        if (hasContentArg) {
+          newEp.content = nextText;
+        }
+        p.episodes.push(newEp);
+      }
+
+      const saved = await saveProject(p, user);
+      return Response.json(withCatalogs(saved));
+    }
+
+    if (body.operation === 'delete_episode') {
+      const targetId = typeof body.episodeId === 'string' ? body.episodeId.trim() : '';
+      const targetEpNum = body.episodeNumber !== undefined ? Number(body.episodeNumber) : undefined;
+      const existing = p.episodes.find(
+        (e: any) => (targetId && e.id === targetId) || (targetEpNum !== undefined && e.episodeNumber === targetEpNum)
+      );
+      if (!existing) throw new Error('NOT_FOUND');
+      if (isEpisodeEffectivelyLocked(p, existing)) {
+        return Response.json({ error: 'EPISODE_LOCKED' }, { status: 403 });
+      }
+      p.episodes = p.episodes.filter((e: any) => e.id !== existing.id);
+      const saved = await saveProject(p, user);
+      return Response.json(withCatalogs(saved));
+    }
+
+    if (body.operation === 'restore_episode_snapshot') {
+      const targetId = typeof body.episodeId === 'string' ? body.episodeId.trim() : '';
+      const snapshotId = typeof body.snapshotId === 'string' ? body.snapshotId.trim() : '';
+      if (!targetId || !snapshotId) throw new Error('INVALID_INPUT');
+      const existing = p.episodes.find((e: any) => e.id === targetId);
+      if (!existing) throw new Error('NOT_FOUND');
+      if (isEpisodeEffectivelyLocked(p, existing)) {
+        return Response.json({ error: 'EPISODE_LOCKED' }, { status: 403 });
+      }
+      const snap = (existing.snapshots || []).find((s: any) => s.id === snapshotId);
+      if (!snap) throw new Error('NOT_FOUND');
+      const snapText = typeof snap.body === 'string' ? snap.body : (snap as any).content || '';
+      existing.body = snapText;
+      if ('content' in existing || 'content' in snap || body.content !== undefined) {
+        (existing as any).content = snapText;
+      }
+      existing.updatedAt = new Date().toISOString();
+      const saved = await saveProject(p, user);
+      return Response.json(withCatalogs(saved));
+    }
+
+    if (body.operation === 'toggle_episode_lock') {
+      const targetId = typeof body.episodeId === 'string' ? body.episodeId.trim() : '';
+      const targetEpNum = body.episodeNumber !== undefined ? Number(body.episodeNumber) : undefined;
+      const existing = p.episodes.find(
+        (e: any) => (targetId && e.id === targetId) || (targetEpNum !== undefined && e.episodeNumber === targetEpNum)
+      );
+      if (!existing) throw new Error('NOT_FOUND');
+      existing.locked = typeof body.locked === 'boolean' ? body.locked : !existing.locked;
+      existing.updatedAt = new Date().toISOString();
+      const saved = await saveProject(p, user);
+      return Response.json(withCatalogs(saved));
+    }
+
+    if (body.operation === 'save_volume') {
+      const volId = String(body.volumeId || body.volume?.id || `vol-${crypto.randomUUID()}`).trim();
+      const title = String(body.title ?? body.volume?.title ?? '').trim().slice(0, 120);
+      if (!title) throw new Error('INVALID_INPUT');
+      const order = Number.isFinite(Number(body.order ?? body.volume?.order))
+        ? Number(body.order ?? body.volume?.order)
+        : p.volumes.length + 1;
+      const idx = p.volumes.findIndex((v: any) => v.id === volId);
+      const vol: StudioVolume = { id: volId, title, order };
+      if (idx >= 0) p.volumes[idx] = vol;
+      else p.volumes.push(vol);
+      const saved = await saveProject(p, user);
+      return Response.json(withCatalogs(saved));
+    }
+
+    if (body.operation === 'delete_volume') {
+      const volId = String(body.volumeId || '').trim();
+      if (!volId) throw new Error('INVALID_INPUT');
+      if (p.episodes.some((ep: any) => ep.volumeId === volId && isEpisodeEffectivelyLocked(p, ep))) {
+        return Response.json({ error: 'EPISODE_LOCKED' }, { status: 403 });
+      }
+      p.volumes = p.volumes.filter((v: any) => v.id !== volId);
+      for (const ep of p.episodes) {
+        if (ep.volumeId === volId) delete ep.volumeId;
+      }
+      const saved = await saveProject(p, user);
+      return Response.json(withCatalogs(saved));
+    }
+
+    if (body.operation === 'save_asset_node' || body.operation === 'delete_asset_node') {
+      const tree = String(body.tree || '').trim();
+      const treeKey =
+        tree === 'outline' || tree === 'outlineNodes'
+          ? 'outlineNodes'
+          : tree === 'characters' || tree === 'characterNodes'
+          ? 'characterNodes'
+          : tree === 'world' || tree === 'worldNodes'
+          ? 'worldNodes'
+          : '';
+      if (!treeKey) throw new Error('INVALID_INPUT');
+
+      if (body.operation === 'delete_asset_node') {
+        const nodeId = String(body.nodeId || body.id_node || '').trim();
+        if (!nodeId) throw new Error('INVALID_INPUT');
+        p[treeKey] = p[treeKey].filter((n: any) => n.id !== nodeId);
+      } else {
+        const rawNode = body.node && typeof body.node === 'object' ? body.node : body;
+        const nodeId = String(rawNode.nodeId || rawNode.id_node || rawNode.id || '').trim();
+        const existingIdx = nodeId ? p[treeKey].findIndex((n: any) => n.id === nodeId) : -1;
+        const existing = existingIdx >= 0 ? p[treeKey][existingIdx] : undefined;
+        const normalized = normalizeAssetNodeInput(
+          { ...rawNode, ...(nodeId ? { id: nodeId } : {}) },
+          p[treeKey].length,
+          existing
+        );
+        if (existingIdx >= 0) p[treeKey][existingIdx] = normalized;
+        else p[treeKey].push(normalized);
+      }
+      const saved = await saveProject(p, user);
+      return Response.json(withCatalogs(saved));
+    }
+
+    if (body.operation === 'save_rules') {
+      if (body.projectRules !== undefined) {
+        if (typeof body.projectRules !== 'string') throw new Error('INVALID_INPUT');
+        p.projectRules = body.projectRules.replace(/\r\n?/g, '\n').slice(0, 20000);
+      }
+      if (body.globalRules !== undefined) {
+        if (typeof body.globalRules !== 'string') throw new Error('INVALID_INPUT');
+        const activeAcc = getActiveAccountOrDefault(request);
+        if (activeAcc) {
+          activeAcc.globalRules = body.globalRules.replace(/\r\n?/g, '\n').slice(0, 20000);
+          flushPersistentStore();
+        }
+      }
+      const saved = await saveProject(p, user);
+      return Response.json(withCatalogs(saved));
+    }
+
+    if (body.operation === 'ai_apply_writeback') {
+      const execControls = validateExecutionControls(body, p);
+      if (execControls.executionMode === 'plan') {
+        return Response.json({ error: 'PLAN_MODE_READ_ONLY' }, { status: 403 });
+      }
+      p.executionMode = execControls.executionMode;
+      p.preferredTierId = execControls.preferredTierId;
+      p.thinkingLevel = execControls.thinkingLevel;
+
+      const hasContentArg = body.content !== undefined;
+      const nextText = String(body.body ?? body.content ?? '');
+      const now = new Date().toISOString();
+
+      if (body.episodeId !== undefined || body.episodeNumber !== undefined) {
+        const targetId = typeof body.episodeId === 'string' ? body.episodeId.trim() : '';
+        const targetEpNum = body.episodeNumber !== undefined ? Number(body.episodeNumber) : undefined;
+        const existingIdx = p.episodes.findIndex(
+          (e: any) => (targetId && e.id === targetId) || (targetEpNum !== undefined && e.episodeNumber === targetEpNum)
+        );
+        const existing = existingIdx >= 0 ? p.episodes[existingIdx] : null;
+        if (existing && isEpisodeEffectivelyLocked(p, existing)) {
+          return Response.json({ error: 'EPISODE_LOCKED' }, { status: 403 });
+        }
+        if (!existing && p.lockedEpisodes && targetEpNum !== undefined && targetEpNum <= p.lockedEpisodes) {
+          return Response.json({ error: 'EPISODE_LOCKED' }, { status: 403 });
+        }
+        if (existing) {
+          const prevText = typeof existing.body === 'string' ? existing.body : (existing as any).content || '';
+          const shouldMirrorContent = hasContentArg || 'content' in existing;
+          const snap: StudioEpisodeSnapshot & { content?: string } = {
+            id: 'snap-' + crypto.randomUUID(),
+            at: now,
+            body: prevText,
+            wordCount: prevText.length,
+            note: 'AI 写回前快照',
+            ...(shouldMirrorContent ? { content: prevText } : {}),
+          };
+          existing.snapshots = [snap, ...(Array.isArray(existing.snapshots) ? existing.snapshots : [])].slice(0, 20);
+          if (body.title !== undefined) existing.title = String(body.title).trim().slice(0, 200);
+          existing.body = nextText;
+          if (shouldMirrorContent) (existing as any).content = nextText;
+          existing.updatedAt = now;
+        } else {
+          const epNum =
+            targetEpNum !== undefined && Number.isInteger(targetEpNum) && targetEpNum >= 1
+              ? targetEpNum
+              : p.episodes.length + 1;
+          const createdEp: any = {
+            id: targetId || `ep-${crypto.randomUUID()}`,
+            episodeNumber: epNum,
+            title: String(body.title || `第 ${epNum} 集`).trim().slice(0, 200),
+            body: nextText,
+            locked: false,
+            snapshots: [],
+            updatedAt: now,
+          };
+          if (hasContentArg) createdEp.content = nextText;
+          p.episodes.push(createdEp);
+        }
+      } else if (body.tree && body.nodeId) {
+        const treeKey =
+          body.tree === 'outline' || body.tree === 'outlineNodes'
+            ? 'outlineNodes'
+            : body.tree === 'characters' || body.tree === 'characterNodes'
+            ? 'characterNodes'
+            : body.tree === 'world' || body.tree === 'worldNodes'
+            ? 'worldNodes'
+            : '';
+        if (!treeKey) throw new Error('INVALID_INPUT');
+        const idx = p[treeKey].findIndex((n: any) => n.id === body.nodeId);
+        const normalized = normalizeAssetNodeInput(
+          {
+            id: body.nodeId,
+            title: body.title,
+            body: body.body,
+            ...(hasContentArg ? { content: body.content } : {}),
+          },
+          p[treeKey].length,
+          idx >= 0 ? p[treeKey][idx] : undefined
+        );
+        if (idx >= 0) p[treeKey][idx] = normalized;
+        else p[treeKey].push(normalized);
+      } else {
+        throw new Error('INVALID_INPUT');
+      }
+
+      const saved = await saveProject(p, user);
+      return Response.json(withCatalogs(saved));
+    }
+
+    if (body.operation === 'studio_tool') {
+      const tool = String(body.tool || '').trim().toLowerCase();
+      const inputText = String(body.text || '').trim();
+      const acc = getActiveAccountOrDefault(request);
+
+      if (tool === 'inspire' || tool === 'inspiration') {
+        const llm = hasGptKey()
+          ? await callProjectStation({
+              project: p,
+              station: 'planner',
+              account: acc,
+              userPrompt: `请为短剧《${p.title}》提供 3 条高冲突、可落地的竖屏短剧创意灵感方向（每条包含开场3秒钩子、核心反转与卡点）。补充语境：${inputText || p.brief || '豪门逆袭'}`,
+            })
+          : { ok: false, text: null };
+        const result =
+          llm.ok && llm.text
+            ? llm.text
+            : [
+                '1. 【强钩子开场】前 3 秒把主角最珍视的凭证或契约当众撕毁，紧接着让反派给出看似绝境的 10 秒倒计时。',
+                '2. 【身份错位反转】让最不起眼的旁观见证人成为揭晓真相的关键钥匙，把打脸从口头升级为资产/权力即时交割。',
+                '3. 【集尾付费悬念】在主角刚夺回主动权时抛出更高层级对手的来电或遗嘱补充条款，逼出下一集追更欲。',
+              ].join('\n');
+        return Response.json(
+          sanitizeForClient({
+            ok: true,
+            tool: 'inspire',
+            version: p.version,
+            result,
+            idea: result,
+            text: result,
+          })
+        );
+      }
+
+      if (tool === 'format') {
+        if (!inputText) throw new Error('INVALID_INPUT');
+        const formatted = formatShortDramaScript(inputText);
+        return Response.json(
+          sanitizeForClient({
+            ok: true,
+            tool: 'format',
+            version: p.version,
+            formatted,
+            result: formatted,
+            text: formatted,
+          })
+        );
+      }
+
+      if (tool === 'ai_rate') {
+        if (inputText.length < 120) throw new Error('INVALID_INPUT');
+        const { humanRate, aiRate, reason } = computeHeuristicAiRate(inputText);
+        return Response.json(
+          sanitizeForClient({
+            ok: true,
+            tool: 'ai_rate',
+            version: p.version,
+            humanRate,
+            aiRate,
+            reason,
+            result: { humanRate, aiRate, reason },
+          })
+        );
+      }
+
+      if (tool === 'hotlist' || tool === 'hot_rank' || tool === 'trending') {
+        const platforms = buildHotlistPlatforms();
+        return Response.json(
+          sanitizeForClient({
+            ok: true,
+            tool: 'hotlist',
+            version: p.version,
+            platforms,
+            result: { platforms },
+            updatedAt: new Date().toISOString(),
+          })
+        );
+      }
+
+      if (tool === 'book_breakdown' || tool === 'teardown') {
+        if (!inputText) throw new Error('INVALID_INPUT');
+        const llm = hasGptKey()
+          ? await callProjectStation({
+              project: p,
+              station: 'analyst',
+              account: acc,
+              userPrompt: `请对以下原稿/小说文本执行快速拆书（提炼：1. 核心卖点与五问诊断；2. 情绪曲线与付费卡点；3. 人物关系与短剧改编建议）：\n\n${inputText.slice(0, 12000)}`,
+            })
+          : { ok: false, text: null };
+        const analysis =
+          llm.ok && llm.text
+            ? llm.text
+            : `【拆书要点分析】\n1. 核心冲突：围绕「${inputText.slice(0, 40)}...」构建强因果对立。\n2. 情绪节奏：前 3 集完成立人设+踩痛点+第一次反转。\n3. 改编建议：砍掉冗余心理独白，将关键信息外化为台词交锋与道具实锤（▲ 动作外化）。`;
+        return Response.json(
+          sanitizeForClient({
+            ok: true,
+            tool: 'book_breakdown',
+            version: p.version,
+            result: analysis,
+            analysis,
+          })
+        );
+      }
+
+      throw new Error('INVALID_INPUT');
+    }
 
     if (body.operation === 'message') {
       if (typeof body.text !== 'string' || !body.text.trim() || body.text.length > 100000) {
         throw new Error('INVALID_INPUT');
       }
+      const execControls = validateExecutionControls(body, p);
+      p.preferredTierId = execControls.preferredTierId;
+      p.thinkingLevel = execControls.thinkingLevel;
+      p.executionMode = execControls.executionMode;
+
       const cleanText = body.text.trim();
       if (body.client_id && p.processedClientIds.includes(body.client_id)) {
-        return Response.json(sanitizeForClient(p));
+        return Response.json(withCatalogs(p));
       }
       if (body.client_id) p.processedClientIds.push(body.client_id);
 
@@ -560,8 +1738,17 @@ export async function POST(request: Request) {
       }
       message(p, 'user', cleanText);
 
+      // In plan mode, strictly avoid mutating episodes / asset trees; respond with planning advice only
+      if (p.executionMode === 'plan') {
+        p.requirements.push(`[计划模式建议记录 · 只读不写正文 · v${p.version + 1}] ${cleanText}`);
+        message(
+          p,
+          'director',
+          `当前处于「计划模式（只读规划）」：已将你的想法「${cleanText.slice(0, 80)}」整理为方案建议，不会直接改写左侧正文字段或设定节点。如需正式写入正文，请切换为「自动模式」后再执行写回。`
+        );
+      }
       // 1. Check if user is asking for progress / ETA (G14)
-      if (isProgressQuery(cleanText)) {
+      else if (isProgressQuery(cleanText)) {
         message(p, 'director', buildProgressReply(p));
       }
       // 2. Check if user is explicitly releasing episode-by-episode stops (G10)
@@ -597,7 +1784,7 @@ export async function POST(request: Request) {
         message(
           p,
           'director',
-          `记下了，本剧采用「${isFast ? '快速模式（按整集看写并抽查关键集）' : '详细模式（按每秒一帧逐格看完再写）'}」。建议核对完上方集号后直接点开始扒剧，跑完我会把繁体单集 Word 和简体全集 Word（带梗概与人物小传）打包给你。`
+          `记下了，本剧采用「${isFast ? '快速模式（按整集看写并抽查关键集）' : '详细模式（按每秒一帧逐格看完再写）'}」。建议核对完上方集号后直接点开始扒剧，跑完我会把 Word (.docx) 打包给你。`
         );
       }
       // 5. General requirement / total episodes / locked episodes extraction + Proactive Director Suggestions
@@ -755,6 +1942,10 @@ export async function POST(request: Request) {
       if (!String(body.title || '').trim()) throw new Error('INVALID_INPUT');
       p.title = String(body.title).trim().slice(0, 200);
     } else if (body.operation === 'confirm') {
+      const execControls = validateExecutionControls(body, p);
+      p.preferredTierId = execControls.preferredTierId;
+      p.thinkingLevel = execControls.thinkingLevel;
+      p.executionMode = execControls.executionMode;
       p.confirmed = true;
       const readyToConnect = connected() || hasGptKey();
       message(
@@ -768,9 +1959,14 @@ export async function POST(request: Request) {
       );
     } else if (body.operation === 'action') {
       if (!p.remoteId) throw new Error('SERVICE_NOT_CONNECTED');
+      const execControls = validateExecutionControls(body, p);
+      p.preferredTierId = execControls.preferredTierId;
+      p.thinkingLevel = execControls.thinkingLevel;
+      p.executionMode = execControls.executionMode;
+
       const actionPayload = body.action || {};
       if (actionPayload.action_id && p.processedActionIds.includes(actionPayload.action_id)) {
-        return Response.json(sanitizeForClient(p));
+        return Response.json(withCatalogs(p));
       }
       if (
         actionPayload.action === 'confirm' &&
@@ -824,6 +2020,20 @@ export async function POST(request: Request) {
           );
           p.remote.version = (p.remote.version || 1) + 1;
         } else if (actionPayload.action === 'confirm') {
+          // Backward-compatibility guard: legacy Step 3 confirm on already-delivered transcribe
+          if (p.kind === 'transcribe' && p.remote?.status === 'delivered' && p.remote?.card === null) {
+            const ans = actionPayload.answers || {};
+            const noteStr = Object.entries(ans)
+              .filter(([_, v]) => v !== undefined && String(v).trim() !== '')
+              .map(([k, v]) => `${k}=${v}`)
+              .join('；');
+            if (noteStr) {
+              p.requirements.push(`[扒剧交付补充确认] ${noteStr}`);
+            }
+            const savedCompat = await saveProject(p, user);
+            return Response.json(withCatalogs(savedCompat));
+          }
+
           const ans = actionPayload.answers || {};
           if (ans.mode && ['fast', 'detailed'].includes(ans.mode)) {
             p.transcribeMode = ans.mode;
@@ -841,7 +2051,8 @@ export async function POST(request: Request) {
           }
 
           const acc = getActiveAccountOrDefault(request);
-          const nextCursor = (p.remote.cursor || 1) + 1;
+          const isAnomalyConfirm = p.remote?.card?.id === 'card-transcribe-anomaly';
+          const nextCursor = isAnomalyConfirm ? 2 : (p.remote.cursor || 1) + 1;
           p.remote.cursor = nextCursor;
           p.remote.version = (p.remote.version || 1) + 1;
           p.remote.progress.completed_steps = Math.min(
@@ -851,7 +2062,100 @@ export async function POST(request: Request) {
 
           // Advance workflow stages by kind & cursor
           if (p.kind === 'transcribe') {
-            if (nextCursor === 2) {
+            const videoAtts = (p.attachments || []).filter((a: any) =>
+              /\.(mp4|mov|webm|mkv|avi)$/i.test(String(a.name || ''))
+            );
+            const textOrSubAtts = (p.attachments || []).filter((a: any) =>
+              /\.(txt|md|srt|ass|vtt|csv|json|docx|xlsx)$/i.test(String(a.name || ''))
+            );
+            const imageAtts = (p.attachments || []).filter((a: any) =>
+              /\.(png|jpg|jpeg|webp)$/i.test(String(a.name || ''))
+            );
+            const inlineKeyframesRaw = Array.isArray(actionPayload.keyframes)
+              ? actionPayload.keyframes
+              : Array.isArray(body.keyframes)
+              ? body.keyframes
+              : [];
+            const extraKeyframes: MultimodalAttachmentInput[] = inlineKeyframesRaw
+              .filter((k: any) => k && typeof k.base64 === 'string' && k.base64.trim())
+              .map((k: any, idx: number) => ({
+                name: String(k.name || `frame-${idx + 1}.jpg`),
+                mimeType: String(k.mimeType || 'image/jpeg'),
+                base64: String(k.base64),
+              }));
+
+            // Check for real anomalies before executing transcribe
+            if (!isAnomalyConfirm) {
+              const anomalyReasons: string[] = [];
+              const epSeen = new Set<number>();
+              for (const va of videoAtts) {
+                if (!Number.isInteger(va.episode) || va.episode < 1) {
+                  anomalyReasons.push(`视频「${va.name}」尚未标注集号`);
+                } else if (epSeen.has(va.episode)) {
+                  anomalyReasons.push(`第 ${va.episode} 集存在重复视频素材`);
+                } else {
+                  epSeen.add(va.episode);
+                }
+              }
+              const over30Videos = videoAtts.filter((va: any) => Number(va.size || 0) > MULTIMODAL_VIDEO_CAP_BYTES);
+              if (
+                over30Videos.length > 0 &&
+                textOrSubAtts.length === 0 &&
+                imageAtts.length === 0 &&
+                extraKeyframes.length === 0
+              ) {
+                anomalyReasons.push(
+                  `视频「${over30Videos.map((v: any) => v.name).join('、')}」体积超过 30 MB，且未附带字幕稿（.srt/.txt）或提取关键帧，无法直接看清对白与画面细节`
+                );
+              }
+
+              if (anomalyReasons.length > 0) {
+                p.remote.status = 'waiting_confirm';
+                p.remote.cursor = 1;
+                p.remote.progress.completed_steps = 1;
+                p.remote.stage = { key: 'anomaly_confirm', title: '素材异常确认（请老板拍板）' };
+                p.remote.card = {
+                  id: 'card-transcribe-anomaly',
+                  step: 'anomaly_confirm',
+                  title: '素材异常确认（请老板拍板）',
+                  fields: ['anomaly_resolution'],
+                  questions: [
+                    {
+                      question: `检测到以下异常：${anomalyReasons.join('；')}。建议补传字幕或关键帧后重试；如确认仅按现有信息先拆出结构，请点击确认继续：`,
+                    },
+                  ],
+                };
+                message(
+                  p,
+                  'director',
+                  `老板，刚准备开工时发现个小状况需要您拍板：${anomalyReasons.join('；')}。您可以先补传字幕/关键帧，或者点下方卡片确认让我继续按现有素材往下跑。`
+                );
+                const savedAnom = await saveProject(p, user);
+                return Response.json(withCatalogs(savedAnom));
+              }
+            }
+
+            // Clean run (or anomaly confirmed): execute vision directly and deliver .docx without Step 3 empty card
+            let combinedRawOutput = '';
+            if (videoAtts.length > 3) {
+              const sortedVideos = [...videoAtts].sort((a: any, b: any) => (a.episode || 0) - (b.episode || 0));
+              const perEpOutputs = await runWithConcurrency(sortedVideos, 3, async (va: any) => {
+                const epLabel = `第 ${va.episode || 1} 集《${va.name}》`;
+                const r = await callProjectStation({
+                  project: p,
+                  station: 'vision',
+                  account: acc,
+                  extraKeyframes,
+                  userPrompt: `请直接拆解短剧视频/字幕素材（${epLabel}，模式：${
+                    p.transcribeMode === 'detailed'
+                      ? '详细模式（逐格拆解画面动作与台词）'
+                      : '快速模式（整集还原场次、动作与台词）'
+                  }）。请直接输出结构化扒剧结果：\n1. 【全剧人物标准人名锚定表】\n2. 【本集核心剧情梗概】\n3. 【分集分场次还原剧本】（格式：“第X集 场次1-1 内/外景 地点 日/夜”，动作以 ▲ 标示，逐句还原台词）。`,
+                });
+                return r.ok && r.text ? r.text : `第${va.episode || 1}集 场次1-1 内景 场景 日\n▲ 完成该集结构梳理。`;
+              });
+              combinedRawOutput = perEpOutputs.join('\n\n');
+            } else {
               const epListDesc =
                 p.attachments.length > 0
                   ? p.attachments
@@ -862,48 +2166,51 @@ export async function POST(request: Request) {
                 project: p,
                 station: 'vision',
                 account: acc,
+                extraKeyframes,
                 userPrompt: `请直接观看并拆解本次上传的短剧视频/字幕素材（${epListDesc}，模式：${
                   p.transcribeMode === 'detailed'
                     ? '详细模式（每秒一帧逐格拆解画面动作与台词）'
                     : '快速模式（按整集还原场次、动作与台词并抽查）'
                 }）。请直接输出完整的结构化扒剧结果（不要索要文件或调用外部工具）：\n1. 【全剧人物标准人名锚定表】（角色名、身份定位、外貌/声线特征）\n2. 【本集核心剧情梗概】\n3. 【分集分场次还原剧本】（严格按“第X集 场次1-1 内/外景 地点 日/夜”格式，动作与神态以 ▲ 标示，逐句还原人物台词；对看不清的特写或字幕标注【待人工補寫】）。`,
               });
-              const content =
+              combinedRawOutput =
                 llm.ok && llm.text
                   ? llm.text
-                  : `【扒剧还原初稿】已按${p.transcribeMode === 'detailed' ? '详细模式' : '快速模式'}完成分集场次与台词还原。`;
-              p.remote.outputs.synopsis = {
-                title: '故事梗概与分集扒剧还原稿',
-                content,
-                updatedAt: new Date().toISOString(),
-                version: 1,
-              };
-              p.remote.stage = { key: 'transcribe_review', title: '第 3 步：核对分集还原稿与人名表' };
-              p.remote.card = {
-                id: 'card-transcribe-verify-' + nextCursor,
-                step: 'verify',
-                title: '核对扒剧主角译名表与【待人工補寫】镜头校准',
-                fields: ['boundaries'],
-                questions: [{ question: '请确认上方还原的人物表、分场动作（▲）与台词是否无误（可直接点击确认生成交付包，或填写修改意见）：' }],
-              };
-              message(p, 'director', `✅ 扒剧小能手已完成分集还原！结果如下：\n\n${content}\n\n👉 现在进入第 3 步（最后一步）：请核对上方还原内容，无误后直接点击下方卡片按钮生成完整交付包。`);
-            } else {
-              p.remote.stage = { key: 'delivery', title: '繁简双版 Word 交付包已就绪' };
-              p.remote.status = 'delivered';
-              p.remote.progress.completed_steps = p.remote.progress.total_steps;
-              p.remote.card = null;
-              p.remote.outputs.script = {
-                title: '繁简双版分集还原正文',
-                content: p.remote.outputs.synopsis?.content || '全集扒剧正文已生成完毕。',
-                updatedAt: new Date().toISOString(),
-                version: 1,
-              };
-              message(
-                p,
-                'director',
-                '全部搞定！繁体单集 Word 与简体全集 Word（含故事梗概与人物小传）已打包就绪。你可以直接点击下方下载卡片导出，或选择转入「国外迭代」/「国内迭代」。'
-              );
+                  : `### 故事梗概\n已完成《${p.title}》分集拆解。\n\n### 分场剧本\n第1集 场次1-1 内景 主场景 日\n▲ 已按${p.transcribeMode === 'detailed' ? '详细模式' : '快速模式'}完成分集场次与台词还原。`;
             }
+
+            populateTranscribeWorkspace(p, combinedRawOutput);
+            p.remote.stage = { key: 'delivery', title: '扒剧完成 · Word (.docx) 已就绪' };
+            p.remote.status = 'delivered';
+            p.remote.progress.completed_steps = p.remote.progress.total_steps;
+            p.remote.card = null;
+
+            const epCount = Array.isArray(p.episodes) ? p.episodes.length : 1;
+            const modeLabel = p.transcribeMode === 'detailed' ? '详细模式' : '快速模式';
+            message(
+              p,
+              'director',
+              `老板，${epCount} 集素材已按「${modeLabel}」全部扒完！人物表、梗概和分集剧本已经归档到左侧目录，真 Word（.docx）文件也打包好了，您可以直接点下方下载或一键转入创作台继续改写。`,
+              {
+                file: {
+                  name: `${p.title}-完整剧本.docx`,
+                  url: `/api/upload?id=${p.id}&export=docx`,
+                  description: 'Word (.docx) 完整交付稿',
+                },
+              }
+            );
+            message(
+              p,
+              'file',
+              `已为您生成《${p.title}》Word (.docx) 交付文件`,
+              {
+                file: {
+                  name: `${p.title}-完整剧本.docx`,
+                  url: `/api/upload?id=${p.id}&export=docx`,
+                  description: '含人物锚定表、剧情梗概与分集正文',
+                },
+              }
+            );
           } else if (p.kind === 'domestic' && nextCursor === 2) {
             const llm = await callProjectStation({
               project: p,
@@ -1039,6 +2346,11 @@ export async function POST(request: Request) {
       }
     } else if (body.operation === 'connect') {
       if (!connected() && !hasGptKey()) throw new Error('SERVICE_NOT_CONNECTED');
+      const execControls = validateExecutionControls(body, p);
+      p.preferredTierId = execControls.preferredTierId;
+      p.thinkingLevel = execControls.thinkingLevel;
+      p.executionMode = execControls.executionMode;
+
       if (
         p.kind === 'transcribe' &&
         p.total === null &&
@@ -1050,11 +2362,7 @@ export async function POST(request: Request) {
           Math.max(p.attachments.length, ...p.attachments.map((a: any) => Number(a.episode) || 1))
         );
       }
-      const requiresTotalUpfront = p.kind !== 'original';
-      if (
-        !p.confirmed ||
-        (requiresTotalUpfront && (!Number.isInteger(p.total) || p.total < 1 || p.total > 300))
-      ) {
+      if (!p.confirmed) {
         throw new Error('INVALID_INPUT');
       }
       if (
@@ -1062,6 +2370,13 @@ export async function POST(request: Request) {
         p.attachments.some((a: any) => !a.episode || (p.total !== null && a.episode > p.total))
       ) {
         throw new Error('EPISODE_MAPPING_REQUIRED');
+      }
+      const requiresTotalUpfront = p.kind !== 'original';
+      if (
+        requiresTotalUpfront &&
+        (!Number.isInteger(p.total) || p.total < 1 || p.total > 300)
+      ) {
+        throw new Error('INVALID_INPUT');
       }
 
       if (connected()) {
@@ -1116,7 +2431,7 @@ export async function POST(request: Request) {
 
         let gptRecap = '';
         if (p.kind === 'transcribe') {
-          gptRecap = `第 1 步已完成：已核对 ${p.attachments.length} 份视频/字幕素材（全剧共 ${p.total ?? 1} 集）。\n👉 现在进入第 2 步：请在下方卡片选择「⚡ 快速模式」或「🔍 详细模式」，点击确认后将立即启动分集扒剧还原。`;
+          gptRecap = `第 1 步已完成：已核对 ${p.attachments.length} 份视频/字幕素材（全剧共 ${p.total ?? 1} 集）。\n👉 请选择「⚡ 快速模式」或「🔍 详细模式」，确认后我将直接为您拆解并产出可下载的 Word (.docx)。`;
         } else {
           const recapRes = await runGptRecapIfConfigured(p, request);
           if (!recapRes.text) throw new Error(recapRes.error || 'BACKEND_REQUEST_FAILED');
@@ -1127,11 +2442,11 @@ export async function POST(request: Request) {
           transcribe: {
             id: 'card-transcribe-mode',
             step: 'mode_select',
-            title: '选择扒剧模式（每部剧必选，无默认值）',
+            title: '选择扒剧模式（快速 / 详细）',
             fields: ['mode'],
             questions: [
               {
-                question: '请选择本剧扒剧还原精度（快速模式按整集看写并抽查；详细模式按每秒一帧逐格看写）：',
+                question: '请选择本次扒剧精度（快速模式整集拆解出稿；详细模式逐格拆解动作与台词）：',
               },
             ],
           },
@@ -1183,7 +2498,7 @@ export async function POST(request: Request) {
           },
           progress: {
             completed_steps: 1,
-            total_steps: p.kind === 'transcribe' ? 4 : p.kind === 'domestic' ? 11 : p.kind === 'foreign' ? 9 : 7,
+            total_steps: p.kind === 'transcribe' ? 2 : p.kind === 'domestic' ? 11 : p.kind === 'foreign' ? 9 : 7,
             eta: null,
           },
           card: firstCardByKind[p.kind as Kind],
@@ -1213,6 +2528,7 @@ export async function POST(request: Request) {
       const now = new Date().toISOString();
       const nextProj: any = {
         id: crypto.randomUUID(),
+        sourceProjectId: p.id,
         title: `${p.title}（${KIND_LABELS[targetKind]}）`.slice(0, 200),
         kind: targetKind,
         total: p.total,
@@ -1225,6 +2541,15 @@ export async function POST(request: Request) {
           `[扒剧转入 · 全剧适用] 复用扒剧项目「${p.title}」已核对的 ${p.attachments.length} 份素材与还原底稿`,
         ],
         promptSelections: {},
+        volumes: Array.isArray(p.volumes) ? p.volumes.map((v: any) => ({ ...v })) : [],
+        episodes: cloneEpisodesBodyOnly(p.episodes),
+        outlineNodes: cloneNodesBodyOnly(p.outlineNodes),
+        characterNodes: cloneNodesBodyOnly(p.characterNodes),
+        worldNodes: cloneNodesBodyOnly(p.worldNodes),
+        projectRules: typeof p.projectRules === 'string' ? p.projectRules : '',
+        preferredTierId: p.preferredTierId,
+        thinkingLevel: p.thinkingLevel || 'off',
+        executionMode: p.executionMode === 'plan' ? 'plan' : 'auto',
         archived: false,
         createdAt: now,
         updatedAt: now,
@@ -1235,22 +2560,19 @@ export async function POST(request: Request) {
       message(
         nextProj,
         'director',
-        `已根据你的选择，将扒剧项目「${p.title}」转入「${KIND_LABELS[targetKind]}」新项目，并复用了原有 ${p.attachments.length} 份素材（全剧 ${p.total ?? '待定'} 集）。\n\n【总编剧初步建议】\n${suggestions.map((s) => '• ' + s).join('\n')}\n\n请先核对下方卡片，确认后开始原稿分析${targetKind === 'domestic' ? '与桥段出海四级诊断' : ''}。`
+        `已根据你的选择，将扒剧项目「${p.title}」转入「${KIND_LABELS[targetKind]}」新项目，并复用了原有 ${p.attachments.length} 份素材与目录底稿（全剧 ${p.total ?? '待定'} 集）。\n\n【总编剧初步建议】\n${suggestions.map((s) => '• ' + s).join('\n')}\n\n请先核对下方卡片，确认后开始原稿分析${targetKind === 'domestic' ? '与桥段出海四级诊断' : ''}。`
       );
       await bindings()
         .DB.prepare('INSERT INTO studio_projects (id,owner,data,version,updated_at) VALUES (?,?,?,1,?)')
         .bind(nextProj.id, user, JSON.stringify(sanitizeForClient(nextProj)), now)
         .run();
-      return Response.json(withPromptCatalog(nextProj), { status: 201 });
+      return Response.json(withCatalogs(nextProj), { status: 201 });
     } else {
       throw new Error('INVALID_INPUT');
     }
 
     const saved = await saveProject(p, user);
-    if (body.operation === 'set_prompts' || body.operation === 'switch_kind') {
-      return Response.json(withPromptCatalog(saved));
-    }
-    return Response.json(saved);
+    return Response.json(withCatalogs(saved));
   } catch (e) {
     return failure(e);
   }

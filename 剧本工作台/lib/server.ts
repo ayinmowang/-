@@ -1,12 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import type {
   AccountRole,
   AdminSystemConfig,
   ApiAuditLog,
   ApiProviderConfig,
+  CreationTierConfig,
   CreatorPromptCatalog,
   CreatorPromptSummary,
+  CreatorTierSummary,
   InviteKeyRecord,
   Kind,
   Project,
@@ -19,6 +22,7 @@ import type {
   StationRouteConfig,
   StudioAccount,
   StudioMessage,
+  ThinkingLevel,
 } from './types';
 
 interface PersistentStoreData {
@@ -38,10 +42,13 @@ export const WORKFLOW_KINDS: readonly Kind[] = ['foreign', 'domestic', 'transcri
 
 export const MAX_SKILL_PLUGIN_BYTES = 2 * 1024 * 1024; // 2 MB text cap for .md/.txt Skill plugins
 
-export function getMaxUploadBytes(): number {
+export function getMaxUploadBytes(kind?: Kind): number {
   const rawMb = Number(process.env.STUDIO_MAX_UPLOAD_MB);
   if (Number.isFinite(rawMb) && rawMb > 0) {
     return Math.floor(rawMb * 1024 * 1024);
+  }
+  if (kind === 'transcribe') {
+    return 4096 * 1024 * 1024;
   }
   return 200 * 1024 * 1024;
 }
@@ -60,6 +67,56 @@ export function isSlotAllowedForKind(kind: Kind, slot: unknown): slot is PromptS
   if (!isValidKind(kind)) return false;
   if (slot !== 'primary' && slot !== 'secondary') return false;
   return getAllowedSlotsForKind(kind).includes(slot);
+}
+
+const VALID_STATION_KEYS: readonly StationRoleKey[] = [
+  'director',
+  'analyst',
+  'vision',
+  'planner',
+  'writer',
+  'polisher',
+] as const;
+
+export function createDefaultCreationTiers(): CreationTierConfig[] {
+  return [
+    {
+      id: 'tier-fast',
+      name: '极速档',
+      badge: '⚡ 极速 · 0.5x',
+      description: '响应最快，适合快速拆剧、灵感头脑风暴与日常沟通',
+      costHint: '消耗 0.5x',
+      station: 'director',
+      supportsThinking: false,
+      enabled: true,
+      isDefault: false,
+      order: 1,
+    },
+    {
+      id: 'tier-standard',
+      name: '标准档',
+      badge: '✨ 标准 · 1x',
+      description: '均衡速度与文风质量，默认推荐用于主线策划与分集写作',
+      costHint: '消耗 1x',
+      station: 'writer',
+      supportsThinking: true,
+      enabled: true,
+      isDefault: true,
+      order: 2,
+    },
+    {
+      id: 'tier-deep',
+      name: '深度精修档',
+      badge: '👑 深度精修 · 2x',
+      description: '深度推理与长篇精修，适合复杂出海改编、终审润色与全剧统筹',
+      costHint: '消耗 2x',
+      station: 'polisher',
+      supportsThinking: true,
+      enabled: true,
+      isDefault: false,
+      order: 3,
+    },
+  ];
 }
 
 function createDefaultSystemConfig(): AdminSystemConfig {
@@ -229,6 +286,7 @@ function createDefaultSystemConfig(): AdminSystemConfig {
     providers,
     routes,
     skillPlugins: [],
+    creationTiers: createDefaultCreationTiers(),
   };
 }
 
@@ -387,13 +445,107 @@ function deduplicateDefaultSkillPlugins(plugins: SkillPluginRecord[]): SkillPlug
   return plugins;
 }
 
+function normalizeCreationTier(raw: any, index: number): CreationTierConfig | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim().slice(0, 64) : '';
+  const name = typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim().slice(0, 60) : '';
+  if (!id || !name) return null;
+
+  const station: StationRoleKey = VALID_STATION_KEYS.includes(raw.station) ? raw.station : 'writer';
+  const enabled = raw.enabled !== false;
+  const providerId = typeof raw.providerId === 'string' && raw.providerId.trim() ? raw.providerId.trim() : undefined;
+  const model = typeof raw.model === 'string' && raw.model.trim() ? raw.model.trim() : undefined;
+  const hasTemp =
+    raw.temperature !== undefined &&
+    raw.temperature !== null &&
+    (typeof raw.temperature !== 'string' || raw.temperature.trim() !== '') &&
+    typeof raw.temperature !== 'boolean';
+  const rawTemp = hasTemp ? Number(raw.temperature) : Number.NaN;
+  const temperature = Number.isFinite(rawTemp) ? Math.min(2, Math.max(0, rawTemp)) : undefined;
+
+  const hasMax =
+    raw.maxTokens !== undefined &&
+    raw.maxTokens !== null &&
+    (typeof raw.maxTokens !== 'string' || raw.maxTokens.trim() !== '') &&
+    typeof raw.maxTokens !== 'boolean';
+  const rawMax = hasMax ? Number(raw.maxTokens) : Number.NaN;
+  const maxTokens = Number.isFinite(rawMax) && rawMax > 0 ? Math.floor(rawMax) : undefined;
+
+  const hasOrder =
+    raw.order !== undefined &&
+    raw.order !== null &&
+    (typeof raw.order !== 'string' || raw.order.trim() !== '') &&
+    typeof raw.order !== 'boolean';
+  const rawOrder = hasOrder ? Number(raw.order) : Number.NaN;
+  const order = Number.isFinite(rawOrder) ? rawOrder : index + 1;
+
+  return {
+    id,
+    name,
+    badge: typeof raw.badge === 'string' ? raw.badge.trim().slice(0, 40) : '',
+    description: typeof raw.description === 'string' ? raw.description.trim().slice(0, 160) : '',
+    costHint: typeof raw.costHint === 'string' && raw.costHint.trim() ? raw.costHint.trim().slice(0, 40) : '消耗 1x',
+    station,
+    ...(providerId ? { providerId } : {}),
+    ...(model ? { model } : {}),
+    ...(temperature !== undefined ? { temperature } : {}),
+    ...(maxTokens !== undefined ? { maxTokens } : {}),
+    supportsThinking: Boolean(raw.supportsThinking),
+    enabled,
+    isDefault: enabled && Boolean(raw.isDefault),
+    order,
+  };
+}
+
+export function normalizeCreationTiers(rawList: unknown): CreationTierConfig[] {
+  if (!Array.isArray(rawList) || rawList.length === 0) {
+    return createDefaultCreationTiers();
+  }
+  const seen = new Set<string>();
+  const normalized: CreationTierConfig[] = [];
+  rawList.forEach((item, idx) => {
+    const tier = normalizeCreationTier(item, idx);
+    if (tier && !seen.has(tier.id)) {
+      seen.add(tier.id);
+      normalized.push(tier);
+    }
+  });
+  if (normalized.length === 0) {
+    return createDefaultCreationTiers();
+  }
+  normalized.sort((a, b) => a.order - b.order);
+  let defaultAssigned = false;
+  for (const tier of normalized) {
+    if (tier.isDefault && tier.enabled && !defaultAssigned) {
+      defaultAssigned = true;
+    } else {
+      tier.isDefault = false;
+    }
+  }
+  if (!defaultAssigned) {
+    const preferred =
+      normalized.find((t) => t.enabled && t.id === 'tier-standard') ||
+      normalized.find((t) => t.enabled);
+    if (preferred) preferred.isDefault = true;
+  }
+  return normalized;
+}
+
 function loadPersistentStore(): PersistentStoreData {
   const g = globalThis as any;
   if (g.__STUDIO_PERSISTENT_STORE__) {
     if (!g.__STUDIO_PERSISTENT_STORE__.systemConfig) {
       g.__STUDIO_PERSISTENT_STORE__.systemConfig = createDefaultSystemConfig();
-    } else if (!Array.isArray(g.__STUDIO_PERSISTENT_STORE__.systemConfig.skillPlugins)) {
-      g.__STUDIO_PERSISTENT_STORE__.systemConfig.skillPlugins = [];
+    } else {
+      if (!Array.isArray(g.__STUDIO_PERSISTENT_STORE__.systemConfig.skillPlugins)) {
+        g.__STUDIO_PERSISTENT_STORE__.systemConfig.skillPlugins = [];
+      }
+      if (
+        !Array.isArray(g.__STUDIO_PERSISTENT_STORE__.systemConfig.creationTiers) ||
+        g.__STUDIO_PERSISTENT_STORE__.systemConfig.creationTiers.length === 0
+      ) {
+        g.__STUDIO_PERSISTENT_STORE__.systemConfig.creationTiers = createDefaultCreationTiers();
+      }
     }
     return g.__STUDIO_PERSISTENT_STORE__;
   }
@@ -428,8 +580,12 @@ function loadPersistentStore(): PersistentStoreData {
           ? {
               ...initial.systemConfig,
               ...parsed.systemConfig,
+              providers: Array.isArray(parsed.systemConfig.providers)
+                ? parsed.systemConfig.providers
+                : initial.systemConfig.providers,
               routes: { ...initial.systemConfig.routes, ...(parsed.systemConfig.routes || {}) },
               skillPlugins: migratedPlugins,
+              creationTiers: normalizeCreationTiers(parsed.systemConfig.creationTiers),
             }
           : initial.systemConfig,
         auditLogs: Array.isArray(parsed.auditLogs) ? parsed.auditLogs : [],
@@ -718,6 +874,68 @@ export function buildCreatorPromptCatalog(config: AdminSystemConfig): CreatorPro
   };
 }
 
+export function buildCreatorTierCatalog(config: AdminSystemConfig): CreatorTierSummary[] {
+  const tiers = normalizeCreationTiers(config?.creationTiers);
+  return tiers
+    .filter((t) => t.enabled)
+    .sort((a, b) => a.order - b.order)
+    .map((t) => ({
+      id: t.id,
+      name: t.name,
+      badge: t.badge,
+      description: t.description,
+      costHint: t.costHint,
+      supportsThinking: Boolean(t.supportsThinking),
+      isDefault: Boolean(t.isDefault),
+    }));
+}
+
+export interface ResolvedCreationTier {
+  tier: CreationTierConfig;
+  station: StationRoleKey;
+  providerId?: string;
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+  supportsThinking: boolean;
+}
+
+export function resolveCreationTier(
+  config: AdminSystemConfig,
+  tierId?: string | null,
+  fallbackStation: StationRoleKey = 'director'
+): ResolvedCreationTier {
+  const tiers = normalizeCreationTiers(config?.creationTiers);
+  const enabledTiers = tiers.filter((t) => t.enabled);
+  const requestedId = typeof tierId === 'string' ? tierId.trim() : '';
+
+  const matched =
+    (requestedId ? enabledTiers.find((t) => t.id === requestedId) : undefined) ||
+    enabledTiers.find((t) => t.isDefault) ||
+    enabledTiers[0] ||
+    tiers[0] ||
+    createDefaultCreationTiers()[1];
+
+  const safeFallback: StationRoleKey = VALID_STATION_KEYS.includes(fallbackStation)
+    ? fallbackStation
+    : 'director';
+  const station: StationRoleKey =
+    matched && VALID_STATION_KEYS.includes(matched.station) ? matched.station : safeFallback;
+  const route = config?.routes?.[station];
+
+  return {
+    tier: matched,
+    station,
+    providerId: matched?.providerId?.trim() || route?.primaryProviderId || undefined,
+    model: matched?.model?.trim() || route?.primaryModel || undefined,
+    temperature:
+      typeof matched?.temperature === 'number' ? matched.temperature : route?.temperature,
+    maxTokens:
+      typeof matched?.maxTokens === 'number' ? matched.maxTokens : route?.maxTokens,
+    supportsThinking: Boolean(matched?.supportsThinking),
+  };
+}
+
 export function resolveWorkflowSkillPrompts(
   config: AdminSystemConfig,
   project: Pick<Project, 'kind' | 'promptSelections'>,
@@ -797,6 +1015,10 @@ export function toPublicProfile(acc: StudioAccount): PublicAccountProfile {
     budgetUsedUsd: Number(acc.budgetUsedUsd.toFixed(4)),
     allowedFlows: acc.allowedFlows,
     accessKeyMasked: maskSecret(acc.accessKey),
+    ...(typeof acc.globalRules === 'string' ? { globalRules: acc.globalRules } : {}),
+    ...(acc.themePreference === 'light' || acc.themePreference === 'dark'
+      ? { themePreference: acc.themePreference }
+      : {}),
   };
 }
 
@@ -999,6 +1221,8 @@ const SENSITIVE_KEYS = new Set([
   'model_id',
   'modelname',
   'model_name',
+  'resolvedmodel',
+  'resolved_model',
   'provider',
   'providerid',
   'provider_id',
@@ -1008,6 +1232,20 @@ const SENSITIVE_KEYS = new Set([
   'routename',
   'route_name',
   'line',
+  'station',
+  'stationkey',
+  'station_key',
+  'stationrole',
+  'station_role',
+  'creationtiers',
+  'creation_tiers',
+  'temperature',
+  'maxtokens',
+  'max_tokens',
+  'keycursor',
+  'key_cursor',
+  'lasterrormsg',
+  'last_error_msg',
   'tokens',
   'tokensused',
   'tokens_used',
@@ -1061,15 +1299,25 @@ const SENSITIVE_KEYS = new Set([
   'backend_token',
   'baseurl',
   'base_url',
+  'backupbaseurl1',
+  'backup_base_url_1',
+  'backupbaseurl2',
+  'backup_base_url_2',
   'primaryproviderid',
   'primarymodel',
   'fallbackproviderid',
   'fallbackmodel',
+  'fallbackprovider2id',
+  'fallback_provider2_id',
+  'fallbackmodel2',
+  'fallback_model2',
 ]);
 
 interface SensitiveFingerprints {
   textFingerprints: string[];
   urlFingerprints: string[];
+  secretFingerprints: string[];
+  modelFingerprints: string[];
 }
 
 function collectSensitiveFingerprints(extraSensitiveTexts?: string[]): SensitiveFingerprints {
@@ -1104,16 +1352,34 @@ function collectSensitiveFingerprints(extraSensitiveTexts?: string[]): Sensitive
       }
     }
   }
+
+  const modelSet = new Set<string>();
+  const addModelCandidate = (rawModel: unknown) => {
+    if (typeof rawModel !== 'string') return;
+    const trimmed = rawModel.trim();
+    if (
+      trimmed.length >= 5 &&
+      /^[a-z0-9._/-]+$/i.test(trimmed) &&
+      (/[0-9]/.test(trimmed) || trimmed.includes('/') || /[-_]/.test(trimmed))
+    ) {
+      modelSet.add(trimmed);
+    }
+  };
+
   const routes = store?.systemConfig?.routes;
   if (routes && typeof routes === 'object') {
     for (const routeCfg of Object.values(routes)) {
       if (typeof routeCfg?.systemPrompt === 'string' && routeCfg.systemPrompt.trim()) {
         systemPromptCandidates.push(routeCfg.systemPrompt);
       }
+      addModelCandidate(routeCfg?.primaryModel);
+      addModelCandidate(routeCfg?.fallbackModel);
+      addModelCandidate(routeCfg?.fallbackModel2);
     }
   }
 
   const urlSet = new Set<string>();
+  const secretSet = new Set<string>();
   const addUrl = (rawUrl: unknown) => {
     if (typeof rawUrl !== 'string') return;
     const cleaned = rawUrl.trim().replace(/\/+$/, '');
@@ -1125,6 +1391,28 @@ function collectSensitiveFingerprints(extraSensitiveTexts?: string[]): Sensitive
   if (Array.isArray(store?.systemConfig?.providers)) {
     for (const prov of store.systemConfig.providers) {
       addUrl(prov?.baseUrl);
+      addUrl(prov?.backupBaseUrl1);
+      addUrl(prov?.backupBaseUrl2);
+      if (Array.isArray(prov?.apiKeys)) {
+        for (const k of prov.apiKeys) {
+          if (typeof k === 'string') {
+            const trimmedKey = k.trim();
+            if (trimmedKey.length >= 8) {
+              secretSet.add(trimmedKey);
+            }
+          }
+        }
+      }
+      if (Array.isArray(prov?.models)) {
+        for (const m of prov.models) {
+          addModelCandidate(m);
+        }
+      }
+    }
+  }
+  if (Array.isArray(store?.systemConfig?.creationTiers)) {
+    for (const tier of store.systemConfig.creationTiers) {
+      addModelCandidate(tier?.model);
     }
   }
 
@@ -1179,6 +1467,8 @@ function collectSensitiveFingerprints(extraSensitiveTexts?: string[]): Sensitive
   return {
     textFingerprints: Array.from(fingerprints).sort((a, b) => b.length - a.length),
     urlFingerprints: Array.from(urlSet).sort((a, b) => b.length - a.length),
+    secretFingerprints: Array.from(secretSet).sort((a, b) => b.length - a.length),
+    modelFingerprints: Array.from(modelSet).sort((a, b) => b.length - a.length),
   };
 }
 
@@ -1189,15 +1479,25 @@ function sanitizeStringValue(str: string, fingerprints: SensitiveFingerprints): 
       out = out.split(fp).join('[内部规则已脱敏]');
     }
   }
+  for (const secretFp of fingerprints.secretFingerprints) {
+    if (out.includes(secretFp)) {
+      out = out.split(secretFp).join('***');
+    }
+  }
   for (const urlFp of fingerprints.urlFingerprints) {
     const escaped = urlFp.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     out = out.replace(new RegExp(`${escaped}[^\\s"'<>]*`, 'gi'), '创作服务通道');
+  }
+  for (const modelFp of fingerprints.modelFingerprints) {
+    const escaped = modelFp.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    out = out.replace(new RegExp(`(?<![a-z0-9._-])${escaped}(?![a-z0-9._-])`, 'gi'), '创作引擎');
   }
   return out
     .replace(
       /https?:\/\/[^\s"'<>]*(?:api\.openai\.com|openrouter\.ai|generativelanguage\.googleapis\.com|api\.deepseek\.com|api\.anthropic\.com|api\.x\.ai)[^\s"'<>]*/gi,
       '创作服务通道'
     )
+    .replace(/\bBearer\s+(?=[A-Za-z0-9._~+/=-]{16,}|(?=\S*[0-9._~+/=-])\S{8,})[A-Za-z0-9._~+/=-]+/gi, 'Bearer ***')
     .replace(/\bsk-(?:proj-|ant-|or-v1-)?[A-Za-z0-9_-]{16,}\b/g, '***')
     .replace(/\bxai-[A-Za-z0-9_-]{16,}\b/g, '***')
     .replace(/\bAIza[0-9A-Za-z_-]{20,}\b/g, '***')
@@ -1205,11 +1505,12 @@ function sanitizeStringValue(str: string, fingerprints: SensitiveFingerprints): 
       /\b(OPENAI_API_KEY|OPENAI_BASE_URL|OPENAI_MODEL|GEMINI_API_KEY|GOOGLE_API_KEY|GEMINI_BASE_URL|ANTHROPIC_API_KEY|DEEPSEEK_API_KEY|OPENROUTER_API_KEY|STUDIO_BACKEND_URL|STUDIO_BACKEND_TOKEN|STUDIO_ADMIN_PASSWORD)\b/g,
       '[已脱敏配置]'
     )
+    .replace(/\bprov-[a-z0-9_-]+\b/gi, '创作通道')
     .replace(
-      /\b(?:anthropic|openai|google|deepseek|x-ai|qwen|meta-llama)\/[a-z0-9._-]+\b|\b(gpt[\s-]*[345][a-z0-9.-]*(?:\s+(?:turbo|mini|omni|preview))*|chatgpt-[a-z0-9.-]+|o1(?:-[a-z0-9.-]+)?|o3(?:-[a-z0-9.-]+)?|o4(?:-[a-z0-9.-]+)?|(?:gemini|claude|deepseek|grok)-[a-z0-9._-]+|(?:gemini|claude|deepseek|grok)[\s-]+[0-9][a-z0-9._-]*(?:\s+(?:pro|flash|ultra|nano|mini|sonnet|opus|haiku|chat|reasoner|beta|preview|turbo|max|plus|lite|vision|thinking|coder))*|deepseek[\s-]+(?:r1|v[0-9][a-z0-9._-]*)|qwen[0-9.]*-[a-z0-9._-]+|llama-[0-9.]+-[a-z0-9._-]+)\b/gi,
+      /\b(?:anthropic|openai|google|deepseek|x-ai|qwen|meta-llama|moonshot|zhipu|minimax|mistral)\/[a-z0-9._-]+\b|\b(gpt[\s-]*(?:[3-9]|[1-9][0-9]+)(?:\.[0-9]+)?[a-z0-9.-]*(?:\s+(?:turbo|mini|omni|preview|sol|terra|astra))*|chatgpt-[a-z0-9.-]+|o1(?:-[a-z0-9.-]+)?|o3(?:-[a-z0-9.-]+)?|o4(?:-[a-z0-9.-]+)?|gemini4[a-z0-9._-]*|(?:gemini|claude|deepseek|grok)-[a-z0-9._-]+|(?:gemini|claude|deepseek|grok)[\s-]+[0-9][a-z0-9._-]*(?:\s+(?:pro|flash|ultra|nano|mini|sonnet|opus|haiku|chat|reasoner|beta|preview|turbo|max|plus|lite|vision|thinking|coder|hydrogen|argon|carbon|high))*|deepseek[\s-]+(?:r1|v[0-9][a-z0-9._-]*)|(?:glm|kimi|doubao|moonshot|minimax|mistral|qwen)[0-9._-]*-[a-z0-9._-]+|qwen[0-9.]*-[a-z0-9._-]+|llama-[0-9.]+-[a-z0-9._-]+)\b/gi,
       '创作引擎'
     )
-    .replace(/\b(OpenRouter|OpenAI|Anthropic|DeepSeek|Grok\s*Bot)\b/gi, '创作引擎')
+    .replace(/\b(OpenRouter|OpenAI|Anthropic|DeepSeek|Grok[\s-]*Bot|Google\s+AI|Google\s+Gemini|xAI|NewAPI|OneAPI)\b/gi, '创作引擎')
     .replace(/\b(GPT|ChatGPT|Claude|Gemini|Grok)\b/gi, '创作引擎')
     .replace(
       /\b(?:prompt_?tokens|completion_?tokens|total_?tokens|input_?tokens|output_?tokens|cached_?tokens|totalTokenCount|promptTokenCount|candidatesTokenCount|token_?count|tokens?)\s*[:=]\s*\d+\b/gi,
@@ -1244,6 +1545,276 @@ function sanitizeRecursive<T>(input: T, fingerprints: SensitiveFingerprints): T 
 export function sanitizeForClient<T>(input: T, extraSensitiveTexts?: string[]): T {
   const fingerprints = collectSensitiveFingerprints(extraSensitiveTexts);
   return sanitizeRecursive(input, fingerprints);
+}
+
+export type ModelFamily = 'gpt' | 'gemini' | 'claude' | 'deepseek' | 'grok' | 'other';
+
+export interface KeyModelFamilyEntry {
+  supportedFamilies: Set<string>;
+  unsupportedFamilies: Set<string>;
+  unsupportedAt: Record<string, number>;
+  models?: string[];
+  updatedAt: number;
+}
+
+export interface ProviderModelsCacheEntry {
+  models: string[];
+  byKeyHash: Record<string, { models: string[]; fetchedAt: number }>;
+  fetchedAt: number;
+}
+
+const MODELS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const KEY_NEGATIVE_AFFINITY_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+export function getKeyModelFamilyCache(): Map<string, KeyModelFamilyEntry> {
+  const g = globalThis as any;
+  if (!(g.__STUDIO_KEY_FAMILY_CACHE__ instanceof Map)) {
+    g.__STUDIO_KEY_FAMILY_CACHE__ = new Map<string, KeyModelFamilyEntry>();
+  }
+  return g.__STUDIO_KEY_FAMILY_CACHE__;
+}
+
+export const keyModelFamilyCache = getKeyModelFamilyCache();
+
+function getProviderModelsCache(): Map<string, ProviderModelsCacheEntry> {
+  const g = globalThis as any;
+  if (!(g.__STUDIO_PROVIDER_MODELS_CACHE__ instanceof Map)) {
+    g.__STUDIO_PROVIDER_MODELS_CACHE__ = new Map<string, ProviderModelsCacheEntry>();
+  }
+  return g.__STUDIO_PROVIDER_MODELS_CACHE__;
+}
+
+function getKeyHashPrefix(apiKey: string): string {
+  return createHash('sha256').update(apiKey.trim()).digest('hex').slice(0, 16);
+}
+
+function getKeyAffinityCacheKey(providerId: string, apiKey: string): string {
+  return `${providerId}::${getKeyHashPrefix(apiKey)}`;
+}
+
+export function detectModelFamily(model: string): ModelFamily {
+  const raw = String(model || '').trim();
+  if (!raw) return 'other';
+  const normalized = normalizeRelayModelName(raw);
+  const lower = `${raw} ${normalized}`.toLowerCase();
+  const stripped = normalized.toLowerCase().replace(/^(?:openai|google|anthropic|deepseek|x-ai|models)\//, '');
+
+  if (/gemini|veo|learnlm|^google\/gemini/.test(lower)) return 'gemini';
+  if (/claude|^anthropic\//.test(lower)) return 'claude';
+  if (/deepseek/.test(lower)) return 'deepseek';
+  if (/grok|^x-ai\//.test(lower)) return 'grok';
+  if (/^(?:gpt|chatgpt|o1|o3|o4|codex)(?:$|[-_.\s0-9])/.test(stripped) || /\bgpt[-_.\s]?[0-9]/i.test(lower)) {
+    return 'gpt';
+  }
+  return 'other';
+}
+
+export function invalidateProviderModelCache(providerId?: string, baseUrl?: string): void {
+  const modelsCache = getProviderModelsCache();
+  const familyCache = getKeyModelFamilyCache();
+
+  if (!providerId) {
+    modelsCache.clear();
+    familyCache.clear();
+    return;
+  }
+
+  const normalizedBase = baseUrl ? baseUrl.trim().replace(/\/+$/, '') : '';
+  for (const k of Array.from(modelsCache.keys())) {
+    if (normalizedBase ? k === `${providerId}::${normalizedBase}` : k.startsWith(`${providerId}::`)) {
+      modelsCache.delete(k);
+    }
+  }
+  if (!normalizedBase) {
+    for (const k of Array.from(familyCache.keys())) {
+      if (k.startsWith(`${providerId}::`)) {
+        familyCache.delete(k);
+      }
+    }
+  }
+}
+
+function getKeyFamilyAffinityRank(providerId: string, apiKey: string, family: ModelFamily): 0 | 1 | 2 {
+  if (family === 'other') return 1;
+  const entry = getKeyModelFamilyCache().get(getKeyAffinityCacheKey(providerId, apiKey));
+  if (!entry) return 1;
+  if (entry.supportedFamilies.has(family)) return 0;
+  if (entry.unsupportedFamilies.has(family)) {
+    const negAt = entry.unsupportedAt[family] ?? entry.updatedAt;
+    if (Date.now() - negAt > KEY_NEGATIVE_AFFINITY_TTL_MS) {
+      entry.unsupportedFamilies.delete(family);
+      delete entry.unsupportedAt[family];
+      return 1;
+    }
+    return 2;
+  }
+  return 1;
+}
+
+function recordKeyFamilyAffinity(
+  providerId: string,
+  apiKey: string,
+  family: ModelFamily,
+  supported: boolean
+): void {
+  if (family === 'other') return;
+  const cache = getKeyModelFamilyCache();
+  const key = getKeyAffinityCacheKey(providerId, apiKey);
+  const now = Date.now();
+  const entry: KeyModelFamilyEntry = cache.get(key) || {
+    supportedFamilies: new Set<string>(),
+    unsupportedFamilies: new Set<string>(),
+    unsupportedAt: {},
+    updatedAt: now,
+  };
+  if (supported) {
+    entry.supportedFamilies.add(family);
+    entry.unsupportedFamilies.delete(family);
+    delete entry.unsupportedAt[family];
+  } else {
+    entry.unsupportedFamilies.add(family);
+    entry.supportedFamilies.delete(family);
+    entry.unsupportedAt[family] = now;
+  }
+  entry.updatedAt = now;
+  cache.set(key, entry);
+}
+
+export function getDefaultLlmTimeoutMs(): number {
+  const raw = Number(process.env.STUDIO_LLM_TIMEOUT_MS);
+  if (Number.isFinite(raw) && raw >= 1000) return Math.floor(raw);
+  return 120_000;
+}
+
+async function fetchAndReadWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number
+): Promise<{ ok: boolean; status: number; text: string }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort(new Error(`LLM_TIMEOUT_${timeoutMs}MS`));
+  }, timeoutMs);
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal });
+    const text = await res.text();
+    if (controller.signal.aborted) {
+      throw new Error(`LLM_TIMEOUT_${timeoutMs}MS`);
+    }
+    return { ok: res.ok, status: res.status, text };
+  } catch (err: any) {
+    if (controller.signal.aborted) {
+      throw new Error(`LLM_TIMEOUT_${timeoutMs}MS`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function getCachedRelayModels(params: {
+  providerId: string;
+  baseUrl: string;
+  apiKey: string;
+  timeoutMs?: number;
+  forceRefresh?: boolean;
+}): Promise<string[]> {
+  const cleanUrl = params.baseUrl.trim().replace(/\/+$/, '');
+  const cache = getProviderModelsCache();
+  const cacheKey = `${params.providerId}::${cleanUrl}`;
+  const keyHash = getKeyHashPrefix(params.apiKey);
+  const now = Date.now();
+  const existing = cache.get(cacheKey);
+
+  if (!params.forceRefresh && existing) {
+    const keySpecific = existing.byKeyHash[keyHash];
+    if (keySpecific && now - keySpecific.fetchedAt < MODELS_CACHE_TTL_MS) {
+      return keySpecific.models;
+    }
+  }
+
+  const effectiveTimeoutMs =
+    typeof params.timeoutMs === 'number' && Number.isFinite(params.timeoutMs) && params.timeoutMs >= 10
+      ? Math.min(Math.floor(params.timeoutMs), 10_000)
+      : 10_000;
+
+  const resp = await fetchAndReadWithTimeout(
+    `${cleanUrl}/models`,
+    { headers: { Authorization: `Bearer ${params.apiKey}` } },
+    effectiveTimeoutMs
+  );
+  if (!resp.ok) return [];
+  let data: any = null;
+  try {
+    data = resp.text ? JSON.parse(resp.text) : null;
+  } catch {
+    data = null;
+  }
+  const availableIds: string[] = Array.isArray(data?.data)
+    ? data.data.map((x: any) => String(x?.id || '').trim()).filter(Boolean)
+    : [];
+
+  const entry: ProviderModelsCacheEntry = existing || {
+    models: [],
+    byKeyHash: {},
+    fetchedAt: now,
+  };
+  entry.byKeyHash[keyHash] = { models: availableIds, fetchedAt: now };
+  entry.models = Array.from(new Set([...entry.models, ...availableIds]));
+  entry.fetchedAt = now;
+  cache.set(cacheKey, entry);
+
+  const famCache = getKeyModelFamilyCache();
+  const famKey = `${params.providerId}::${keyHash}`;
+  const famEntry: KeyModelFamilyEntry = famCache.get(famKey) || {
+    supportedFamilies: new Set<string>(),
+    unsupportedFamilies: new Set<string>(),
+    unsupportedAt: {},
+    updatedAt: now,
+  };
+  famEntry.models = availableIds;
+  famEntry.updatedAt = now;
+  famCache.set(famKey, famEntry);
+
+  return availableIds;
+}
+
+function mapThinkingLevelToReasoningEffort(
+  thinkingLevel?: ThinkingLevel,
+  explicitEffort?: 'low' | 'medium' | 'high'
+): 'low' | 'medium' | 'high' | undefined {
+  if (explicitEffort) return explicitEffort;
+  if (!thinkingLevel || thinkingLevel === 'off') return undefined;
+  if (thinkingLevel === 'low') return 'low';
+  if (thinkingLevel === 'medium') return 'medium';
+  return 'high';
+}
+
+function mapThinkingLevelToGeminiBudget(thinkingLevel?: ThinkingLevel): number | undefined {
+  if (!thinkingLevel || thinkingLevel === 'off') return undefined;
+  if (thinkingLevel === 'low') return 1024;
+  if (thinkingLevel === 'medium') return 4096;
+  if (thinkingLevel === 'high') return 8192;
+  if (thinkingLevel === 'xhigh') return 16384;
+  if (thinkingLevel === 'max') return 24576;
+  return undefined;
+}
+
+function isToolChoiceRejectedError(status: number, errText: string): boolean {
+  if (status !== 400 && status !== 422) return false;
+  return (
+    /tool_choice/i.test(errText) &&
+    /(unsupported|unknown|unrecognized|not allowed|invalid|only allowed|extra|forbidden|tools)/i.test(errText)
+  );
+}
+
+function isReasoningParamRejectedError(status: number, errText: string): boolean {
+  if (status !== 400 && status !== 422) return false;
+  if (/model_not_found|No available channel/i.test(errText)) return false;
+  return (
+    /reasoning_effort|reasoning|thinkingConfig|thinkingBudget|thinking_level/i.test(errText) &&
+    /(unsupported|unknown|unrecognized|not allowed|invalid|extra|forbidden|not supported)/i.test(errText)
+  );
 }
 
 /**
@@ -1296,6 +1867,9 @@ export async function executeProviderChat(params: {
   temperature: number;
   maxTokens: number;
   mediaAttachments?: MultimodalAttachmentInput[];
+  thinkingLevel?: ThinkingLevel;
+  reasoningEffort?: 'low' | 'medium' | 'high';
+  timeoutMs?: number;
 }): Promise<{ reply: string; totalTokens: number; resolvedModel?: string }> {
   const candidateUrls = [
     params.provider.baseUrl,
@@ -1314,6 +1888,10 @@ export async function executeProviderChat(params: {
     .map((s) => s.trim())
     .filter(Boolean)[0] || 'gpt-4o';
   const normalizedRequested = normalizeRelayModelName(rawRequested);
+  const timeoutMs =
+    typeof params.timeoutMs === 'number' && Number.isFinite(params.timeoutMs) && params.timeoutMs >= 10
+      ? Math.floor(params.timeoutMs)
+      : getDefaultLlmTimeoutMs();
 
   let lastError: any = null;
   for (const baseUrl of candidateUrls) {
@@ -1324,31 +1902,48 @@ export async function executeProviderChat(params: {
       if (isGeminiNativeUrl) {
         const cleanModel = rawRequested.replace(/^models\//, '');
         const geminiUrl = `${baseUrl}/models/${cleanModel}:generateContent?key=${encodeURIComponent(params.apiKey)}`;
-        const res = await fetch(geminiUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ...(params.sysPrompt
-              ? { systemInstruction: { parts: [{ text: params.sysPrompt }] } }
-              : {}),
-            contents: [{ role: 'user', parts: [{ text: params.userPrompt }] }],
-            generationConfig: {
-              temperature: params.temperature,
-              maxOutputTokens: params.maxTokens,
+        const rawBudget = /gemini-2\.5|gemini-3|gemini-4|thinking/i.test(cleanModel)
+          ? mapThinkingLevelToGeminiBudget(params.thinkingLevel)
+          : undefined;
+        let activeBudget = rawBudget;
+
+        for (let gTry = 0; gTry < 2; gTry++) {
+          const generationConfig: Record<string, any> = {
+            temperature: params.temperature,
+            maxOutputTokens: params.maxTokens,
+            ...(activeBudget !== undefined ? { thinkingConfig: { thinkingBudget: activeBudget } } : {}),
+          };
+          const resp = await fetchAndReadWithTimeout(
+            geminiUrl,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                ...(params.sysPrompt
+                  ? { systemInstruction: { parts: [{ text: params.sysPrompt }] } }
+                  : {}),
+                contents: [{ role: 'user', parts: [{ text: params.userPrompt }] }],
+                generationConfig,
+              }),
             },
-          }),
-        });
-        if (!res.ok) {
-          const errText = await res.text().catch(() => `HTTP ${res.status}`);
-          throw new Error(`HTTP ${res.status}: ${errText.slice(0, 140)}`);
+            timeoutMs
+          );
+          if (resp.ok) {
+            const data: any = resp.text ? JSON.parse(resp.text) : {};
+            const reply = data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text || '').join('') || '';
+            const totalTokens = Number(
+              data?.usageMetadata?.totalTokenCount ||
+                Math.ceil((params.sysPrompt.length + params.userPrompt.length + reply.length) / 3)
+            );
+            return { reply, totalTokens, resolvedModel: cleanModel };
+          }
+          const errText = resp.text || `HTTP ${resp.status}`;
+          if (activeBudget !== undefined && isReasoningParamRejectedError(resp.status, errText)) {
+            activeBudget = undefined;
+            continue;
+          }
+          throw new Error(`HTTP ${resp.status}: ${errText.slice(0, 140)}`);
         }
-        const data: any = await res.json();
-        const reply = data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text || '').join('') || '';
-        const totalTokens = Number(
-          data?.usageMetadata?.totalTokenCount ||
-            Math.ceil((params.sysPrompt.length + params.userPrompt.length + reply.length) / 3)
-        );
-        return { reply, totalTokens, resolvedModel: cleanModel };
       }
 
       // Try exact model first, then normalized model, then auto-discovered model from /models if model_not_found
@@ -1373,34 +1968,17 @@ export async function executeProviderChat(params: {
             ]
           : params.userPrompt;
 
-        const res = await fetch(`${baseUrl}/chat/completions`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${params.apiKey}`,
-          },
-          body: JSON.stringify({
-            model: currentModel,
-            temperature: params.temperature,
-            max_tokens: params.maxTokens,
-            ...(isCustomRelay ? { tool_choice: 'none' } : {}),
-            messages: [
-              ...(params.sysPrompt ? [{ role: 'system', content: params.sysPrompt }] : []),
-              { role: 'user', content: userContent },
-            ],
-          }),
-        });
+        let allowToolChoice = isCustomRelay;
+        let activeReasoningEffort = mapThinkingLevelToReasoningEffort(
+          params.thinkingLevel,
+          params.reasoningEffort
+        );
+        let resp: { ok: boolean; status: number; text: string } = { ok: false, status: 500, text: '' };
 
-        if (res.ok) {
-          const data: any = await res.json();
-          let reply = data?.choices?.[0]?.message?.content || '';
-          const totalTokens = Number(
-            data?.usage?.total_tokens ||
-              Math.ceil((params.sysPrompt.length + params.userPrompt.length + reply.length) / 3)
-          );
-          if (!reply.trim() && data?.choices?.[0]?.finish_reason === 'tool_calls') {
-            // Retry once explicitly forcing plain text without tools
-            const retryRes = await fetch(`${baseUrl}/chat/completions`, {
+        for (let paramTry = 0; paramTry < 3; paramTry++) {
+          resp = await fetchAndReadWithTimeout(
+            `${baseUrl}/chat/completions`,
+            {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
@@ -1410,62 +1988,115 @@ export async function executeProviderChat(params: {
                 model: currentModel,
                 temperature: params.temperature,
                 max_tokens: params.maxTokens,
-                tool_choice: 'none',
+                ...(allowToolChoice ? { tool_choice: 'none' } : {}),
+                ...(activeReasoningEffort ? { reasoning_effort: activeReasoningEffort } : {}),
                 messages: [
-                  ...(params.sysPrompt
-                    ? [{ role: 'system', content: params.sysPrompt + '\n请直接输出完整正文，严禁调用任何工具。' }]
-                    : []),
+                  ...(params.sysPrompt ? [{ role: 'system', content: params.sysPrompt }] : []),
                   { role: 'user', content: userContent },
                 ],
               }),
-            });
-            if (retryRes.ok) {
-              const retryData: any = await retryRes.json();
-              reply = retryData?.choices?.[0]?.message?.content || '';
+            },
+            timeoutMs
+          );
+
+          if (resp.ok) break;
+          if (allowToolChoice && isToolChoiceRejectedError(resp.status, resp.text)) {
+            allowToolChoice = false;
+            continue;
+          }
+          if (activeReasoningEffort && isReasoningParamRejectedError(resp.status, resp.text)) {
+            activeReasoningEffort = undefined;
+            continue;
+          }
+          break;
+        }
+
+        if (resp.ok) {
+          const data: any = resp.text ? JSON.parse(resp.text) : {};
+          let reply = data?.choices?.[0]?.message?.content || '';
+          const totalTokens = Number(
+            data?.usage?.total_tokens ||
+              Math.ceil((params.sysPrompt.length + params.userPrompt.length + reply.length) / 3)
+          );
+          if (!reply.trim() && data?.choices?.[0]?.finish_reason === 'tool_calls') {
+            // Retry once explicitly forcing plain text without tools
+            for (let toolRetry = 0; toolRetry < 2; toolRetry++) {
+              const sendToolChoiceNone = toolRetry === 0;
+              const retryResp = await fetchAndReadWithTimeout(
+                `${baseUrl}/chat/completions`,
+                {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${params.apiKey}`,
+                  },
+                  body: JSON.stringify({
+                    model: currentModel,
+                    temperature: params.temperature,
+                    max_tokens: params.maxTokens,
+                    ...(sendToolChoiceNone ? { tool_choice: 'none' } : {}),
+                    messages: [
+                      ...(params.sysPrompt
+                        ? [{ role: 'system', content: params.sysPrompt + '\n请直接输出完整正文，严禁调用任何工具。' }]
+                        : []),
+                      { role: 'user', content: userContent },
+                    ],
+                  }),
+                },
+                timeoutMs
+              );
+              if (retryResp.ok) {
+                const retryData: any = retryResp.text ? JSON.parse(retryResp.text) : {};
+                reply = retryData?.choices?.[0]?.message?.content || '';
+                break;
+              }
+              if (sendToolChoiceNone && isToolChoiceRejectedError(retryResp.status, retryResp.text)) {
+                allowToolChoice = false;
+                continue;
+              }
+              break;
             }
           }
           return { reply, totalTokens, resolvedModel: currentModel };
         }
 
-        const errText = await res.text().catch(() => `HTTP ${res.status}`);
+        const errText = resp.text || `HTTP ${resp.status}`;
         const isModelNotFound =
           errText.includes('model_not_found') || errText.includes('No available channel for model');
 
-        // If on last candidate and it's model_not_found, query GET /models on the relay to match or pick available model
+        // If on last candidate and it's model_not_found, query cached GET /models on the relay to match same-family model
         if (isModelNotFound && mIdx === modelsToTry.length - 1 && modelsToTry.length < 4) {
           try {
-            const modelsRes = await fetch(`${baseUrl}/models`, {
-              headers: { Authorization: `Bearer ${params.apiKey}` },
+            const availableIds = await getCachedRelayModels({
+              providerId: params.provider.id,
+              baseUrl,
+              apiKey: params.apiKey,
+              timeoutMs,
             });
-            if (modelsRes.ok) {
-              const modelsData: any = await modelsRes.json();
-              const availableIds: string[] = Array.isArray(modelsData?.data)
-                ? modelsData.data.map((x: any) => String(x?.id || '')).filter(Boolean)
-                : [];
-              if (availableIds.length > 0) {
-                const strip = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-                const targetStripped = strip(rawRequested);
-                const wantGeminiFamily = /gemini/i.test(rawRequested);
-                const sameFamilyIds = availableIds.filter((id) =>
-                  wantGeminiFamily ? /gemini/i.test(id) : !/gemini/i.test(id)
-                );
-                const hasMultipleKeys = (params.provider.apiKeys || []).filter((k) => k.trim()).length > 1;
-                const fuzzyMatch =
-                  availableIds.find((id) => strip(id) === targetStripped) ||
-                  availableIds.find((id) => strip(id).includes(targetStripped) || targetStripped.includes(strip(id))) ||
-                  sameFamilyIds[0] ||
-                  (!hasMultipleKeys ? availableIds[0] : undefined);
-                if (fuzzyMatch && !modelsToTry.includes(fuzzyMatch)) {
-                  modelsToTry.push(fuzzyMatch);
-                  continue;
-                }
+            if (availableIds.length > 0) {
+              const strip = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+              const targetStripped = strip(rawRequested);
+              const requestedFamily = detectModelFamily(rawRequested);
+              const sameFamilyIds =
+                requestedFamily === 'other'
+                  ? availableIds
+                  : availableIds.filter((id) => detectModelFamily(id) === requestedFamily);
+              const hasMultipleKeys = (params.provider.apiKeys || []).filter((k) => k.trim()).length > 1;
+              const fuzzyMatch =
+                availableIds.find((id) => strip(id) === targetStripped) ||
+                availableIds.find((id) => strip(id).includes(targetStripped) || targetStripped.includes(strip(id))) ||
+                sameFamilyIds[0] ||
+                (!hasMultipleKeys ? availableIds[0] : undefined);
+              if (fuzzyMatch && !modelsToTry.includes(fuzzyMatch)) {
+                modelsToTry.push(fuzzyMatch);
+                continue;
               }
             }
           } catch {}
         }
 
         if (mIdx === modelsToTry.length - 1) {
-          throw new Error(`HTTP ${res.status}: ${errText.slice(0, 140)}`);
+          throw new Error(`HTTP ${resp.status}: ${errText.slice(0, 140)}`);
         }
       }
     } catch (err) {
@@ -1477,7 +2108,7 @@ export async function executeProviderChat(params: {
 /**
  * Calls a specific AI Station (e.g. 'director', 'analyst', 'vision', 'planner', 'writer', 'polisher')
  * using the server-side Admin Provider Pool & Station Routing configuration, with automatic multi-key
- * round-robin rotation, fallback provider failover, budget check, and audit logging.
+ * round-robin rotation + affinity sorting, fallback provider failover, budget check, and audit logging.
  */
 export async function callStationLLM(params: {
   station: StationRoleKey;
@@ -1488,6 +2119,15 @@ export async function callStationLLM(params: {
   project?: Pick<Project, 'kind' | 'promptSelections'>;
   skillKind?: Kind;
   mediaAttachments?: MultimodalAttachmentInput[];
+  thinkingLevel?: ThinkingLevel;
+  reasoningEffort?: 'low' | 'medium' | 'high';
+  timeoutMs?: number;
+  providerIdOverride?: string;
+  modelOverride?: string;
+  temperatureOverride?: number;
+  maxTokensOverride?: number;
+  tierId?: string;
+  tierName?: string;
 }): Promise<{ ok: boolean; text: string | null; error?: string }> {
   const store = loadPersistentStore();
   const route = store.systemConfig.routes[params.station];
@@ -1537,13 +2177,37 @@ export async function callStationLLM(params: {
     }
   }
 
+  // Optional CreationTier provider/model overrides prepended ahead of station fallbacks
+  const trimmedProvOverride = typeof params.providerIdOverride === 'string' ? params.providerIdOverride.trim() : '';
+  const trimmedModelOverride = typeof params.modelOverride === 'string' ? params.modelOverride.trim() : '';
+  if (trimmedProvOverride) {
+    const overrideProv = store.systemConfig.providers.find(
+      (p) => p.id === trimmedProvOverride && p.enabled && p.apiKeys.some((k) => k.trim())
+    );
+    if (overrideProv) {
+      const overrideModel =
+        trimmedModelOverride || route?.primaryModel || overrideProv.models[0] || 'gpt-4o-mini';
+      const first = candidateTargets[0];
+      if (!first || first.provider.id !== overrideProv.id || first.model !== overrideModel) {
+        if (first && !first.isFallback) first.isFallback = true;
+        candidateTargets.unshift({
+          provider: overrideProv,
+          model: overrideModel,
+          isFallback: false,
+        });
+      }
+    }
+  } else if (trimmedModelOverride && candidateTargets.length > 0) {
+    candidateTargets[0].model = trimmedModelOverride;
+  }
+
   // Fallback to any enabled provider with a key or env GEMINI_API_KEY / OPENAI_API_KEY
   if (candidateTargets.length === 0) {
     const anyProv = store.systemConfig.providers.find((p) => p.enabled && p.apiKeys.some((k) => k.trim()));
     if (anyProv) {
       candidateTargets.push({
         provider: anyProv,
-        model: anyProv.models[0] || 'gemini-2.5-flash',
+        model: trimmedModelOverride || anyProv.models[0] || 'gemini-2.5-flash',
         isFallback: false,
       });
     } else if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) {
@@ -1593,18 +2257,32 @@ export async function callStationLLM(params: {
       : resolvedSkills
       ? resolvedSkills.composedSystemPrompt(baseSysPrompt)
       : baseSysPrompt;
-  const temperature = route?.temperature ?? 0.35;
-  const maxTokens = route?.maxTokens ?? 2048;
+  const temperature =
+    typeof params.temperatureOverride === 'number' && Number.isFinite(params.temperatureOverride)
+      ? params.temperatureOverride
+      : route?.temperature ?? 0.35;
+  const maxTokens =
+    typeof params.maxTokensOverride === 'number' && Number.isFinite(params.maxTokensOverride) && params.maxTokensOverride > 0
+      ? Math.floor(params.maxTokensOverride)
+      : route?.maxTokens ?? 2048;
 
   for (const target of candidateTargets) {
     const validKeys = target.provider.apiKeys.map((k) => k.trim()).filter(Boolean);
     if (!validKeys.length) continue;
 
+    // Advance keyCursor first to preserve round-robin rotation for equal-affinity keys (T5-05)
     const startCursor = (target.provider.keyCursor || 0) % validKeys.length;
     target.provider.keyCursor = startCursor + 1;
+    const rotatedKeys = validKeys.map((_, idx) => validKeys[(startCursor + idx) % validKeys.length]);
+    const requestedFamily = detectModelFamily(target.model);
+    const orderedKeys = [...rotatedKeys].sort(
+      (a, b) =>
+        getKeyFamilyAffinityRank(target.provider.id, a, requestedFamily) -
+        getKeyFamilyAffinityRank(target.provider.id, b, requestedFamily)
+    );
 
-    for (let kOffset = 0; kOffset < validKeys.length; kOffset++) {
-      const apiKey = validKeys[(startCursor + kOffset) % validKeys.length];
+    for (let kOffset = 0; kOffset < orderedKeys.length; kOffset++) {
+      const apiKey = orderedKeys[kOffset];
       const t0 = Date.now();
       try {
         const { reply, totalTokens, resolvedModel } = await executeProviderChat({
@@ -1616,12 +2294,21 @@ export async function callStationLLM(params: {
           temperature,
           maxTokens,
           mediaAttachments: params.mediaAttachments,
+          thinkingLevel: params.thinkingLevel,
+          reasoningEffort: params.reasoningEffort,
+          timeoutMs: params.timeoutMs,
         });
 
         const latencyMs = Date.now() - t0;
         const estimatedCostUsd = Number(((totalTokens / 1000) * 0.002).toFixed(5));
 
         if (typeof reply === 'string' && reply.trim()) {
+          const resolvedFamily = detectModelFamily(resolvedModel || target.model);
+          recordKeyFamilyAffinity(target.provider.id, apiKey, resolvedFamily, true);
+          if (requestedFamily !== 'other' && resolvedFamily === requestedFamily) {
+            recordKeyFamilyAffinity(target.provider.id, apiKey, requestedFamily, true);
+          }
+
           target.provider.lastTestStatus = 'ok';
           target.provider.lastLatencyMs = latencyMs;
           target.provider.lastTestedAt = new Date().toISOString();
@@ -1646,6 +2333,8 @@ export async function callStationLLM(params: {
             tokens: totalTokens,
             estimatedCostUsd,
             status: target.isFallback ? 'fallback' : 'success',
+            ...(params.tierId ? { tierId: params.tierId } : {}),
+            ...(params.tierName ? { tierName: params.tierName } : {}),
           };
           store.auditLogs.unshift(logEntry);
           if (store.auditLogs.length > 200) store.auditLogs.length = 200;
@@ -1664,9 +2353,12 @@ export async function callStationLLM(params: {
         const isGroupModelMismatch =
           errMsg.includes('model_not_found') || errMsg.includes('No available channel for model');
 
-        // If this provider has another key and the failure was due to key-group model mismatch, try the next key!
-        if (isGroupModelMismatch && kOffset < validKeys.length - 1) {
-          continue;
+        // Only update negative affinity on model-group mismatch (never on HTTP 503)
+        if (isGroupModelMismatch) {
+          recordKeyFamilyAffinity(target.provider.id, apiKey, requestedFamily, false);
+          if (kOffset < orderedKeys.length - 1) {
+            continue;
+          }
         }
 
         target.provider.lastTestStatus = 'error';
@@ -1689,6 +2381,8 @@ export async function callStationLLM(params: {
           estimatedCostUsd: 0,
           status: 'failed',
           error: errMsg.slice(0, 160),
+          ...(params.tierId ? { tierId: params.tierId } : {}),
+          ...(params.tierName ? { tierName: params.tierName } : {}),
         });
         flushPersistentStore();
         break;
@@ -1697,6 +2391,316 @@ export async function callStationLLM(params: {
   }
 
   return { ok: false, text: null, error: 'BACKEND_REQUEST_FAILED' };
+}
+
+/**
+ * Pure-JS MP4 / media container metadata parser (no ffmpeg/ffprobe dependency).
+ */
+export interface VideoMetadataSummary {
+  fileName: string;
+  sizeBytes: number;
+  sizeMb: number;
+  container: 'mp4' | 'mov' | 'webm' | 'mkv' | 'avi' | 'unknown';
+  majorBrand?: string;
+  durationSec?: number;
+  width?: number;
+  height?: number;
+  hasVideoTrack: boolean;
+  hasAudioTrack: boolean;
+  hasSubtitleTrack: boolean;
+  boxesFound: string[];
+  isPlayableContainer: boolean;
+}
+
+const ISOBMFF_TOP_BOXES = new Set(['ftyp', 'moov', 'mdat', 'free', 'skip', 'wide', 'uuid', 'pdin', 'meta']);
+const MAX_MOOV_BYTES = 16 * 1024 * 1024;
+const MAX_TOP_BOXES = 4096;
+
+function walkIsobmffBoxes(
+  buf: Buffer,
+  start: number,
+  end: number,
+  onBox: (type: string, payloadStart: number, payloadEnd: number) => void
+): void {
+  let offset = start;
+  let boxCount = 0;
+  while (offset + 8 <= end && boxCount < MAX_TOP_BOXES) {
+    boxCount++;
+    const size32 = buf.readUInt32BE(offset);
+    const type = buf.subarray(offset + 4, offset + 8).toString('latin1');
+    let headerLen = 8;
+    let boxSize = size32;
+    if (size32 === 1) {
+      if (offset + 16 > end) break;
+      const size64 = Number(buf.readBigUInt64BE(offset + 8));
+      headerLen = 16;
+      boxSize = size64;
+    } else if (size32 === 0) {
+      boxSize = end - offset;
+    }
+    if (!Number.isFinite(boxSize) || boxSize < headerLen || offset + boxSize > end) {
+      break;
+    }
+    const payloadStart = offset + headerLen;
+    const payloadEnd = offset + boxSize;
+    onBox(type, payloadStart, payloadEnd);
+    offset = payloadEnd;
+  }
+}
+
+function parseMoovBuffer(moovBuf: Buffer, summary: VideoMetadataSummary): void {
+  walkIsobmffBoxes(moovBuf, 0, moovBuf.length, (boxType, pStart, pEnd) => {
+    if (!summary.boxesFound.includes(boxType)) summary.boxesFound.push(boxType);
+    if (boxType === 'mvhd' && pEnd - pStart >= 20) {
+      const version = moovBuf.readUInt8(pStart);
+      if (version === 0 && pEnd - pStart >= 20) {
+        const timescale = moovBuf.readUInt32BE(pStart + 12);
+        const duration = moovBuf.readUInt32BE(pStart + 16);
+        if (timescale > 0 && duration > 0) {
+          summary.durationSec = Number((duration / timescale).toFixed(2));
+        }
+      } else if (version === 1 && pEnd - pStart >= 32) {
+        const timescale = moovBuf.readUInt32BE(pStart + 20);
+        const duration = Number(moovBuf.readBigUInt64BE(pStart + 24));
+        if (timescale > 0 && duration > 0) {
+          summary.durationSec = Number((duration / timescale).toFixed(2));
+        }
+      }
+    } else if (boxType === 'trak') {
+      walkIsobmffBoxes(moovBuf, pStart, pEnd, (trakChild, tStart, tEnd) => {
+        if (trakChild === 'tkhd' && tEnd - tStart >= 84) {
+          const version = moovBuf.readUInt8(tStart);
+          const wOff = version === 1 ? tStart + 88 : tStart + 76;
+          const hOff = version === 1 ? tStart + 92 : tStart + 80;
+          if (hOff + 4 <= tEnd) {
+            const w = Math.round(moovBuf.readUInt32BE(wOff) / 65536);
+            const h = Math.round(moovBuf.readUInt32BE(hOff) / 65536);
+            if (w > 0 && h > 0 && (!summary.width || !summary.height)) {
+              summary.width = w;
+              summary.height = h;
+            }
+          }
+        } else if (trakChild === 'mdia') {
+          walkIsobmffBoxes(moovBuf, tStart, tEnd, (mdiaChild, mStart, mEnd) => {
+            if (mdiaChild === 'hdlr' && mEnd - mStart >= 12) {
+              const handlerType = moovBuf.subarray(mStart + 8, mStart + 12).toString('latin1');
+              if (handlerType === 'vide') summary.hasVideoTrack = true;
+              else if (handlerType === 'soun') summary.hasAudioTrack = true;
+              else if (handlerType === 'subt' || handlerType === 'sbtl' || handlerType === 'text') {
+                summary.hasSubtitleTrack = true;
+              }
+            }
+          });
+        }
+      });
+    }
+  });
+}
+
+function classifyNonIsoContainer(header: Buffer, fileName: string): VideoMetadataSummary['container'] {
+  const lower = fileName.toLowerCase();
+  if (
+    header.length >= 4 &&
+    header[0] === 0x1a &&
+    header[1] === 0x45 &&
+    header[2] === 0xdf &&
+    header[3] === 0xa3
+  ) {
+    return lower.endsWith('.webm') ? 'webm' : 'mkv';
+  }
+  if (
+    header.length >= 12 &&
+    header.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    header.subarray(8, 12).toString('ascii') === 'AVI '
+  ) {
+    return 'avi';
+  }
+  return 'unknown';
+}
+
+export function inspectVideoMetadataBuffer(buf: Buffer, fileName = 'video.mp4'): VideoMetadataSummary {
+  const sizeBytes = buf.length;
+  const summary: VideoMetadataSummary = {
+    fileName,
+    sizeBytes,
+    sizeMb: Number((sizeBytes / (1024 * 1024)).toFixed(2)),
+    container: 'unknown',
+    hasVideoTrack: false,
+    hasAudioTrack: false,
+    hasSubtitleTrack: false,
+    boxesFound: [],
+    isPlayableContainer: false,
+  };
+
+  if (buf.length < 8) return summary;
+
+  let foundIsoBox = false;
+  walkIsobmffBoxes(buf, 0, buf.length, (type, pStart, pEnd) => {
+    if (ISOBMFF_TOP_BOXES.has(type)) {
+      foundIsoBox = true;
+    }
+    if (!summary.boxesFound.includes(type)) summary.boxesFound.push(type);
+    if (type === 'ftyp' && pEnd - pStart >= 4) {
+      summary.majorBrand = buf.subarray(pStart, pStart + 4).toString('ascii');
+      summary.container =
+        summary.majorBrand === 'qt  ' || fileName.toLowerCase().endsWith('.mov') ? 'mov' : 'mp4';
+      summary.isPlayableContainer = true;
+    } else if (type === 'moov' && pEnd - pStart > 0) {
+      summary.isPlayableContainer = true;
+      parseMoovBuffer(buf.subarray(pStart, pEnd), summary);
+    }
+  });
+
+  if (foundIsoBox && summary.container === 'unknown') {
+    summary.container = fileName.toLowerCase().endsWith('.mov') ? 'mov' : 'mp4';
+  }
+
+  if (!foundIsoBox) {
+    const detected = classifyNonIsoContainer(buf.subarray(0, Math.min(64, buf.length)), fileName);
+    summary.container = detected;
+    summary.isPlayableContainer = detected !== 'unknown';
+  }
+
+  return summary;
+}
+
+export async function inspectBucketMediaFile(
+  bucketKey: string,
+  fileName = 'video.mp4'
+): Promise<VideoMetadataSummary> {
+  const safeFile = resolveSafeBucketPath(bucketKey);
+  let fh: fs.promises.FileHandle | null = null;
+  try {
+    const stat = await fs.promises.stat(safeFile);
+    const sizeBytes = stat.size;
+    const summary: VideoMetadataSummary = {
+      fileName,
+      sizeBytes,
+      sizeMb: Number((sizeBytes / (1024 * 1024)).toFixed(2)),
+      container: 'unknown',
+      hasVideoTrack: false,
+      hasAudioTrack: false,
+      hasSubtitleTrack: false,
+      boxesFound: [],
+      isPlayableContainer: false,
+    };
+
+    if (sizeBytes < 8) return summary;
+    fh = await fs.promises.open(safeFile, 'r');
+
+    const hdrBuf = Buffer.alloc(16);
+    let offset = 0;
+    let foundIsoBox = false;
+    let boxCount = 0;
+    while (offset + 8 <= sizeBytes && boxCount < MAX_TOP_BOXES) {
+      boxCount++;
+      const { bytesRead } = await fh.read(hdrBuf, 0, Math.min(16, sizeBytes - offset), offset);
+      if (bytesRead < 8) break;
+      const size32 = hdrBuf.readUInt32BE(0);
+      const type = hdrBuf.subarray(4, 8).toString('latin1');
+      let headerLen = 8;
+      let boxSize = size32;
+      if (size32 === 1) {
+        if (bytesRead < 16) break;
+        headerLen = 16;
+        boxSize = Number(hdrBuf.readBigUInt64BE(8));
+      } else if (size32 === 0) {
+        boxSize = sizeBytes - offset;
+      }
+
+      if (offset === 0 && !ISOBMFF_TOP_BOXES.has(type)) {
+        break;
+      }
+      if (ISOBMFF_TOP_BOXES.has(type)) {
+        foundIsoBox = true;
+      }
+      if (!Number.isFinite(boxSize) || boxSize < headerLen || offset + boxSize > sizeBytes) {
+        break;
+      }
+
+      if (!summary.boxesFound.includes(type)) summary.boxesFound.push(type);
+      const payloadStart = offset + headerLen;
+      const payloadLen = boxSize - headerLen;
+
+      if (type === 'ftyp' && payloadLen >= 4 && payloadLen <= 4096) {
+        const ftypBuf = Buffer.alloc(payloadLen);
+        await fh.read(ftypBuf, 0, payloadLen, payloadStart);
+        summary.majorBrand = ftypBuf.subarray(0, 4).toString('ascii');
+        summary.container =
+          summary.majorBrand === 'qt  ' || fileName.toLowerCase().endsWith('.mov') ? 'mov' : 'mp4';
+        summary.isPlayableContainer = true;
+      } else if (type === 'moov' && payloadLen > 0 && payloadLen <= MAX_MOOV_BYTES) {
+        summary.isPlayableContainer = true;
+        const moovBuf = Buffer.alloc(payloadLen);
+        await fh.read(moovBuf, 0, payloadLen, payloadStart);
+        parseMoovBuffer(moovBuf, summary);
+      }
+
+      offset += boxSize;
+    }
+
+    if (foundIsoBox && summary.container === 'unknown') {
+      summary.container = fileName.toLowerCase().endsWith('.mov') ? 'mov' : 'mp4';
+    }
+
+    if (!foundIsoBox) {
+      const probeLen = Math.min(64, sizeBytes);
+      const probeBuf = Buffer.alloc(probeLen);
+      await fh.read(probeBuf, 0, probeLen, 0);
+      const detected = classifyNonIsoContainer(probeBuf, fileName);
+      summary.container = detected;
+      summary.isPlayableContainer = detected !== 'unknown';
+    }
+
+    return summary;
+  } catch (err: any) {
+    if (err?.code === 'ENOENT') {
+      try {
+        const obj = await bindings().BUCKET.get(bucketKey);
+        if (obj) {
+          const ab = await obj.arrayBuffer();
+          return inspectVideoMetadataBuffer(Buffer.from(ab), fileName);
+        }
+      } catch {}
+    }
+    return {
+      fileName,
+      sizeBytes: 0,
+      sizeMb: 0,
+      container: 'unknown',
+      hasVideoTrack: false,
+      hasAudioTrack: false,
+      hasSubtitleTrack: false,
+      boxesFound: [],
+      isPlayableContainer: false,
+    };
+  } finally {
+    if (fh) {
+      await fh.close().catch(() => {});
+    }
+  }
+}
+
+export function formatVideoMetadataSummary(meta: VideoMetadataSummary): string {
+  const parts: string[] = [
+    `文件：${meta.fileName}`,
+    `体积：${meta.sizeMb} MB`,
+    `封装格式：${meta.container.toUpperCase()}${meta.majorBrand ? ` (${meta.majorBrand.trim()})` : ''}`,
+  ];
+  if (typeof meta.durationSec === 'number' && meta.durationSec > 0) {
+    parts.push(`时长：${meta.durationSec} 秒`);
+  }
+  if (meta.width && meta.height) {
+    parts.push(`分辨率：${meta.width}x${meta.height}`);
+  }
+  const tracks: string[] = [];
+  if (meta.hasVideoTrack) tracks.push('视频轨');
+  if (meta.hasAudioTrack) tracks.push('音频轨');
+  if (meta.hasSubtitleTrack) tracks.push('字幕轨');
+  if (tracks.length > 0) {
+    parts.push(`轨道：${tracks.join(' / ')}`);
+  }
+  return `【视频容器元数据】${parts.join(' | ')}`;
 }
 
 export async function getProject(id: string, user: string): Promise<Project> {

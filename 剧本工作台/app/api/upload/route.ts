@@ -1,3 +1,8 @@
+import fs from 'node:fs';
+import { once } from 'node:events';
+import path from 'node:path';
+import { Readable } from 'node:stream';
+import { buildDocxBuffer, projectToDocxInput } from '../../../lib/docx';
 import {
   bindings,
   owner,
@@ -9,6 +14,102 @@ import {
   sanitizeForClient,
 } from '../../../lib/server';
 import type { AttachmentRole, Project } from '../../../lib/types';
+
+const BUCKET_DIR = path.join(process.cwd(), '.data', 'buckets');
+
+function resolveLocalBucketPath(key: string): string {
+  const safeName = String(key || '')
+    .replace(/[^a-zA-Z0-9._-]/g, '_')
+    .replace(/^\.+/, '_');
+  if (!safeName) throw new Error('INVALID_INPUT');
+  return path.join(BUCKET_DIR, safeName);
+}
+
+function hasCustomBucketBinding(): boolean {
+  const g = globalThis as any;
+  return Boolean(g.__STUDIO_BINDINGS__ && g.__STUDIO_BINDINGS__.BUCKET);
+}
+
+async function streamToDiskWithLimit(
+  stream: ReadableStream<Uint8Array> | null,
+  destPath: string,
+  maxBytes: number
+): Promise<number> {
+  await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
+  if (!stream) {
+    if (0 > maxBytes) throw new Error('FILE_TOO_LARGE');
+    await fs.promises.writeFile(destPath, Buffer.alloc(0));
+    return 0;
+  }
+
+  const ws = fs.createWriteStream(destPath);
+  const reader = stream.getReader();
+  let totalBytes = 0;
+  let cleanedUp = false;
+
+  const abortAndCleanup = async () => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    await reader.cancel().catch(() => {});
+    ws.destroy();
+    await fs.promises.unlink(destPath).catch(() => {});
+  };
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || value.byteLength === 0) continue;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await abortAndCleanup();
+        throw new Error('FILE_TOO_LARGE');
+      }
+      if (!ws.write(value)) {
+        await once(ws, 'drain');
+      }
+    }
+    ws.end();
+    await once(ws, 'finish');
+    return totalBytes;
+  } catch (err) {
+    await abortAndCleanup();
+    throw err;
+  }
+}
+
+async function readStreamToBufferWithLimit(
+  stream: ReadableStream<Uint8Array> | null,
+  maxBytes: number
+): Promise<Uint8Array> {
+  if (!stream) return new Uint8Array(0);
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || value.byteLength === 0) continue;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel().catch(() => {});
+        throw new Error('FILE_TOO_LARGE');
+      }
+      chunks.push(value);
+    }
+    const out = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const c of chunks) {
+      out.set(c, offset);
+      offset += c.byteLength;
+    }
+    return out;
+  } catch (err) {
+    await reader.cancel().catch(() => {});
+    throw err;
+  }
+}
 
 function detectEpisodeFromName(name: string): number | undefined {
   // Strip extension
@@ -39,13 +140,42 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const id = url.searchParams.get('id');
     const fileId = url.searchParams.get('file');
-    const isExport = url.searchParams.get('export') === '1';
+    const exportParam = url.searchParams.get('export');
+    const formatParam = url.searchParams.get('format');
+    const isDocxExport = exportParam === 'docx' || formatParam === 'docx';
+    const isExport = exportParam === '1';
     if (!id) throw new Error('INVALID_INPUT');
     const p = await getProject(id, user);
+
+    if (isDocxExport) {
+      const docxBuf = buildDocxBuffer(projectToDocxInput(p));
+      const exportRawName = `${p.title || 'script'}-完整剧本.docx`;
+      const encodedFileName = encodeURIComponent(exportRawName);
+      const asciiExportFallback =
+        exportRawName.replace(/[^\x20-\x7E]/g, '_').replace(/["\\]/g, '_') || 'script.docx';
+      return new Response(new Uint8Array(docxBuf), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          'Content-Disposition': `attachment; filename="${asciiExportFallback}"; filename*=UTF-8''${encodedFileName}`,
+        },
+      });
+    }
 
     if (isExport) {
       // Export structured script document (Synopsis -> Character Bios -> Locked Episodes -> Body)
       const outputs = p.remote?.outputs || {};
+      const episodesText =
+        Array.isArray(p.episodes) && p.episodes.length > 0
+          ? [...p.episodes]
+              .sort((a, b) => a.episodeNumber - b.episodeNumber)
+              .map((ep) => {
+                const epText = typeof ep.body === 'string' ? ep.body : (ep as any).content || '';
+                const lockTag = ep.locked ? '【锁定稿】' : '';
+                return `### 第 ${ep.episodeNumber} 集${ep.title ? ` · ${ep.title}` : ''} ${lockTag}\n${epText}`.trim();
+              })
+              .join('\n\n')
+          : '';
       const sections: string[] = [
         `# 《${p.title}》交付剧本包`,
         `流程类型：${p.kind} | 全剧集数：${p.total ?? '待确认'} 集${p.lockedEpisodes ? ` | 前 ${p.lockedEpisodes} 集已锁定（一字不动），本轮续写：第 ${p.lockedEpisodes + 1}–${p.total ?? '末'} 集` : ''}`,
@@ -59,7 +189,7 @@ export async function GET(request: Request) {
         '',
         '## 三、剧本正文（Script Body）',
         p.lockedEpisodes ? `> 【锁定稿保护声明】第 1–${p.lockedEpisodes} 集为已锁定定稿，导出层逐字原样保留。` : '',
-        outputs.script?.content || outputs.outline?.content || '（待生成剧本正文）',
+        outputs.script?.content || episodesText || outputs.outline?.content || '（待生成剧本正文）',
         ...(outputs.gates?.content
           ? ['', '## 四、桥段出海四级诊断与三道门方案（Gates）', outputs.gates.content]
           : []),
@@ -82,17 +212,30 @@ export async function GET(request: Request) {
     if (fileId) {
       const att = p.attachments.find((a) => a.id === fileId);
       if (!att) throw new Error('NOT_FOUND');
-      const obj = await bindings().BUCKET.get(`${user}/${p.id}/${att.id}`);
-      const buf = obj ? await obj.arrayBuffer() : new TextEncoder().encode('').buffer;
+      const bucketKey = `${user}/${p.id}/${att.id}`;
       const encodedName = encodeURIComponent(att.name);
       const asciiFallback = att.name.replace(/[^\x20-\x7E]/g, '_').replace(/["\\]/g, '_') || 'attachment';
-      return new Response(buf, {
-        status: 200,
-        headers: {
-          'Content-Type': att.type || 'application/octet-stream',
-          'Content-Disposition': `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodedName}`,
-        },
-      });
+      const commonHeaders: Record<string, string> = {
+        'Content-Type': att.type || 'application/octet-stream',
+        'Content-Disposition': `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodedName}`,
+      };
+
+      if (!hasCustomBucketBinding()) {
+        const safeFile = resolveLocalBucketPath(bucketKey);
+        try {
+          const stat = await fs.promises.stat(safeFile);
+          commonHeaders['Content-Length'] = String(stat.size);
+          if (stat.size === 0) {
+            return new Response(new Uint8Array(0), { status: 200, headers: commonHeaders });
+          }
+          const webStream = Readable.toWeb(fs.createReadStream(safeFile)) as ReadableStream;
+          return new Response(webStream, { status: 200, headers: commonHeaders });
+        } catch {}
+      }
+
+      const obj = await bindings().BUCKET.get(bucketKey);
+      const buf = obj ? await obj.arrayBuffer() : new TextEncoder().encode('').buffer;
+      return new Response(buf, { status: 200, headers: commonHeaders });
     }
 
     throw new Error('INVALID_INPUT');
@@ -117,18 +260,23 @@ export async function POST(request: Request) {
       throw new Error('INVALID_INPUT');
     }
 
-    const maxBytes = getMaxUploadBytes();
     const contentLenHeader = Number(request.headers.get('content-length') || 0);
-    if (
-      Number.isFinite(contentLenHeader) &&
-      contentLenHeader > 0 &&
-      contentLenHeader > (isMultipart ? maxBytes + 1024 * 1024 : maxBytes)
-    ) {
-      throw new Error('FILE_TOO_LARGE');
+    let p: Project | null = null;
+    if (id) {
+      p = await getProject(id, user);
+      const earlyMaxBytes = getMaxUploadBytes(p.kind);
+      if (
+        Number.isFinite(contentLenHeader) &&
+        contentLenHeader > 0 &&
+        contentLenHeader > (isMultipart ? earlyMaxBytes + 1024 * 1024 : earlyMaxBytes)
+      ) {
+        throw new Error('FILE_TOO_LARGE');
+      }
     }
 
-    let p: Project;
-    let buf: ArrayBuffer;
+    const attId = crypto.randomUUID();
+    let uploadedBytes = 0;
+
     if (isMultipart) {
       const formData = await request.formData().catch(() => null);
       if (!formData) throw new Error('INVALID_INPUT');
@@ -144,24 +292,41 @@ export async function POST(request: Request) {
       if (!fileEntry || typeof fileEntry === 'string' || typeof (fileEntry as any).arrayBuffer !== 'function') {
         throw new Error('INVALID_INPUT');
       }
-      p = await getProject(id, user);
+      if (!p) p = await getProject(id, user);
+      const maxBytes = getMaxUploadBytes(p.kind);
       const uploadedFile = fileEntry as File;
       const formName = String(formData.get('name') || '').trim();
       name = name || formName || uploadedFile.name || '未命名素材';
       fileType = uploadedFile.type || 'application/octet-stream';
       if (uploadedFile.size > maxBytes) throw new Error('FILE_TOO_LARGE');
-      buf = await uploadedFile.arrayBuffer();
+
+      const bucketKey = `${user}/${p.id}/${attId}`;
+      const fileStream = typeof uploadedFile.stream === 'function' ? uploadedFile.stream() : null;
+      if (!hasCustomBucketBinding() && fileStream) {
+        uploadedBytes = await streamToDiskWithLimit(fileStream, resolveLocalBucketPath(bucketKey), maxBytes);
+      } else {
+        const ab = await uploadedFile.arrayBuffer();
+        if (ab.byteLength > maxBytes) throw new Error('FILE_TOO_LARGE');
+        uploadedBytes = ab.byteLength;
+        await bindings().BUCKET.put(bucketKey, ab);
+      }
     } else {
       if (!id) throw new Error('INVALID_INPUT');
-      p = await getProject(id, user);
+      if (!p) p = await getProject(id, user);
+      const maxBytes = getMaxUploadBytes(p.kind);
+      if (Number.isFinite(contentLenHeader) && contentLenHeader > maxBytes) {
+        throw new Error('FILE_TOO_LARGE');
+      }
       name = name || '未命名素材';
-      buf = await request.arrayBuffer();
+      const bucketKey = `${user}/${p.id}/${attId}`;
+      if (!hasCustomBucketBinding()) {
+        uploadedBytes = await streamToDiskWithLimit(request.body, resolveLocalBucketPath(bucketKey), maxBytes);
+      } else {
+        const bytes = await readStreamToBufferWithLimit(request.body, maxBytes);
+        uploadedBytes = bytes.byteLength;
+        await bindings().BUCKET.put(bucketKey, bytes);
+      }
     }
-
-    if (buf.byteLength > maxBytes) throw new Error('FILE_TOO_LARGE');
-
-    const attId = crypto.randomUUID();
-    await bindings().BUCKET.put(`${user}/${p.id}/${attId}`, buf);
 
     let episode = p.kind === 'transcribe' ? detectEpisodeFromName(name) : undefined;
     // Prevent duplicate auto-assigned episode numbers
@@ -176,7 +341,7 @@ export async function POST(request: Request) {
     const attachment = {
       id: attId,
       name,
-      size: buf.byteLength,
+      size: uploadedBytes,
       type: fileType,
       role,
       episode,
