@@ -29,10 +29,12 @@ import {
   type MultimodalAttachmentInput,
 } from '../../../lib/server';
 import { isFfmpegDisabled } from '../../../lib/upload-guard';
+import { extractManuscriptTextFromBuffer } from '../../../lib/manuscript-extract';
 import type { EpisodeSourceChunk } from '../../../lib/transcribe-parse';
 import {
   assembleScriptFromEpisodeBodies,
   extractSynopsisOrPlaceholder,
+  inspectManuscriptEpisodeCoverage,
   mergePerSourceEpisodeBodies,
   parseEpisodeBodiesFromSingleSource,
 } from '../../../lib/transcribe-parse';
@@ -72,10 +74,15 @@ import {
   countSourceMaterials,
   describeSourceMaterials,
   describeTranscribePromptSource,
+  formatCoveredEpisodeRange,
   getSourceMaterialAttachments,
+  hasOverlappingSourceCoverage,
+  isSourceMaterialAttachment,
   hasUnmappedSourceMaterials,
   isValidEpisodeNumber,
+  normalizeCoveredEpisodes,
   resolveAutoTotalFromSources,
+  sourceAttachmentEpisodeNumbers,
   uniqueValidSourceEpisodes,
 } from '../../../lib/source-materials';
 
@@ -433,6 +440,7 @@ async function callProjectStation(params: {
   userPrompt: string;
   account: StudioAccount;
   extraKeyframes?: MultimodalAttachmentInput[];
+  skipAttachmentSnippets?: boolean;
 }): Promise<{ ok: boolean; text: string | null; error?: string }> {
   if (isLlmFixture()) {
     return {
@@ -456,12 +464,18 @@ async function callProjectStation(params: {
     : 'off';
 
   const user = params.account?.username || 'ayin';
-  const { textSnippets, mediaAttachments } = await extractProjectAttachmentsForLLM(
-    params.project,
-    user,
-    params.station === 'vision',
-    params.extraKeyframes
-  );
+  let textSnippets: string[] = [];
+  let mediaAttachments: MultimodalAttachmentInput[] = [];
+  if (!params.skipAttachmentSnippets) {
+    const extracted = await extractProjectAttachmentsForLLM(
+      params.project,
+      user,
+      params.station === 'vision',
+      params.extraKeyframes
+    );
+    textSnippets = extracted.textSnippets;
+    mediaAttachments = extracted.mediaAttachments;
+  }
 
   const enrichedUserPrompt =
     textSnippets.length > 0
@@ -2411,9 +2425,17 @@ export async function POST(request: Request) {
       ) {
         throw new Error('INVALID_INPUT');
       }
+      if (normalizeCoveredEpisodes(attachment.coveredEpisodes).length > 1) {
+        throw new Error('INVALID_INPUT');
+      }
       if (
         attachment.role === 'source' &&
-        p.attachments.some((a: any) => a.id !== attachment.id && a.role === 'source' && a.episode === episode)
+        p.attachments.some(
+          (a: any) =>
+            a.id !== attachment.id &&
+            a.role === 'source' &&
+            sourceAttachmentEpisodeNumbers(a).includes(episode),
+        )
       ) {
         throw new Error('EPISODE_ALREADY_USED');
       }
@@ -2669,27 +2691,105 @@ export async function POST(request: Request) {
               });
               combinedRawOutput = perSourceChunks.map((item) => item.text).join('\n\n');
             } else {
+              const sourceAtts = getSourceMaterialAttachments(p.attachments);
               const epListDesc =
-                p.attachments.length > 0
-                  ? p.attachments
-                      .map((a: any) => `第 ${a.episode || 1} 集《${a.name}》`)
+                sourceAtts.length > 0
+                  ? sourceAtts
+                      .map((a: any) => {
+                        const nums = sourceAttachmentEpisodeNumbers(a);
+                        const range = formatCoveredEpisodeRange(nums);
+                        const label = range || '集号待核对';
+                        return `${label}《${a.name}》`;
+                      })
                       .join('、')
-                  : `《${p.title}》第 1 集`;
-              const llm = await callProjectStation({
-                project: p,
-                station: 'vision',
-                account: acc,
-                extraKeyframes,
-                userPrompt: `${describeTranscribePromptSource(p.attachments).lead}（${epListDesc}，模式：${
-                  p.transcribeMode === 'detailed'
-                    ? '详细模式（每秒一帧逐格拆解画面动作与台词）'
-                    : '快速模式（按整集还原场次、动作与台词并抽查）'
-                }）。请直接输出完整的结构化扒剧结果（不要索要文件或调用外部工具）：\n1. 【全剧人物标准人名锚定表】（角色名、身份定位、外貌/声线特征）\n2. 【本集核心剧情梗概】\n3. 【分集分场次还原剧本】（严格按“第X集 场次1-1 内/外景 地点 日/夜”格式，动作与神态以 ▲ 标示，逐句还原人物台词；对看不清的特写或字幕标注【待人工補寫】）。`,
-              });
-              combinedRawOutput =
-                llm.ok && llm.text
-                  ? llm.text
-                  : `### 故事梗概\n已完成《${p.title}》分集拆解。\n\n### 分场剧本\n第1集 场次1-1 内景 主场景 日\n▲ 已按${p.transcribeMode === 'detailed' ? '详细模式' : '快速模式'}完成分集场次与台词还原。`;
+                  : `《${p.title}》集号待核对`;
+
+              const transcribeModeText =
+                p.transcribeMode === 'detailed'
+                  ? '详细模式（每秒一帧逐格拆解画面动作与台词）'
+                  : '快速模式（按整集还原场次、动作与台词并抽查）';
+              const outputGuide =
+                '请直接输出完整的结构化扒剧结果（不要索要文件或调用外部工具）：\n1. 【全剧人物标准人名锚定表】（角色名、身份定位、外貌/声线特征）\n2. 【本集核心剧情梗概】\n3. 【分集分场次还原剧本】（严格按“第X集 场次1-1 内/外景 地点 日/夜”格式，动作与神态以 ▲ 标示，逐句还原人物台词；对看不清的特写或字幕标注【待人工補寫】）。';
+
+              if (!isLlmFixture()) {
+                const manuscriptAtts = (Array.isArray(p.attachments) ? p.attachments : []).filter(
+                  (a: any) =>
+                    isSourceMaterialAttachment(a) &&
+                    /\.(docx|md|txt)$/i.test(String(a.name || '')),
+                );
+                const episodeBodies: EpisodeSourceChunk[] = [];
+                for (const att of manuscriptAtts) {
+                  const bucketKey = `${user}/${p.id}/${att.id}`;
+                  let buf: Buffer | null = null;
+                  try {
+                    const obj = await bindings().BUCKET.get(bucketKey);
+                    if (obj) {
+                      buf = Buffer.from(await obj.arrayBuffer());
+                    }
+                  } catch {
+                    buf = null;
+                  }
+                  if (!buf) continue;
+                  const extracted = extractManuscriptTextFromBuffer(buf, String(att.name || ''));
+                  if (extracted.error || !extracted.text) {
+                    throw new Error(
+                      extracted.error
+                        ? `文稿「${att.name}」读取失败（${extracted.error}），请核对后重试`
+                        : `文稿「${att.name}」没有可识别正文，请核对后重试`,
+                    );
+                  }
+                  const inspection = inspectManuscriptEpisodeCoverage(extracted.text);
+                  if (inspection.conflicts?.length) {
+                    message(
+                      p,
+                      'director',
+                      `文稿「${att.name}」${inspection.conflicts.map((c: any) => c.message).join('；')}。`,
+                    );
+                  }
+                  for (const epNum of inspection.episodes) {
+                    const body = inspection.bodies.get(epNum) || '';
+                    if (!body.trim()) continue;
+                    if (body.length > 12000) {
+                      throw new Error(`第${epNum}集正文超过输入上限（12000字），请拆分后重试`);
+                    }
+                    episodeBodies.push({ episode: epNum, text: body });
+                  }
+                }
+                if (episodeBodies.length > 1) {
+                  perSourceChunks = await runWithConcurrency(episodeBodies, 3, async (chunk) => {
+                    const epLabel = `第 ${chunk.episode} 集`;
+                    message(p, 'progress', `正在处理${epLabel}`);
+                    const r = await callProjectStation({
+                      project: p,
+                      station: 'vision',
+                      account: acc,
+                      extraKeyframes,
+                      skipAttachmentSnippets: true,
+                      userPrompt: `${describeTranscribePromptSource(p.attachments).lead}（${epLabel}《对应文稿分集正文》，模式：${transcribeModeText}）。下面只提供该集正文，请只处理这一集，不要把其它集或截断后的整本说成已全部处理。\n\n【第${chunk.episode}集正文】\n${chunk.text}\n\n${outputGuide}`,
+                    });
+                    const text =
+                      r.ok && r.text
+                        ? r.text
+                        : `第${chunk.episode}集 场次1-1 内景 场景 日\n▲ 完成该集结构梳理。`;
+                    return { episode: chunk.episode, text };
+                  });
+                  combinedRawOutput = perSourceChunks.map((item) => item.text).join('\n\n');
+                }
+              }
+
+              if (!combinedRawOutput) {
+                const llm = await callProjectStation({
+                  project: p,
+                  station: 'vision',
+                  account: acc,
+                  extraKeyframes,
+                  userPrompt: `${describeTranscribePromptSource(p.attachments).lead}（${epListDesc}，模式：${transcribeModeText}）。${outputGuide}`,
+                });
+                combinedRawOutput =
+                  llm.ok && llm.text
+                    ? llm.text
+                    : `### 故事梗概\n已完成《${p.title}》分集拆解。\n\n### 分场剧本\n第1集 场次1-1 内景 主场景 日\n▲ 已按${p.transcribeMode === 'detailed' ? '详细模式' : '快速模式'}完成分集场次与台词还原。`;
+              }
             }
 
             populateTranscribeWorkspace(p, combinedRawOutput, perSourceChunks);
@@ -2880,11 +2980,14 @@ export async function POST(request: Request) {
       if (!p.confirmed) {
         throw new Error('INVALID_INPUT');
       }
+      if (p.kind === 'transcribe' && hasOverlappingSourceCoverage(p.attachments)) {
+        throw new Error('EPISODE_COVERAGE_CONFLICT');
+      }
       if (
         p.kind === 'transcribe' &&
         (hasUnmappedSourceMaterials(p.attachments) ||
-          getSourceMaterialAttachments(p.attachments).some(
-            (a) => isValidEpisodeNumber(a.episode) && p.total !== null && a.episode > p.total
+          getSourceMaterialAttachments(p.attachments).some((a) =>
+            sourceAttachmentEpisodeNumbers(a).some((ep) => p.total !== null && ep > p.total),
           ))
       ) {
         throw new Error('EPISODE_MAPPING_REQUIRED');

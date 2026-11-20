@@ -18,6 +18,9 @@ import {
   getEffectiveUploadLimit,
 } from '../../../lib/upload-guard';
 import type { AttachmentRole, Project } from '../../../lib/types';
+import { extractManuscriptTextFromBuffer } from '../../../lib/manuscript-extract';
+import { inspectManuscriptEpisodeCoverage } from '../../../lib/transcribe-parse';
+import { formatCoveredEpisodeRange, normalizeCoveredEpisodes } from '../../../lib/source-materials';
 
 const BUCKET_DIR = path.join(process.cwd(), '.data', 'buckets');
 
@@ -176,9 +179,28 @@ function detectEpisodeFromName(name: string): number | undefined {
 
 function detectRoleFromName(name: string, kind: string): 'source' | 'locked' | 'setting' {
   if (kind === 'original') return 'setting';
+  if (kind === 'transcribe') {
+    if (/(锁定|定稿|locked)/i.test(name)) return 'locked';
+    if (/(设定|人物|大纲|参考|setting|bible)/i.test(name)) return 'setting';
+    return 'source';
+  }
   if (/(锁定|定稿|locked|前\d+集)/i.test(name)) return 'locked';
   if (/(设定|人物|大纲|参考|setting|bible)/i.test(name)) return 'setting';
   return 'source';
+}
+
+async function readUploadedObjectBuffer(objectKey: string): Promise<Buffer | null> {
+  try {
+    if (hasCustomBucketBinding()) {
+      const obj = await bindings().BUCKET.get(objectKey);
+      if (!obj) return null;
+      const ab = await obj.arrayBuffer();
+      return Buffer.from(ab);
+    }
+    return await fs.promises.readFile(resolveLocalBucketPath(objectKey));
+  } catch {
+    return null;
+  }
 }
 
 export async function GET(request: Request) {
@@ -445,6 +467,39 @@ export async function POST(request: Request) {
     }
 
     let episode = p.kind === 'transcribe' ? detectEpisodeFromName(episodeName) : undefined;
+    let coveredEpisodes: number[] | undefined;
+    let coverageConflicts: { episode: number; message: string }[] = [];
+    let extractError: string | undefined;
+
+    const lowerName = String(name || '').toLowerCase();
+    const shouldInspectManuscript =
+      p.kind === 'transcribe' && /\.(docx|md|txt)$/i.test(lowerName);
+
+    if (shouldInspectManuscript) {
+      const buf = await readUploadedObjectBuffer(`${user}/${p.id}/${attId}`);
+      if (!buf) {
+        extractError = 'MANUSCRIPT_EXTRACT_FAILED';
+        episode = undefined;
+      } else {
+        const extracted = extractManuscriptTextFromBuffer(buf, name);
+        if (extracted.error) {
+          extractError = extracted.error;
+          episode = undefined;
+        } else {
+          const inspection = inspectManuscriptEpisodeCoverage(extracted.text || '');
+          const normalized = normalizeCoveredEpisodes(inspection.episodes);
+          coverageConflicts = Array.isArray(inspection.conflicts) ? inspection.conflicts : [];
+          if (normalized.length >= 2) {
+            coveredEpisodes = normalized;
+            episode = undefined;
+          } else if (normalized.length === 1) {
+            coveredEpisodes = normalized;
+            episode = normalized[0];
+          }
+        }
+      }
+    }
+
     // Prevent duplicate auto-assigned episode numbers among source attachments
     if (
       episode !== undefined &&
@@ -456,22 +511,39 @@ export async function POST(request: Request) {
     if (episode !== undefined && p.total !== null && episode > p.total) {
       episode = undefined;
     }
-    const attachment = {
+    const attachment: Project['attachments'][number] = {
       id: attId,
       name,
       size: uploadedBytes,
       type: fileType,
       role,
       episode,
+      ...(coveredEpisodes && coveredEpisodes.length > 0 ? { coveredEpisodes } : {}),
       uploadedAt: new Date().toISOString(),
     };
     p.attachments.push(attachment);
 
     if (p.kind === 'transcribe') {
-      if (episode !== undefined) {
-        message(p, 'director', `已归档素材「${name}」，自动识别为第 ${episode} 集（可在右侧素材栏随时修改）。`);
+      const conflictText =
+        coverageConflicts.length > 0
+          ? `请核对：${coverageConflicts.map((item) => item.message).join('；')}。`
+          : '';
+      if (extractError) {
+        message(
+          p,
+          'director',
+          `已归档素材「${name}」，但未能完整读取文稿正文（${extractError}），集号仍待核对，请不要用手填 1 绕过。${conflictText}`,
+        );
+      } else if (coveredEpisodes && coveredEpisodes.length > 1) {
+        message(
+          p,
+          'director',
+          `已归档素材「${name}」，从文稿正文识别为${formatCoveredEpisodeRange(coveredEpisodes)}（1份源文稿，可在右侧素材栏核对）。${conflictText}`,
+        );
+      } else if (episode !== undefined) {
+        message(p, 'director', `已归档素材「${name}」，自动识别为第 ${episode} 集（可在右侧素材栏随时修改）。${conflictText}`);
       } else {
-        message(p, 'director', `已归档素材「${name}」，未能从文件名确定唯一集号，请在下方「补录或核对素材集号」卡片中填写第几集。`);
+        message(p, 'director', `已归档素材「${name}」，未能从文件名或正文确定唯一集号，请在下方「补录或核对素材集号」卡片中填写第几集。${conflictText}`);
       }
     } else {
       const roleText = role === 'locked' ? '前序锁定稿（一字不动）' : role === 'setting' ? '设定与参考资料' : '原稿素材';

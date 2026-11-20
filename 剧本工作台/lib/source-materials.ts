@@ -1,6 +1,6 @@
 import type { Attachment } from './types';
 
-export type SourceMaterialCandidate = Pick<Attachment, 'role' | 'name' | 'episode'>;
+export type SourceMaterialCandidate = Pick<Attachment, 'role' | 'name' | 'episode' | 'coveredEpisodes'>;
 
 const INTERNAL_KEYFRAME_RE = /-kf-\d+-\d+ds/i;
 const SOURCE_EXT_RE = /\.(mp4|mov|webm|mkv|avi|srt|ass|vtt|txt|md|docx)$/i;
@@ -35,11 +35,73 @@ export function countSourceMaterials(
   return getSourceMaterialAttachments(attachments).length;
 }
 
+export function normalizeCoveredEpisodes(input: unknown): number[] {
+  if (!Array.isArray(input)) return [];
+  const unique = new Set<number>();
+  for (const raw of input) {
+    if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 1 && raw <= 300) {
+      unique.add(raw);
+    }
+  }
+  return Array.from(unique).sort((a, b) => a - b);
+}
+
+export function sourceAttachmentEpisodeNumbers(item: SourceMaterialCandidate): number[] {
+  const covered = normalizeCoveredEpisodes(item?.coveredEpisodes);
+  if (covered.length > 0) return covered;
+  const episode = item?.episode;
+  if (typeof episode === 'number' && Number.isInteger(episode) && episode >= 1 && episode <= 300) {
+    return [episode];
+  }
+  return [];
+}
+
+export function isSourceAttachmentMapped(item: SourceMaterialCandidate): boolean {
+  return sourceAttachmentEpisodeNumbers(item).length > 0;
+}
+
+export function formatCoveredEpisodeRange(episodes: number[]): string {
+  const list = normalizeCoveredEpisodes(episodes);
+  if (list.length === 0) return '';
+  const parts: string[] = [];
+  let start = list[0];
+  let prev = list[0];
+  const flush = () => {
+    parts.push(start === prev ? `${start}` : `${start}–${prev}`);
+  };
+  for (let i = 1; i < list.length; i += 1) {
+    const current = list[i];
+    if (current === prev + 1) {
+      prev = current;
+      continue;
+    }
+    flush();
+    start = current;
+    prev = current;
+  }
+  flush();
+  return `第${parts.join('、')}集`;
+}
+
+export function hasOverlappingSourceCoverage(
+  attachments: readonly SourceMaterialCandidate[] | undefined | null
+): boolean {
+  const sources = getSourceMaterialAttachments(attachments);
+  const seen = new Set<number>();
+  for (const item of sources) {
+    for (const episode of sourceAttachmentEpisodeNumbers(item)) {
+      if (seen.has(episode)) return true;
+      seen.add(episode);
+    }
+  }
+  return false;
+}
+
 export function hasUnmappedSourceMaterials(
   attachments: readonly SourceMaterialCandidate[] | undefined | null
 ): boolean {
   const sources = getSourceMaterialAttachments(attachments);
-  return sources.some((item) => !isValidEpisodeNumber(item.episode));
+  return sources.some((item) => !isSourceAttachmentMapped(item));
 }
 
 export function uniqueValidSourceEpisodes(
@@ -48,8 +110,8 @@ export function uniqueValidSourceEpisodes(
   const sources = getSourceMaterialAttachments(attachments);
   const episodes = new Set<number>();
   for (const item of sources) {
-    if (isValidEpisodeNumber(item.episode)) {
-      episodes.add(item.episode);
+    for (const episode of sourceAttachmentEpisodeNumbers(item)) {
+      episodes.add(episode);
     }
   }
   return Array.from(episodes).sort((a, b) => a - b);
@@ -62,7 +124,8 @@ export function resolveAutoTotalFromSources(
 ): number | null {
   const sources = getSourceMaterialAttachments(attachments);
   if (sources.length === 0) return null;
-  if (sources.some((item) => !isValidEpisodeNumber(item.episode))) return null;
+  if (sources.some((item) => !isSourceAttachmentMapped(item))) return null;
+  if (hasOverlappingSourceCoverage(sources)) return null;
   const uniqueEpisodes = uniqueValidSourceEpisodes(sources);
   if (uniqueEpisodes.length === 0) return null;
   return Math.min(300, Math.max(...uniqueEpisodes));

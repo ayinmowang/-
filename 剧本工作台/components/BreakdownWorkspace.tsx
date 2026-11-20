@@ -28,7 +28,14 @@ import {
   extractVideoFramesWithCanvas,
 } from '../lib/browser-video-frames';
 import { formatCreatorUploadError } from '../lib/upload-error-text';
-import { countSourceMaterials } from '../lib/source-materials';
+import {
+  classifySourceMaterialName,
+  countSourceMaterials,
+  formatCoveredEpisodeRange,
+  getSourceMaterialAttachments,
+  isSourceAttachmentMapped,
+  sourceAttachmentEpisodeNumbers,
+} from '../lib/source-materials';
 import type {
   CreatorPromptCatalog,
   CreatorTierSummary,
@@ -474,7 +481,9 @@ export default function BreakdownWorkspace() {
   });
 
   const isDelivered = active?.remote?.status === 'delivered' || active?.remote?.stage?.key === 'delivery';
-  const hasMissingEp = Boolean(active?.attachments.some((a) => !a.episode));
+  const hasMissingEp = Boolean(
+    getSourceMaterialAttachments(active?.attachments).some((a) => !isSourceAttachmentMapped(a)),
+  );
   const leftLabels: Record<LeftTab, string> = {
     materials: '素材与集号',
     characters: '人物锚定表',
@@ -1014,37 +1023,54 @@ export default function BreakdownWorkspace() {
                       <div style={{ fontWeight: 600, wordBreak: 'break-all' }}>{att.name}</div>
                       <div style={{ opacity: 0.65, marginTop: 3 }}>{formatBytes(att.size)}</div>
                       <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
-                        {att.episode && epDrafts[att.id] === undefined ? (
-                          <>
-                            <span style={{ color: '#15803d', fontWeight: 700 }}>✓ 第 {att.episode} 集</span>
-                            <button
-                              type="button"
-                              onClick={() => setEpDrafts({ ...epDrafts, [att.id]: String(att.episode) })}
-                              style={{ fontSize: 11, border: 'none', background: 'transparent', color: '#8C3B2B', cursor: 'pointer', textDecoration: 'underline' }}
-                            >
-                              修改
-                            </button>
-                          </>
-                        ) : (
-                          <>
-                            <input
-                              type="number"
-                              min={1}
-                              max={300}
-                              placeholder="集号"
-                              value={epDrafts[att.id] ?? ''}
-                              onChange={(e) => setEpDrafts({ ...epDrafts, [att.id]: e.target.value })}
-                              style={{ width: 64, padding: '3px 6px', borderRadius: 6, border: '1px solid #d8cfc0', fontSize: 12 }}
-                            />
-                            <button
-                              type="button"
-                              onClick={() => saveEpisodeNum(att.id)}
-                              style={{ padding: '3px 8px', borderRadius: 6, border: 'none', background: '#8C3B2B', color: '#fff', fontSize: 11, cursor: 'pointer' }}
-                            >
-                              保存
-                            </button>
-                          </>
-                        )}
+                        {(() => {
+                          const coveredEps = sourceAttachmentEpisodeNumbers(att);
+                          if (coveredEps.length > 1 && epDrafts[att.id] === undefined) {
+                            const isManuscript = classifySourceMaterialName(att.name || '') === 'manuscript';
+                            return (
+                              <span style={{ color: '#15803d', fontWeight: 700 }}>
+                                {isManuscript
+                                  ? `1份源文稿，已识别${formatCoveredEpisodeRange(coveredEps)}`
+                                  : `已识别${formatCoveredEpisodeRange(coveredEps)}`}
+                              </span>
+                            );
+                          }
+                          if (coveredEps.length === 1 && epDrafts[att.id] === undefined) {
+                            const epNum = coveredEps[0];
+                            return (
+                              <>
+                                <span style={{ color: '#15803d', fontWeight: 700 }}>✓ 第 {epNum} 集</span>
+                                <button
+                                  type="button"
+                                  onClick={() => setEpDrafts({ ...epDrafts, [att.id]: String(epNum) })}
+                                  style={{ fontSize: 11, border: 'none', background: 'transparent', color: '#8C3B2B', cursor: 'pointer', textDecoration: 'underline' }}
+                                >
+                                  修改
+                                </button>
+                              </>
+                            );
+                          }
+                          return (
+                            <>
+                              <input
+                                type="number"
+                                min={1}
+                                max={300}
+                                placeholder="集号"
+                                value={epDrafts[att.id] ?? ''}
+                                onChange={(e) => setEpDrafts({ ...epDrafts, [att.id]: e.target.value })}
+                                style={{ width: 64, padding: '3px 6px', borderRadius: 6, border: '1px solid #d8cfc0', fontSize: 12 }}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => saveEpisodeNum(att.id)}
+                                style={{ padding: '3px 8px', borderRadius: 6, border: 'none', background: '#8C3B2B', color: '#fff', fontSize: 11, cursor: 'pointer' }}
+                              >
+                                保存
+                              </button>
+                            </>
+                          );
+                        })()}
                       </div>
                     </div>
                   ))
@@ -1177,7 +1203,16 @@ export default function BreakdownWorkspace() {
                   color: '#5C5048',
                 }}
               >
-                完整分场剧本（共 {active.episodes?.length || active.total || 0} 集）
+                完整分场剧本（共{' '}
+                {active.episodes?.length ||
+                  active.total ||
+                  Math.max(
+                    0,
+                    ...getSourceMaterialAttachments(active.attachments).flatMap((a) =>
+                      sourceAttachmentEpisodeNumbers(a),
+                    ),
+                  )}{' '}
+                集）
               </span>
               <button
                 type="button"

@@ -162,3 +162,44 @@ export function assembleScriptFromEpisodeBodies(bodies: Map<number, string>): st
 
   return sortedEntries.map(([, body]) => body.trim()).join('\n\n');
 }
+
+export interface ManuscriptCoverageConflict {
+  episode: number;
+  reason: 'duplicate_heading';
+  message: string;
+}
+
+export interface ManuscriptCoverageInspection {
+  episodes: number[];
+  bodies: Map<number, string>;
+  conflicts: ManuscriptCoverageConflict[];
+}
+
+export function inspectManuscriptEpisodeCoverage(text: string): ManuscriptCoverageInspection {
+  const bodies = parseEpisodeBodiesFromSingleSource(text);
+  const filtered = new Map<number, string>();
+  for (const [ep, body] of bodies.entries()) {
+    if (Number.isInteger(ep) && ep >= 1 && ep <= 300 && typeof body === 'string' && body.trim()) {
+      filtered.set(ep, body);
+    }
+  }
+  const episodes = Array.from(filtered.keys()).sort((a, b) => a - b);
+  const headingCounts = new Map<number, number>();
+  for (const item of findEpisodeBoundaries(text || '')) {
+    if (Number.isInteger(item.episode) && item.episode >= 1 && item.episode <= 300) {
+      headingCounts.set(item.episode, (headingCounts.get(item.episode) || 0) + 1);
+    }
+  }
+  const conflicts: ManuscriptCoverageConflict[] = [];
+  for (const [episode, count] of headingCounts.entries()) {
+    if (count > 1) {
+      conflicts.push({
+        episode,
+        reason: 'duplicate_heading',
+        message: `第${episode}集标题出现多次，请核对`,
+      });
+    }
+  }
+  conflicts.sort((a, b) => a.episode - b.episode);
+  return { episodes, bodies: filtered, conflicts };
+}

@@ -148,6 +148,7 @@ export interface Attachment {
   type?: string;
   role?: AttachmentRole;
   episode?: number;
+  coveredEpisodes?: number[];
   durationSec?: number;
   uploadedAt?: string;
 }
