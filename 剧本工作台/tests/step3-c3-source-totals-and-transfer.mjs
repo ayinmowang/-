@@ -314,15 +314,36 @@ async function main() {
   const fullDocRepeat = (fullScriptContent.match(/快速拉片与结构脚本/g) || []).length;
   assert.ok(fullDocRepeat <= 1, `outputs.script must not concatenate the full fixture 5 times, got ${fullDocRepeat}`);
 
+  const synopsisContent = proj1?.remote?.outputs?.synopsis?.content || '';
+  assert.notEqual(
+    synopsisContent,
+    '（本交付未单独写出故事梗概，请直接阅读分集正文。）',
+    'outputs.synopsis must extract the written synopsis section when present',
+  );
+  assert.ok(synopsisContent.includes('林澈'), 'outputs.synopsis must contain the extracted synopsis body (林澈)');
+  assert.notEqual(synopsisContent, fullScriptContent.slice(0, 600), 'synopsis must not be script.slice(0, 600)');
+  assert.ok(!synopsisContent.endsWith('不是实'), 'synopsis must not end with truncated 不是实');
+
+  for (let k = 1; k <= 5; k++) {
+    const scriptEpHeaders = fullScriptContent.match(new RegExp(`^###\\s*第\\s*0*${k}\\s*集\\s*$`, 'mg')) || [];
+    assert.equal(scriptEpHeaders.length, 1, `outputs.script must contain exactly one ### 第 ${k} 集, got ${scriptEpHeaders.length}`);
+    assert.ok(fullScriptContent.includes(`第 ${k} 集线索节点`), `outputs.script missing episode ${k} clue node`);
+  }
+
   for (let i = 0; i < episodes1.length; i++) {
     const epNum = Number(episodes1[i].episodeNumber);
     const body = episodes1[i].body || '';
     assert.ok(body.length > 0, `Episode ${i + 1} body must not be empty`);
     if (fullScriptContent) {
       assert.notEqual(body, fullScriptContent, `Episode ${i + 1} body must not equal full script content`);
+      assert.ok(fullScriptContent.includes(body), `Episode ${epNum} body must be a substring of outputs.script`);
     }
     const selfHeaders = body.match(new RegExp(`^###\\s*第\\s*0*${epNum}\\s*集\\s*$`, 'mg')) || [];
     assert.equal(selfHeaders.length, 1, `Episode ${epNum} body must contain exactly one ### 第 ${epNum} 集 header, got ${selfHeaders.length}`);
+    if (epNum < 5) {
+      assert.ok(!body.includes(`模拟测试稿 · 第 ${epNum + 1} 集`), `Episode ${epNum} body must not contain next episode generic header`);
+      assert.ok(!new RegExp(`^###\\s*第\\s*0*${epNum + 1}\\s*集\\s*$`, 'm').test(body), `Episode ${epNum} body must not contain ### 第 ${epNum + 1} 集`);
+    }
     assert.ok(body.includes('模拟测试稿'), `Episode ${i + 1} body missing 模拟测试稿`);
     assert.ok(body.includes('不是实际视频还原'), `Episode ${i + 1} body missing 不是实际视频还原`);
     assert.ok(!body.includes('STUDIO_LLM_FIXTURE'), `Episode ${i + 1} body leaked STUDIO_LLM_FIXTURE`);
@@ -425,6 +446,80 @@ async function main() {
   const domesticBodies = new Set((domesticProj.episodes || []).map((e) => e.body || ''));
   assert.ok(foreignBodies.size > 1, 'Foreign target 5 episode bodies must not all be identical');
   assert.ok(domesticBodies.size > 1, 'Domestic target 5 episode bodies must not all be identical');
+
+  const sourceSorted = [...episodes1].sort((a, b) => Number(a.episodeNumber) - Number(b.episodeNumber));
+  const foreignSorted = [...(foreignProj.episodes || [])].sort((a, b) => Number(a.episodeNumber) - Number(b.episodeNumber));
+  const domesticSorted = [...(domesticProj.episodes || [])].sort((a, b) => Number(a.episodeNumber) - Number(b.episodeNumber));
+  assert.equal(foreignSorted.length, 5, 'Foreign project must have 5 episodes');
+  assert.equal(domesticSorted.length, 5, 'Domestic project must have 5 episodes');
+  for (let i = 0; i < 5; i++) {
+    assert.equal(
+      foreignSorted[i].body || '',
+      sourceSorted[i].body || '',
+      `Foreign episode ${i + 1} body must match source episode verbatim`,
+    );
+    assert.equal(
+      domesticSorted[i].body || '',
+      sourceSorted[i].body || '',
+      `Domestic episode ${i + 1} body must match source episode verbatim`,
+    );
+  }
+
+  // Save path: edit only episode 1 inside full script via save_transcript_script; episodes 2..5 must remain verbatim intact
+  const originalEpBodies = sourceSorted.map((e) => e.body || '');
+  const ep1Marker = '【C3_SAVE_SCRIPT_EP1_MARKER_2026】';
+  const ep2HeaderIdx = fullScriptContent.search(/^###\s*第\s*0*2\s*集\s*$/m);
+  assert.ok(ep2HeaderIdx > 0, 'Full script must contain ### 第 2 集 before splitting for ep1 edit');
+  const editedScript =
+    fullScriptContent.slice(0, ep2HeaderIdx).trimEnd() +
+    `\n${ep1Marker}\n\n` +
+    fullScriptContent.slice(ep2HeaderIdx);
+
+  const saveRes = await requestJson('/api/studio', {
+    method: 'POST',
+    token,
+    body: {
+      operation: 'save_transcript_script',
+      id: proj1.id,
+      version: version1,
+      script: editedScript,
+    },
+  });
+  assert.equal(saveRes.status, 200, `Expected 200 from save_transcript_script, got ${saveRes.status}`);
+  const savedProj = extractProject(saveRes.json);
+
+  const reloadRes1 = await requestJson(`/api/studio?id=${encodeURIComponent(proj1.id)}`, {
+    method: 'GET',
+    token,
+  });
+  assert.equal(reloadRes1.status, 200, `Expected 200 on first reload, got ${reloadRes1.status}`);
+  const reloadedProj1 = extractProject(reloadRes1.json);
+
+  const reloadRes2 = await requestJson(`/api/studio?id=${encodeURIComponent(proj1.id)}`, {
+    method: 'GET',
+    token,
+  });
+  assert.equal(reloadRes2.status, 200, `Expected 200 on second reload, got ${reloadRes2.status}`);
+  const reloadedProj2 = extractProject(reloadRes2.json);
+
+  for (const checkProj of [savedProj, reloadedProj1, reloadedProj2]) {
+    const checkSorted = [...(checkProj.episodes || [])].sort(
+      (a, b) => Number(a.episodeNumber) - Number(b.episodeNumber),
+    );
+    assert.equal(checkSorted.length, 5, 'Saved project must keep all 5 episodes');
+    assert.ok((checkSorted[0].body || '').includes(ep1Marker), 'Episode 1 body must contain the saved marker');
+    for (let i = 1; i < 5; i++) {
+      assert.equal(
+        checkSorted[i].body || '',
+        originalEpBodies[i],
+        `Episode ${i + 1} body must remain verbatim unchanged after save_transcript_script`,
+      );
+    }
+    const checkScript = checkProj?.remote?.outputs?.script?.content || '';
+    for (const ep of checkSorted) {
+      assert.ok(checkScript.includes(ep.body || ''), `Saved script must stay aligned with episode ${ep.episodeNumber} body`);
+    }
+  }
 
   // Scenario 5: mapped source episodes 1 and 10 -> total is max episode 10, not source count 2; numbers not rewritten
   const create5 = await requestJson('/api/studio', {

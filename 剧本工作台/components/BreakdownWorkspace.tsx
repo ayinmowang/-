@@ -139,12 +139,19 @@ export default function BreakdownWorkspace() {
   function syncActiveProject(p: Project) {
     setActive(p);
     setProjects((prev) => [p, ...prev.filter((x) => x.id !== p.id)]);
-    const firstEpBody =
-      p.episodes?.[0]?.body ||
+    const sortedEpisodes = [...(p.episodes || [])].sort(
+      (a, b) => Number(a.episodeNumber || 0) - Number(b.episodeNumber || 0),
+    );
+    const joinedEpisodes = sortedEpisodes
+      .map((ep) => String(ep.body || '').trim())
+      .filter(Boolean)
+      .join('\n\n');
+    const fullScriptBody =
       p.remote?.outputs?.script?.content ||
+      joinedEpisodes ||
       p.remote?.outputs?.synopsis?.content ||
       '';
-    setEditorBody(firstEpBody);
+    setEditorBody(fullScriptBody);
   }
 
   async function openProject(p: Project) {
@@ -418,15 +425,11 @@ export default function BreakdownWorkspace() {
     setBusy(true);
     setBusyLabel('正在保存当前还原稿…');
     try {
-      const firstEp = active.episodes?.[0];
       const updated = await studioApi('/api/studio', {
-        operation: 'save_episode',
+        operation: 'save_transcript_script',
         id: active.id,
         version: active.version,
-        episodeId: firstEp?.id,
-        episodeNumber: firstEp?.episodeNumber || 1,
-        title: firstEp?.title || '第 1 集还原稿',
-        body: editorBody,
+        script: editorBody,
       });
       syncActiveProject(updated);
       setToast('已保存修改并生成历史快照');
@@ -1164,6 +1167,18 @@ export default function BreakdownWorkspace() {
               })()}
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <span
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: 8,
+                  border: '1px solid #d8cfc0',
+                  background: 'transparent',
+                  fontSize: 12,
+                  color: '#5C5048',
+                }}
+              >
+                完整分场剧本（共 {active.episodes?.length || active.total || 0} 集）
+              </span>
               <button
                 type="button"
                 onClick={() => setPageWidthMode((v) => !v)}

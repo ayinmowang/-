@@ -29,6 +29,13 @@ import {
   type MultimodalAttachmentInput,
 } from '../../../lib/server';
 import { isFfmpegDisabled } from '../../../lib/upload-guard';
+import type { EpisodeSourceChunk } from '../../../lib/transcribe-parse';
+import {
+  assembleScriptFromEpisodeBodies,
+  extractSynopsisOrPlaceholder,
+  mergePerSourceEpisodeBodies,
+  parseEpisodeBodiesFromSingleSource,
+} from '../../../lib/transcribe-parse';
 import type {
   Project,
   Kind,
@@ -609,11 +616,7 @@ function buildStationFixtureOutput(params: {
   };
 
   if (singleTargetEp !== null) {
-    return [
-      `## 五、分集结构脚本（模拟测试稿 · 第 ${singleTargetEp} 集）`,
-      `> 模拟测试稿（不是实际视频还原）。${sourceNote}`,
-      ...buildSingleEpisodeBlock(singleTargetEp),
-    ].join('\n');
+    return buildSingleEpisodeBlock(singleTargetEp).join('\n');
   }
 
   const baseSynopsis = [
@@ -934,7 +937,11 @@ async function runWithConcurrency<T, R>(
   return results;
 }
 
-function populateTranscribeWorkspace(p: any, rawOutput: string): void {
+function populateTranscribeWorkspace(
+  p: any,
+  rawOutput: string,
+  perSource?: EpisodeSourceChunk[],
+): void {
   const now = new Date().toISOString();
   const cleanOutput = sanitizeForClient(rawOutput || '');
 
@@ -973,39 +980,30 @@ function populateTranscribeWorkspace(p: any, rawOutput: string): void {
     ];
   }
 
-  // Extract synopsis section
-  const synMatch = cleanOutput.match(/(?:###?\s*故事梗概[^\n]*|【本集核心剧情梗概】|【剧情梗概】)\n([\s\S]*?)(?=\n(?:###?|【)|$)/);
-  const synText = synMatch ? synMatch[1].trim() : cleanOutput.slice(0, 600);
+  // Extract synopsis section or honest placeholder
+  const synText = extractSynopsisOrPlaceholder(cleanOutput);
   p.outlineNodes = [
     {
       id: 'out-tr-1',
       title: '全剧剧情梗概',
-      body: synText || '已完成分集扒剧拆解。',
+      body: synText,
       order: 1,
       updatedAt: now,
     },
   ];
 
-  // Parse per-episode blocks or fall back to attachment episodes
-  const epHeaderRegex = /(?:^|\n)(?:###?\s*)?第\s*0*(\d{1,3})\s*集[^\n]*/g;
-  const matches = Array.from(cleanOutput.matchAll(epHeaderRegex));
-  const parsedEpMap = new Map<number, string>();
-  for (let i = 0; i < matches.length; i++) {
-    const m = matches[i];
-    const epNum = Number(m[1]);
-    const startIdx = m.index ?? 0;
-    const endIdx = i + 1 < matches.length ? (matches[i + 1].index ?? cleanOutput.length) : cleanOutput.length;
-    const slice = cleanOutput.slice(startIdx, endIdx).trim();
-    if (Number.isInteger(epNum) && epNum >= 1) {
-      const prev = parsedEpMap.get(epNum);
-      const normalized = slice.trim();
-      if (!prev) {
-        parsedEpMap.set(epNum, slice);
-      } else if (normalized && !prev.includes(normalized) && prev.trim() !== normalized) {
-        parsedEpMap.set(epNum, `${prev}\n\n${slice}`);
-      }
-    }
-  }
+  // Parse per-episode blocks preserving source boundaries
+  const sanitizedSources: EpisodeSourceChunk[] | undefined = Array.isArray(perSource)
+    ? perSource.map((src) => ({
+        episode: src.episode,
+        text: sanitizeForClient(src.text || ''),
+      }))
+    : undefined;
+
+  const parsedEpMap =
+    sanitizedSources && sanitizedSources.length > 0
+      ? mergePerSourceEpisodeBodies(sanitizedSources)
+      : parseEpisodeBodiesFromSingleSource(cleanOutput);
 
   const validSourceEpisodes = uniqueValidSourceEpisodes(p.attachments);
   const targetEpNums: number[] =
@@ -1015,21 +1013,28 @@ function populateTranscribeWorkspace(p: any, rawOutput: string): void {
       ? Array.from(parsedEpMap.keys()).sort((a, b) => a - b)
       : [];
 
-  p.episodes = targetEpNums.map((epNum) => ({
-    id: `ep-tr-${epNum}`,
-    volumeId: p.volumes[0]?.id || 'vol-1',
-    episodeNumber: epNum,
-    title: `第 ${epNum} 集`,
-    body:
+  const finalBodies = new Map<number, string>();
+  p.episodes = targetEpNums.map((epNum) => {
+    const resolvedBody =
       parsedEpMap.get(epNum) ||
-      `### 第 ${epNum} 集\n> 模拟测试稿（不是实际视频还原），第 ${epNum} 集结构占位。`,
-    locked: false,
-    updatedAt: now,
-  }));
+      `### 第 ${epNum} 集\n> 模拟测试稿（不是实际视频还原），第 ${epNum} 集结构占位。`;
+    finalBodies.set(epNum, resolvedBody);
+    return {
+      id: `ep-tr-${epNum}`,
+      volumeId: p.volumes[0]?.id || 'vol-1',
+      episodeNumber: epNum,
+      title: `第 ${epNum} 集`,
+      body: resolvedBody,
+      locked: false,
+      updatedAt: now,
+    };
+  });
+
+  const assembledScript = assembleScriptFromEpisodeBodies(finalBodies);
 
   p.remote.outputs.synopsis = {
     title: '故事梗概与分集扒剧还原稿',
-    content: synText || cleanOutput,
+    content: synText,
     updatedAt: now,
     version: 1,
   };
@@ -1041,7 +1046,7 @@ function populateTranscribeWorkspace(p: any, rawOutput: string): void {
   };
   p.remote.outputs.script = {
     title: '分集扒剧还原正文',
-    content: cleanOutput || '全集扒剧正文已生成完毕。',
+    content: assembledScript || cleanOutput || '全集扒剧正文已生成完毕。',
     updatedAt: now,
     version: 1,
   };
@@ -1502,6 +1507,71 @@ export async function POST(request: Request) {
         );
       }
 
+      const saved = await saveProject(p, user);
+      return Response.json(withCatalogs(saved));
+    }
+
+    if (body.operation === 'save_transcript_script') {
+      if (typeof body.script !== 'string') {
+        throw new Error('INVALID_INPUT');
+      }
+      const cleanScript = sanitizeForClient(body.script);
+      const parsedMap = parseEpisodeBodiesFromSingleSource(cleanScript);
+      const existingEpisodes = Array.isArray(p.episodes) ? p.episodes : [];
+
+      for (const ep of existingEpisodes) {
+        const epNum = Number(ep?.episodeNumber);
+        if (!Number.isInteger(epNum) || !parsedMap.has(epNum)) continue;
+        const nextBody = parsedMap.get(epNum)!;
+        const prevBody =
+          typeof ep.body === 'string'
+            ? ep.body
+            : 'content' in ep && typeof ep.content === 'string'
+              ? ep.content
+              : '';
+        if (isEpisodeEffectivelyLocked(p, ep) && prevBody !== nextBody) {
+          return Response.json({ error: 'EPISODE_LOCKED' }, { status: 403 });
+        }
+      }
+
+      const now = new Date().toISOString();
+      const updatedBodyMap = new Map<number, string>();
+
+      for (const ep of existingEpisodes) {
+        const epNum = Number(ep?.episodeNumber);
+        if (Number.isInteger(epNum) && parsedMap.has(epNum)) {
+          const nextBody = parsedMap.get(epNum)!;
+          if (!isEpisodeEffectivelyLocked(p, ep)) {
+            ep.body = nextBody;
+            if ('content' in ep) {
+              ep.content = nextBody;
+            }
+            ep.updatedAt = now;
+          }
+        }
+        const currentBody =
+          typeof ep.body === 'string'
+            ? ep.body
+            : 'content' in ep && typeof ep.content === 'string'
+              ? ep.content
+              : undefined;
+        if (Number.isInteger(epNum) && epNum >= 1 && typeof currentBody === 'string') {
+          updatedBodyMap.set(epNum, currentBody);
+        }
+      }
+
+      const alignedScript = assembleScriptFromEpisodeBodies(updatedBodyMap);
+      if (!p.remote) p.remote = {};
+      if (!p.remote.outputs) p.remote.outputs = {};
+      const prevScriptOut = p.remote.outputs.script || {};
+      p.remote.outputs.script = {
+        ...prevScriptOut,
+        title: prevScriptOut.title || '分集扒剧还原正文',
+        content: alignedScript,
+        updatedAt: now,
+        version: (Number(prevScriptOut.version) || 0) + 1,
+      };
+      p.updatedAt = now;
       const saved = await saveProject(p, user);
       return Response.json(withCatalogs(saved));
     }
@@ -2573,10 +2643,12 @@ export async function POST(request: Request) {
 
             // Clean run (or anomaly confirmed): execute vision directly and deliver .docx without Step 3 empty card
             let combinedRawOutput = '';
+            let perSourceChunks: EpisodeSourceChunk[] | undefined;
             if (videoAtts.length > 3) {
               const sortedVideos = [...videoAtts].sort((a: any, b: any) => (a.episode || 0) - (b.episode || 0));
-              const perEpOutputs = await runWithConcurrency(sortedVideos, 3, async (va: any) => {
-                const epLabel = `第 ${va.episode || 1} 集《${va.name}》`;
+              perSourceChunks = await runWithConcurrency(sortedVideos, 3, async (va: any) => {
+                const epNum = Number(va.episode) || 1;
+                const epLabel = `第 ${epNum} 集《${va.name}》`;
                 const r = await callProjectStation({
                   project: p,
                   station: 'vision',
@@ -2588,9 +2660,11 @@ export async function POST(request: Request) {
                       : '快速模式（整集还原场次、动作与台词）'
                   }）。请直接输出结构化扒剧结果：\n1. 【全剧人物标准人名锚定表】\n2. 【本集核心剧情梗概】\n3. 【分集分场次还原剧本】（格式：“第X集 场次1-1 内/外景 地点 日/夜”，动作以 ▲ 标示，逐句还原台词）。`,
                 });
-                return r.ok && r.text ? r.text : `第${va.episode || 1}集 场次1-1 内景 场景 日\n▲ 完成该集结构梳理。`;
+                const text =
+                  r.ok && r.text ? r.text : `第${epNum}集 场次1-1 内景 场景 日\n▲ 完成该集结构梳理。`;
+                return { episode: epNum, text };
               });
-              combinedRawOutput = perEpOutputs.join('\n\n');
+              combinedRawOutput = perSourceChunks.map((item) => item.text).join('\n\n');
             } else {
               const epListDesc =
                 p.attachments.length > 0
@@ -2615,7 +2689,7 @@ export async function POST(request: Request) {
                   : `### 故事梗概\n已完成《${p.title}》分集拆解。\n\n### 分场剧本\n第1集 场次1-1 内景 主场景 日\n▲ 已按${p.transcribeMode === 'detailed' ? '详细模式' : '快速模式'}完成分集场次与台词还原。`;
             }
 
-            populateTranscribeWorkspace(p, combinedRawOutput);
+            populateTranscribeWorkspace(p, combinedRawOutput, perSourceChunks);
             p.remote.stage = { key: 'delivery', title: '扒剧完成 · Word (.docx) 已就绪' };
             p.remote.status = 'delivered';
             p.remote.progress.completed_steps = p.remote.progress.total_steps;
