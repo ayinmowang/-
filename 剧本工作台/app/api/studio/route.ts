@@ -25,6 +25,7 @@ import {
   getMaxUploadBytes,
   inspectBucketMediaFile,
   formatVideoMetadataSummary,
+  normalizeRelayModelName,
   type MultimodalAttachmentInput,
 } from '../../../lib/server';
 import type {
@@ -414,6 +415,12 @@ async function callProjectStation(params: {
   account: StudioAccount;
   extraKeyframes?: MultimodalAttachmentInput[];
 }): Promise<{ ok: boolean; text: string | null; error?: string }> {
+  if (isLlmFixture()) {
+    return {
+      ok: true,
+      text: buildStationFixtureOutput(params),
+    };
+  }
   const store = getStore();
   const basePrompt = store.systemConfig.routes?.[params.station]?.systemPrompt || '';
   const { composedSystemPrompt } = resolveWorkflowSkillPrompts(store.systemConfig, params.project);
@@ -422,6 +429,9 @@ async function callProjectStation(params: {
     params.project.preferredTierId,
     params.station
   );
+  if (resolvedTier.model?.trim()) {
+    assertAllowedRelayModel(resolvedTier.model.trim());
+  }
   const effectiveThinking: ThinkingLevel = resolvedTier.supportsThinking
     ? params.project.thinkingLevel || 'off'
     : 'off';
@@ -503,6 +513,108 @@ function isProgressQuery(text: string): boolean {
 
 function hasGptKey(): boolean {
   return gptAvailable();
+}
+
+function isLlmFixture(): boolean {
+  return process.env.STUDIO_LLM_FIXTURE === '1';
+}
+
+const ALLOWED_RELAY_MODELS = new Set([
+  'carbon',
+  'gemini4c',
+  'gemini-4c',
+  'gemini4carbon',
+  'gemini-4-carbon',
+  'gemini-4.0-carbon',
+  'argon',
+  'gemini4a',
+  'gemini-4a',
+  'gemini4argon',
+  'gemini-4-argon',
+  'gemini-4.0-argon',
+  'neon',
+  'gemini4n',
+  'gemini-4n',
+  'gemini4neon',
+  'gemini-4-neon',
+  'gemini-4.0-neon',
+]);
+
+function assertAllowedRelayModel(rawModel: string): void {
+  const normalized = normalizeRelayModelName(rawModel).trim().toLowerCase();
+  const rawLower = String(rawModel || '').trim().toLowerCase();
+  if (!ALLOWED_RELAY_MODELS.has(normalized) && !ALLOWED_RELAY_MODELS.has(rawLower)) {
+    throw new Error(`MODEL_NOT_ALLOWED:${rawModel}`);
+  }
+}
+
+function buildStationFixtureOutput(params: {
+  project: Project;
+  station: StationRoleKey;
+  userPrompt: string;
+}): string {
+  const { project, station, userPrompt } = params;
+  const isDetailed =
+    project.transcribeMode === 'detailed' ||
+    /详细|detailed|精修|完整/i.test(`${project.transcribeMode || ''} ${userPrompt}`);
+  const title = (project.title || '未命名项目').trim();
+  const hasSubtitle = Boolean(
+    (project.attachments || []).some((a) => /\.(srt|vtt|ass|txt)$/i.test(a.name || ''))
+  );
+  const sourceNote = hasSubtitle
+    ? '依据已上传字幕/文稿材料提取（STUDIO_LLM_FIXTURE 夹具正文，非真实中转响应）。'
+    : '未提供字幕文本，不编造对白为「已观看」事实；以下为结构化夹具骨架（STUDIO_LLM_FIXTURE，非真实中转/非观看报告）。';
+
+  const baseSynopsis = [
+    `# ${title} — ${isDetailed ? '详细拉片与结构脚本' : '快速拉片与结构脚本'}`,
+    '',
+    `> 夹具正文（STUDIO_LLM_FIXTURE，非真实中转/非观看报告）。${sourceNote}`,
+    '',
+    '## 一、故事梗概',
+    `主角林澈在深夜值班室收到一盘来源不明的旧磁带，被迫在天亮前核对三段互相矛盾的时间线。随着调查推进，他发现录音里缺失的五分钟恰好指向多年前被封存的事故档案，最终在真相公开与保护证人之间作出抉择。`,
+    '',
+    '## 二、人物小传与视觉锚点',
+    '- **林澈（28岁，夜班审听员）**：深灰工装夹克、左腕旧机械表、习惯用红笔在时间码旁画双竖线；性格克制，面对压力时语速放慢。',
+    '- **沈岚（34岁，档案管理员）**：藏青针织开衫、银边眼镜、随身携带铜钥匙串；掌握旧库房出入记录，言语谨慎。',
+  ];
+
+  const fastScenes = [
+    '',
+    '## 三、分场剧本（快速版）',
+    '### 第 1 场  夜班审听室  夜  内',
+    '▲ 审听室只亮着一盏台灯，示波器绿线在黑暗中匀速跳动。林澈戴上监听耳机，按下播放键。',
+    '▲ 磁带走带声突然顿住，时间码停在 02:14:08。林澈抬头看向墙上的值班表，用红笔圈出同一时刻。',
+    '',
+    '### 第 2 场  地下档案走廊  夜  内',
+    '▲ 应急灯管发出低频嗡鸣，林澈沿铁皮柜编号快步穿行，手电光束扫过贴着封条的 B-07 抽屉。',
+    '▲ 走廊尽头传来钥匙碰撞声，沈岚推门走入，目光落在林澈手中的磁带盒上。',
+  ];
+
+  const detailedScenes = [
+    '',
+    '## 三、分场剧本（详细版）',
+    '### 第 1 场  夜班审听室  夜  内',
+    '▲ 审听室窗外暴雨敲打玻璃，室内仅台灯照亮桌面。示波器绿色波形在 02:14:08 处出现一段长达五秒的静默断层。',
+    '▲ 林澈摘下一侧耳机，将磁带倒回十秒重放，同时在记录本上标出「静音段 / 无环境底噪」。',
+    hasSubtitle
+      ? '林澈（低声自语）：这段不是信号丢失，是有人在母带转录时手动切掉了底噪。'
+      : '▲ （无字幕输入，此处仅保留动作与声画线索描述，不虚构对白。）',
+    '',
+    '### 第 2 场  地下档案走廊  夜  内',
+    '▲ 应急灯在潮湿墙面投下长影，林澈核对手中纸质索引卡，拉开编号 B-07 的金属抽屉。',
+    '▲ 抽屉内原件袋已被拆封，只剩一张盖有作废章的借阅回执。脚步声由远及近，沈岚出现在走廊拐角。',
+    '',
+    '### 第 3 场  值班室玻璃隔断前  凌晨  内',
+    '▲ 天色微亮，灰蓝晨光透进百叶窗。林澈将借阅回执与时间码对照表并排贴在玻璃板上，两份日期完全重合。',
+    '▲ 沈岚将铜钥匙放在桌面推向林澈，转身走入走廊阴影。',
+    '',
+    '## 四、节奏与交付检查（夹具校验）',
+    '- 站位：' + station,
+    '- 档位：' + (isDetailed ? 'detailed（详细）' : 'fast（快速）'),
+    '- 状态：已生成完整结构化正文，可直接用于 DOCX 导出与分镜拆解。',
+  ];
+
+  return [...baseSynopsis, ...(isDetailed ? detailedScenes : fastScenes)].join('\n');
 }
 
 /**
@@ -2204,7 +2316,7 @@ export async function POST(request: Request) {
       p.thinkingLevel = execControls.thinkingLevel;
       p.executionMode = execControls.executionMode;
       p.confirmed = true;
-      const readyToConnect = connected() || hasGptKey();
+      const readyToConnect = connected() || hasGptKey() || isLlmFixture();
       message(
         p,
         'director',
@@ -2602,7 +2714,7 @@ export async function POST(request: Request) {
         }
       }
     } else if (body.operation === 'connect') {
-      if (!connected() && !hasGptKey()) throw new Error('SERVICE_NOT_CONNECTED');
+      if (!connected() && !hasGptKey() && !isLlmFixture()) throw new Error('SERVICE_NOT_CONNECTED');
       const execControls = validateExecutionControls(body, p);
       p.preferredTierId = execControls.preferredTierId;
       p.thinkingLevel = execControls.thinkingLevel;

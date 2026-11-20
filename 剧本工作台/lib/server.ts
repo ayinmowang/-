@@ -1907,8 +1907,11 @@ export async function executeProviderChat(params: {
   const rawRequested = String(params.model || '')
     .split(/[\n,，、;；]+/)
     .map((s) => s.trim())
-    .filter(Boolean)[0] || 'gpt-4o';
+    .filter(Boolean)[0] || '';
   const normalizedRequested = normalizeRelayModelName(rawRequested);
+  if (!normalizedRequested || !/^(gemini-4(\.0)?-)?(carbon|argon|neon)$/i.test(normalizedRequested)) {
+    throw new Error('MODEL_NOT_ALLOWED');
+  }
   const timeoutMs =
     typeof params.timeoutMs === 'number' && Number.isFinite(params.timeoutMs) && params.timeoutMs >= 10
       ? Math.floor(params.timeoutMs)
