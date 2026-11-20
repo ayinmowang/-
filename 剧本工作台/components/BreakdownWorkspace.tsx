@@ -22,6 +22,11 @@ import {
   Zap,
 } from 'lucide-react';
 import WarmShell from './WarmShell';
+import {
+  MULTIMODAL_VIDEO_CAP_BYTES,
+  describeFallbackLimits,
+  extractVideoFramesWithCanvas,
+} from '../lib/browser-video-frames';
 import type {
   CreatorPromptCatalog,
   CreatorTierSummary,
@@ -64,6 +69,9 @@ export default function BreakdownWorkspace() {
   const [elapsedSec, setElapsedSec] = useState(0);
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
+  const [ffmpegAvailable, setFfmpegAvailable] = useState<boolean | null>(null);
+  const [maxUploadBytes, setMaxUploadBytes] = useState<number | null>(null);
+  const [uploadAbortCtrl, setUploadAbortCtrl] = useState<AbortController | null>(null);
 
   // Create modal
   const [createType, setCreateType] = useState<'video' | 'book' | null>(null);
@@ -107,6 +115,12 @@ export default function BreakdownWorkspace() {
       setAccount(data.currentAccount || null);
       setTierCatalog(data.tierCatalog || []);
       setPromptCatalog(data.promptCatalog || null);
+      if (typeof data.ffmpegAvailable === 'boolean') {
+        setFfmpegAvailable(data.ffmpegAvailable);
+      }
+      if (typeof data.maxUploadBytes === 'number' && data.maxUploadBytes > 0) {
+        setMaxUploadBytes(data.maxUploadBytes);
+      }
       const list: Project[] = (data.projects || []).filter((p: Project) => !p.archived && p.kind === 'transcribe');
       setProjects(list);
     } catch (e: any) {
@@ -136,6 +150,12 @@ export default function BreakdownWorkspace() {
     setBusyLabel('正在打开拆书 · 扒剧工作台…');
     try {
       const full = await studioApi(`/api/studio?id=${p.id}`);
+      if (typeof full.ffmpegAvailable === 'boolean') {
+        setFfmpegAvailable(full.ffmpegAvailable);
+      }
+      if (typeof full.maxUploadBytes === 'number' && full.maxUploadBytes > 0) {
+        setMaxUploadBytes(full.maxUploadBytes);
+      }
       syncActiveProject(full);
       setSelectedMode(full.transcribeMode || '');
       setTeardownResult('');
@@ -149,20 +169,98 @@ export default function BreakdownWorkspace() {
 
   async function uploadToProject(proj: Project, files: File[]): Promise<Project> {
     let cur = proj;
-    for (let i = 0; i < files.length; i++) {
-      const f = files[i];
-      setBusyLabel(`正在流式上传素材 ${i + 1}/${files.length}：${f.name}`);
-      const r = await fetch(`/api/upload?id=${cur.id}&name=${encodeURIComponent(f.name)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': f.type || 'application/octet-stream' },
-        body: f,
-      });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.message || data.error || 'UPLOAD_FAILED');
-      cur = data;
-      syncActiveProject(cur);
+    const ctrl = new AbortController();
+    setUploadAbortCtrl(ctrl);
+    const hasSubtitleInBatch = files.some((item) => /\.(srt|vtt|ass|txt)$/i.test(item.name));
+    const capBytes = typeof maxUploadBytes === 'number' && maxUploadBytes > 0 ? maxUploadBytes : MULTIMODAL_VIDEO_CAP_BYTES;
+
+    try {
+      for (let i = 0; i < files.length; i++) {
+        if (ctrl.signal.aborted) {
+          throw new Error('已取消上传与关键帧提取');
+        }
+        const f = files[i];
+        const isVideo =
+          (typeof f.type === 'string' && f.type.startsWith('video/')) ||
+          /\.(mp4|mov|mkv|webm|avi|m4v)$/i.test(f.name);
+        const needCanvasFallback = isVideo && (f.size > MULTIMODAL_VIDEO_CAP_BYTES || ffmpegAvailable === false);
+
+        if (needCanvasFallback) {
+          const limitNotes = describeFallbackLimits({
+            hasAudioTrack: null,
+            hasSubtitleSource: hasSubtitleInBatch,
+            ffmpegAvailable,
+          });
+          setToast(limitNotes.join(' '));
+          setBusyLabel(
+            `第 ${i + 1}/${files.length} 份 · ${f.name} · 正在用浏览器提取关键帧（${limitNotes[0]}）`,
+          );
+
+          const extracted = await extractVideoFramesWithCanvas(f, {
+            maxFrames: 10,
+            signal: ctrl.signal,
+            onProgress: ({ current, total, timestampSec }) => {
+              setBusyLabel(
+                `第 ${i + 1}/${files.length} 份 · ${f.name} · 浏览器抽帧 ${current}/${total}（${timestampSec.toFixed(1)}s）`,
+              );
+            },
+          });
+
+          const baseStem = f.name.replace(/\.[^.]+$/, '') || 'video';
+          for (let k = 0; k < extracted.frames.length; k++) {
+            if (ctrl.signal.aborted) {
+              throw new Error('已取消上传与关键帧提取');
+            }
+            const frame = extracted.frames[k];
+            if (!frame.blob) continue;
+            const frameName = `${baseStem}-kf-${String(k + 1).padStart(2, '0')}-${Math.round(frame.timestampSec * 10)}ds.jpg`;
+            setBusyLabel(
+              `第 ${i + 1}/${files.length} 份 · ${f.name} · 上传关键帧 ${k + 1}/${extracted.frames.length}`,
+            );
+            const fr = await fetch(
+              `/api/upload?id=${cur.id}&name=${encodeURIComponent(frameName)}&role=setting`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': frame.blob.type || 'image/jpeg' },
+                body: frame.blob,
+                signal: ctrl.signal,
+              },
+            );
+            const fData = await fr.json();
+            if (!fr.ok) throw new Error(fData.message || fData.error || 'KEYFRAME_UPLOAD_FAILED');
+            cur = fData;
+            syncActiveProject(cur);
+          }
+
+          if (f.size > capBytes) {
+            setToast(`${limitNotes.join(' ')}（原视频超出单文件上限，已保留提取的关键帧附件）`);
+            continue;
+          }
+        }
+
+        setBusyLabel(`第 ${i + 1}/${files.length} 份 · ${f.name} · 正在流式上传素材`);
+        const r = await fetch(`/api/upload?id=${cur.id}&name=${encodeURIComponent(f.name)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': f.type || 'application/octet-stream' },
+          body: f,
+          signal: ctrl.signal,
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.message || data.error || 'UPLOAD_FAILED');
+        cur = data;
+        syncActiveProject(cur);
+      }
+      return cur;
+    } catch (err) {
+      if (ctrl.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
+        const msg = '已取消当前上传/抽帧任务';
+        setError(msg);
+        throw new Error(msg);
+      }
+      throw err;
+    } finally {
+      setUploadAbortCtrl((prev) => (prev === ctrl ? null : prev));
     }
-    return cur;
   }
 
   async function handleCreateTask(e: React.FormEvent) {
@@ -1257,8 +1355,32 @@ export default function BreakdownWorkspace() {
                   fontSize: 12,
                 }}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700, color: '#8C3B2B' }}>
-                  <LoaderCircle className="spin" size={15} /> 正在处理 · 已用时 {elapsedSec} 秒
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700, color: '#8C3B2B' }}>
+                    <LoaderCircle className="spin" size={15} /> 正在处理 · 已用时 {elapsedSec} 秒
+                  </div>
+                  {uploadAbortCtrl && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        uploadAbortCtrl.abort();
+                        setBusyLabel('正在取消…');
+                        setError('已取消当前上传/抽帧任务');
+                      }}
+                      style={{
+                        padding: '3px 10px',
+                        borderRadius: 6,
+                        border: '1px solid rgba(140,59,43,0.45)',
+                        background: '#FFF8F6',
+                        color: '#8C3B2B',
+                        fontSize: 12,
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      取消
+                    </button>
+                  )}
                 </div>
                 <div style={{ marginTop: 4, opacity: 0.85 }}>{busyLabel || '正在处理中，请稍候…'}</div>
               </div>
