@@ -63,5 +63,5 @@ export function resolveAutoTotalFromSources(
   if (sources.some((item) => !isValidEpisodeNumber(item.episode))) return null;
   const uniqueEpisodes = uniqueValidSourceEpisodes(sources);
   if (uniqueEpisodes.length === 0) return null;
-  return Math.min(300, uniqueEpisodes.length);
+  return Math.min(300, Math.max(...uniqueEpisodes));
 }

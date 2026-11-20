@@ -573,6 +573,49 @@ function buildStationFixtureOutput(params: {
     ? '依据已上传字幕/文稿材料提取（模拟测试稿，不是实际视频还原）。'
     : '未提供字幕文本，不编造对白为已观看事实（模拟测试稿，不是实际视频还原）。';
 
+  const mentionedEpisodes = new Set<number>();
+  const promptEpMatches = userPrompt.matchAll(/第\s*0*(\d{1,3})\s*集/g);
+  for (const m of promptEpMatches) {
+    const n = Number(m[1]);
+    if (Number.isInteger(n) && n >= 1 && n <= 300) {
+      mentionedEpisodes.add(n);
+    }
+  }
+  const singleTargetEp = mentionedEpisodes.size === 1 ? Array.from(mentionedEpisodes)[0] : null;
+
+  const validEpisodes = uniqueValidSourceEpisodes(project.attachments);
+  const targetEpisodes =
+    singleTargetEp !== null
+      ? [singleTargetEp]
+      : validEpisodes;
+
+  const buildSingleEpisodeBlock = (epNum: number): string[] => {
+    const matchedNames = sourceAttachments
+      .filter((a) => a.episode === epNum)
+      .map((a) => String(a.name || '').trim())
+      .filter(Boolean);
+    const sourceLabel = matchedNames.length > 0 ? matchedNames.join('、') : `第 ${epNum} 集源素材`;
+    const padHour = String(epNum).padStart(2, '0');
+    return [
+      '',
+      `### 第 ${epNum} 集`,
+      `> 第 ${epNum} 集 · 模拟测试稿（不是实际视频还原），关联源素材：${sourceLabel}。`,
+      `### 第 ${epNum} 场  第 ${epNum} 集核查室  夜  内`,
+      `▲ 第 ${epNum} 集线索节点（${padHour}:14:08）：林澈核对「${sourceLabel}」对应时间码片段，沈岚递交第 ${epNum} 份档案回执。`,
+      isDetailed
+        ? `▲ 详细动作拆解（第 ${epNum} 集）：镜头由台灯特写推至编号 B-${padHour} 索引卡，保留声画结构骨架供分镜校对。`
+        : `▲ 快速场次摘要（第 ${epNum} 集）：完成第 ${epNum} 集悬念钩子与线索交接标注。`,
+    ];
+  };
+
+  if (singleTargetEp !== null) {
+    return [
+      `## 五、分集结构脚本（模拟测试稿 · 第 ${singleTargetEp} 集）`,
+      `> 模拟测试稿（不是实际视频还原）。${sourceNote}`,
+      ...buildSingleEpisodeBlock(singleTargetEp),
+    ].join('\n');
+  }
+
   const baseSynopsis = [
     `# ${title} — ${isDetailed ? '详细拉片与结构脚本' : '快速拉片与结构脚本'}`,
     '',
@@ -622,26 +665,11 @@ function buildStationFixtureOutput(params: {
     '- 状态：已生成结构化模拟测试稿（不是实际视频还原），可用于 DOCX 导出与分镜拆解。',
   ];
 
-  const validEpisodes = uniqueValidSourceEpisodes(project.attachments);
   const episodeSections: string[] = [];
-  if (validEpisodes.length > 0) {
+  if (targetEpisodes.length > 0) {
     episodeSections.push('', '## 五、分集结构脚本（模拟测试稿）');
-    for (const epNum of validEpisodes) {
-      const matchedNames = sourceAttachments
-        .filter((a) => a.episode === epNum)
-        .map((a) => String(a.name || '').trim())
-        .filter(Boolean);
-      const sourceLabel = matchedNames.length > 0 ? matchedNames.join('、') : `第 ${epNum} 集源素材`;
-      episodeSections.push(
-        '',
-        `### 第 ${epNum} 集`,
-        `> 第 ${epNum} 集 · 模拟测试稿（不是实际视频还原），关联源素材：${sourceLabel}。`,
-        `### 第 ${epNum} 场  第 ${epNum} 集核查室  夜  内`,
-        `▲ 第 ${epNum} 集线索节点（0${epNum}:14:08）：林澈核对「${sourceLabel}」对应时间码片段，沈岚递交第 ${epNum} 份档案回执。`,
-        isDetailed
-          ? `▲ 详细动作拆解（第 ${epNum} 集）：镜头由台灯特写推至编号 B-0${epNum} 索引卡，保留声画结构骨架供分镜校对。`
-          : `▲ 快速场次摘要（第 ${epNum} 集）：完成第 ${epNum} 集悬念钩子与线索交接标注。`
-      );
+    for (const epNum of targetEpisodes) {
+      episodeSections.push(...buildSingleEpisodeBlock(epNum));
     }
   }
 
@@ -970,7 +998,12 @@ function populateTranscribeWorkspace(p: any, rawOutput: string): void {
     const slice = cleanOutput.slice(startIdx, endIdx).trim();
     if (Number.isInteger(epNum) && epNum >= 1) {
       const prev = parsedEpMap.get(epNum);
-      parsedEpMap.set(epNum, prev ? `${prev}\n\n${slice}` : slice);
+      const normalized = slice.trim();
+      if (!prev) {
+        parsedEpMap.set(epNum, slice);
+      } else if (normalized && !prev.includes(normalized) && prev.trim() !== normalized) {
+        parsedEpMap.set(epNum, `${prev}\n\n${slice}`);
+      }
     }
   }
 

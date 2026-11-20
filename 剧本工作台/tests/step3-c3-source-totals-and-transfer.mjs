@@ -310,14 +310,19 @@ async function main() {
   const fullScriptContent = proj1.remote?.outputs?.script?.content || '';
   const bodies1 = episodes1.map((ep) => ep.body || '');
   const uniqueBodies1 = new Set(bodies1);
-  assert.ok(uniqueBodies1.size > 1, 'All 5 episode bodies must not be identical');
+  assert.ok(uniqueBodies1.size === 5, 'All 5 episode bodies must be distinct');
+  const fullDocRepeat = (fullScriptContent.match(/快速拉片与结构脚本/g) || []).length;
+  assert.ok(fullDocRepeat <= 1, `outputs.script must not concatenate the full fixture 5 times, got ${fullDocRepeat}`);
 
   for (let i = 0; i < episodes1.length; i++) {
+    const epNum = Number(episodes1[i].episodeNumber);
     const body = episodes1[i].body || '';
     assert.ok(body.length > 0, `Episode ${i + 1} body must not be empty`);
     if (fullScriptContent) {
       assert.notEqual(body, fullScriptContent, `Episode ${i + 1} body must not equal full script content`);
     }
+    const selfHeaders = body.match(new RegExp(`^###\\s*第\\s*0*${epNum}\\s*集\\s*$`, 'mg')) || [];
+    assert.equal(selfHeaders.length, 1, `Episode ${epNum} body must contain exactly one ### 第 ${epNum} 集 header, got ${selfHeaders.length}`);
     assert.ok(body.includes('模拟测试稿'), `Episode ${i + 1} body missing 模拟测试稿`);
     assert.ok(body.includes('不是实际视频还原'), `Episode ${i + 1} body missing 不是实际视频还原`);
     assert.ok(!body.includes('STUDIO_LLM_FIXTURE'), `Episode ${i + 1} body leaked STUDIO_LLM_FIXTURE`);
@@ -421,7 +426,62 @@ async function main() {
   assert.ok(foreignBodies.size > 1, 'Foreign target 5 episode bodies must not all be identical');
   assert.ok(domesticBodies.size > 1, 'Domestic target 5 episode bodies must not all be identical');
 
-  console.log('PASS: step3-c3-source-totals-and-transfer all 4 scenarios verified.');
+  // Scenario 5: mapped source episodes 1 and 10 -> total is max episode 10, not source count 2; numbers not rewritten
+  const create5 = await requestJson('/api/studio', {
+    method: 'POST',
+    token,
+    body: {
+      operation: 'create',
+      kind: 'transcribe',
+      title: `C3非连续集号1与10_${Date.now()}`,
+    },
+  });
+  assert.equal(create5.status, 201, `Create noncontiguous project failed: ${create5.text}`);
+  let proj5 = extractProject(create5.json);
+  const id5 = proj5.id;
+  let version5 = proj5.version;
+  for (const ep of [1, 10]) {
+    const epStr = String(ep).padStart(2, '0');
+    const up = await uploadRaw(token, {
+      id: id5,
+      name: `第${epStr}集_正片源.srt`,
+      role: 'source',
+      buffer: makeTinySrt(ep),
+      contentType: 'application/x-subrip',
+    });
+    version5 = up.version;
+  }
+  const confirm5 = await requestJson('/api/studio', {
+    method: 'POST',
+    token,
+    body: { operation: 'confirm', id: id5, version: version5 },
+  });
+  assert.equal(confirm5.status, 200, `Confirm noncontiguous project failed: ${confirm5.text}`);
+  proj5 = extractProject(confirm5.json);
+  version5 = proj5.version;
+  const connect5 = await requestJson('/api/studio', {
+    method: 'POST',
+    token,
+    body: { operation: 'connect', id: id5, version: version5 },
+  });
+  assert.equal(connect5.status, 200, `Connect episodes 1 and 10 must succeed, got ${connect5.status}: ${connect5.text}`);
+  proj5 = extractProject(connect5.json);
+  assert.equal(proj5.total, 10, `Expected total === 10 (max real episode), not 2, got ${proj5.total}`);
+  const srcEps = (proj5.attachments || [])
+    .filter((a) => a.role === 'source')
+    .map((a) => a.episode)
+    .sort((a, b) => a - b);
+  assert.deepEqual(srcEps, [1, 10], `Source episode numbers must stay [1, 10], got ${JSON.stringify(srcEps)}`);
+  const connectText5 = [
+    ...(proj5.messages || []).map((m) => m.text || ''),
+    proj5.brief || '',
+  ].join('\n');
+  assert.ok(!/EPISODE_MAPPING_REQUIRED/.test(connect5.text), 'Must not raise EPISODE_MAPPING_REQUIRED for mapped 1 and 10');
+  if (/份/.test(connectText5) && /2/.test(connectText5) && /集/.test(connectText5)) {
+    assert.notEqual(proj5.total, 2, 'Source count 2 must not be stored as total');
+  }
+
+  console.log('PASS: step3-c3-source-totals-and-transfer all 5 scenarios verified.');
 }
 
 main().catch((err) => {
