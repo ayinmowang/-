@@ -197,7 +197,7 @@ async function uploadSampleSrt(token, id, filename) {
 }
 
 async function runFixtureFlow(token, mode) {
-  const created = await createTranscribeProject(token, `[STUDIO_LLM_FIXTURE] 联调验收-${mode}`);
+  const created = await createTranscribeProject(token, `联调验收-模拟测试稿-${mode}`);
   let version = created.version;
   const id = created.id;
 
@@ -270,8 +270,12 @@ async function runFixtureFlow(token, mode) {
   assert.ok(actionProjectText.trim().length > 0, `action response (${mode}) missing project output text`);
   assert.ok(!/未完成占位/.test(actionProjectText), `action output (${mode}) must not be placeholder only`);
   assert.ok(
-    /(夹具|FIXTURE)/i.test(actionProjectText),
-    `action output (${mode}) must explicitly mark STUDIO_LLM_FIXTURE / 夹具`
+    /模拟测试稿/.test(actionProjectText) && /不是实际视频还原/.test(actionProjectText),
+    `action output (${mode}) must mark 模拟测试稿 / 不是实际视频还原`
+  );
+  assert.ok(
+    !/STUDIO_LLM_FIXTURE/.test(actionProjectText),
+    `action output (${mode}) must not expose STUDIO_LLM_FIXTURE`
   );
   assert.ok(
     /(梗概|人物|分场|▲)/.test(actionProjectText),
@@ -294,8 +298,12 @@ async function runFixtureFlow(token, mode) {
 
   assert.ok(!/未完成占位/.test(docxPlainText), `exported docx (${mode}) must not contain placeholder text`);
   assert.ok(
-    /(夹具|FIXTURE)/i.test(docxPlainText),
-    `exported docx (${mode}) must explicitly mark STUDIO_LLM_FIXTURE / 夹具`
+    /模拟测试稿/.test(docxPlainText) && /不是实际视频还原/.test(docxPlainText),
+    `exported docx (${mode}) must mark 模拟测试稿 / 不是实际视频还原`
+  );
+  assert.ok(
+    !/STUDIO_LLM_FIXTURE/.test(docxPlainText),
+    `exported docx (${mode}) must not expose STUDIO_LLM_FIXTURE`
   );
   assert.ok(
     /(梗概|人物|分场|▲)/.test(docxPlainText),

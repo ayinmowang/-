@@ -88,13 +88,13 @@ export interface FlowOption {
 export const flows: FlowOption[] = [
   {
     kind: 'foreign',
-    title: '国外迭代国外',
+    title: '国外迭代',
     description: '上传海外原稿与锁定集，完成原稿分析、四项配置、主线细纲与双语交付。',
     tag: '迭代改编 · 支持锁集续写',
   },
   {
     kind: 'domestic',
-    title: '国内迭代国外',
+    title: '国内迭代',
     description: '在迭代流程上增加桥段出海四级诊断、世界观/人设/替换三道门与美式幽默精修。',
     tag: '跨文化出海 · 三道门把关',
   },

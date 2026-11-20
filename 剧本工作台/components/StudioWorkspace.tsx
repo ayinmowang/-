@@ -44,8 +44,8 @@ type RightTab = 'chat' | 'skills' | 'rules';
 type ToolModalType = '' | 'inspire' | 'ai-rate' | 'trending' | 'teardown' | 'history';
 
 const KIND_LABELS: Record<Kind, string> = {
-  foreign: '国外迭代国外',
-  domestic: '国内迭代国外',
+  foreign: '国外迭代',
+  domestic: '国内迭代',
   transcribe: '扒剧',
   original: '原创',
 };

@@ -28,6 +28,7 @@ import {
   extractVideoFramesWithCanvas,
 } from '../lib/browser-video-frames';
 import { formatCreatorUploadError } from '../lib/upload-error-text';
+import { countSourceMaterials } from '../lib/source-materials';
 import type {
   CreatorPromptCatalog,
   CreatorTierSummary,
@@ -394,7 +395,7 @@ export default function BreakdownWorkspace() {
   async function handleTransfer(targetKind: 'foreign' | 'domestic') {
     if (!active || busy) return;
     setBusy(true);
-    setBusyLabel(`正在转入「${targetKind === 'foreign' ? '国外迭代国外' : '国内迭代国外'}」创作台…`);
+    setBusyLabel(`正在转入「${targetKind === 'foreign' ? '国外迭代' : '国内迭代'}」创作台…`);
     try {
       const nextProj = await studioApi('/api/studio', {
         operation: 'transfer_iteration',
@@ -681,7 +682,7 @@ export default function BreakdownWorkspace() {
                       </div>
                       <h3 style={{ margin: '0 0 6px', fontSize: 16 }}>{p.title}</h3>
                       <div style={{ fontSize: 12, opacity: 0.68 }}>
-                        {p.attachments.length} 份素材 · {p.total ? `共 ${p.total} 集` : '集数待定'}
+                        {countSourceMaterials(p.attachments)} 份源素材 · {p.total ? `共 ${p.total} 集` : '集数待定'}
                       </div>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 10, borderTop: '1px solid rgba(230,223,211,0.5)' }}>

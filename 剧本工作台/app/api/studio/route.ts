@@ -60,14 +60,22 @@ import {
   createDirectorSseResponse,
   type StudioProjectLike,
 } from '../../../lib/director-generate';
-
+import {
+  countSourceMaterials,
+  getSourceMaterialAttachments,
+  hasUnmappedSourceMaterials,
+  isValidEpisodeNumber,
+  resolveAutoTotalFromSources,
+  uniqueValidSourceEpisodes,
+} from '../../../lib/source-materials';
 
 const KIND_LABELS: Record<Kind, string> = {
-  foreign: '国外迭代国外',
-  domestic: '国内迭代国外',
+  foreign: '国外迭代',
+  domestic: '国内迭代',
   original: '原创',
   transcribe: '扒剧',
 };
+
 
 const VALID_THINKING_LEVELS: readonly ThinkingLevel[] = ['off', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 const VALID_EXECUTION_MODES: readonly ExecutionMode[] = ['auto', 'plan'] as const;
@@ -559,17 +567,16 @@ function buildStationFixtureOutput(params: {
     project.transcribeMode === 'detailed' ||
     /详细|detailed|精修|完整/i.test(`${project.transcribeMode || ''} ${userPrompt}`);
   const title = (project.title || '未命名项目').trim();
-  const hasSubtitle = Boolean(
-    (project.attachments || []).some((a) => /\.(srt|vtt|ass|txt)$/i.test(a.name || ''))
-  );
+  const sourceAttachments = getSourceMaterialAttachments(project.attachments);
+  const hasSubtitle = sourceAttachments.some((a) => /\.(srt|vtt|ass|txt)$/i.test(a.name || ''));
   const sourceNote = hasSubtitle
-    ? '依据已上传字幕/文稿材料提取（STUDIO_LLM_FIXTURE 夹具正文，非真实中转响应）。'
-    : '未提供字幕文本，不编造对白为「已观看」事实；以下为结构化夹具骨架（STUDIO_LLM_FIXTURE，非真实中转/非观看报告）。';
+    ? '依据已上传字幕/文稿材料提取（模拟测试稿，不是实际视频还原）。'
+    : '未提供字幕文本，不编造对白为已观看事实（模拟测试稿，不是实际视频还原）。';
 
   const baseSynopsis = [
     `# ${title} — ${isDetailed ? '详细拉片与结构脚本' : '快速拉片与结构脚本'}`,
     '',
-    `> 夹具正文（STUDIO_LLM_FIXTURE，非真实中转/非观看报告）。${sourceNote}`,
+    `> 模拟测试稿（不是实际视频还原）。${sourceNote}`,
     '',
     '## 一、故事梗概',
     `主角林澈在深夜值班室收到一盘来源不明的旧磁带，被迫在天亮前核对三段互相矛盾的时间线。随着调查推进，他发现录音里缺失的五分钟恰好指向多年前被封存的事故档案，最终在真相公开与保护证人之间作出抉择。`,
@@ -609,13 +616,40 @@ function buildStationFixtureOutput(params: {
     '▲ 天色微亮，灰蓝晨光透进百叶窗。林澈将借阅回执与时间码对照表并排贴在玻璃板上，两份日期完全重合。',
     '▲ 沈岚将铜钥匙放在桌面推向林澈，转身走入走廊阴影。',
     '',
-    '## 四、节奏与交付检查（夹具校验）',
+    '## 四、节奏与交付检查（模拟测试稿校验）',
     '- 站位：' + station,
     '- 档位：' + (isDetailed ? 'detailed（详细）' : 'fast（快速）'),
-    '- 状态：已生成完整结构化正文，可直接用于 DOCX 导出与分镜拆解。',
+    '- 状态：已生成结构化模拟测试稿（不是实际视频还原），可用于 DOCX 导出与分镜拆解。',
   ];
 
-  return [...baseSynopsis, ...(isDetailed ? detailedScenes : fastScenes)].join('\n');
+  const validEpisodes = uniqueValidSourceEpisodes(project.attachments);
+  const episodeSections: string[] = [];
+  if (validEpisodes.length > 0) {
+    episodeSections.push('', '## 五、分集结构脚本（模拟测试稿）');
+    for (const epNum of validEpisodes) {
+      const matchedNames = sourceAttachments
+        .filter((a) => a.episode === epNum)
+        .map((a) => String(a.name || '').trim())
+        .filter(Boolean);
+      const sourceLabel = matchedNames.length > 0 ? matchedNames.join('、') : `第 ${epNum} 集源素材`;
+      episodeSections.push(
+        '',
+        `### 第 ${epNum} 集`,
+        `> 第 ${epNum} 集 · 模拟测试稿（不是实际视频还原），关联源素材：${sourceLabel}。`,
+        `### 第 ${epNum} 场  第 ${epNum} 集核查室  夜  内`,
+        `▲ 第 ${epNum} 集线索节点（0${epNum}:14:08）：林澈核对「${sourceLabel}」对应时间码片段，沈岚递交第 ${epNum} 份档案回执。`,
+        isDetailed
+          ? `▲ 详细动作拆解（第 ${epNum} 集）：镜头由台灯特写推至编号 B-0${epNum} 索引卡，保留声画结构骨架供分镜校对。`
+          : `▲ 快速场次摘要（第 ${epNum} 集）：完成第 ${epNum} 集悬念钩子与线索交接标注。`
+      );
+    }
+  }
+
+  return [
+    ...baseSynopsis,
+    ...(isDetailed ? detailedScenes : fastScenes),
+    ...episodeSections,
+  ].join('\n');
 }
 
 /**
@@ -632,8 +666,8 @@ function buildDirectorSuggestions(kind: Kind, text: string, total: number | null
   }
   if (kind === 'domestic') {
     return [
-      '★ 建议 1（桥段出海置换）：建议将原稿中的中式家长里短/彩礼/当众扇耳光，置换为北美受众熟悉的信托基金冻结、婚前协议（Prenup）或慈善晚宴公开除名。',
-      '建议 2（美式幽默与声线）：上位者（CEO/Alpha）台词保持低压克制，闺蜜与吃瓜路人加入冷面自嘲与 Caught in 4K 实锤反转。',
+      '★ 建议 1（国内下沉市场与人情博弈）：保留并放大国内观众熟悉的家族继承、职场暗战、邻里舆论与熟人社会名利场冲突，让每次打脸都有现实利益落点。',
+      '建议 2（本土短剧强钩子与台词节奏）：前三集内迅速立住阶层反差与当众亮底牌爽点，对白干净利落、情绪直接到位，避免冗长铺垫。',
       '建议 3（三道门推进）：我们先过「世界观 → 人设 → 替换要点」三道门，每道门你点一下确认后再进细纲。',
     ];
   }
@@ -925,10 +959,6 @@ function populateTranscribeWorkspace(p: any, rawOutput: string): void {
   ];
 
   // Parse per-episode blocks or fall back to attachment episodes
-  const videoAtts = (p.attachments || [])
-    .filter((a: any) => /\.(mp4|mov|webm|mkv|avi)$/i.test(String(a.name || '')))
-    .sort((a: any, b: any) => (a.episode || 0) - (b.episode || 0));
-
   const epHeaderRegex = /(?:^|\n)(?:###?\s*)?第\s*0*(\d{1,3})\s*集[^\n]*/g;
   const matches = Array.from(cleanOutput.matchAll(epHeaderRegex));
   const parsedEpMap = new Map<number, string>();
@@ -944,24 +974,22 @@ function populateTranscribeWorkspace(p: any, rawOutput: string): void {
     }
   }
 
+  const validSourceEpisodes = uniqueValidSourceEpisodes(p.attachments);
   const targetEpNums: number[] =
-    videoAtts.length > 0
-      ? Array.from(
-          new Set<number>(
-            videoAtts
-              .map((a: any, idx: number) => (Number.isInteger(a.episode) && a.episode > 0 ? Number(a.episode) : idx + 1))
-          )
-        ).sort((a, b) => a - b)
+    validSourceEpisodes.length > 0
+      ? validSourceEpisodes
       : parsedEpMap.size > 0
       ? Array.from(parsedEpMap.keys()).sort((a, b) => a - b)
-      : [1];
+      : [];
 
   p.episodes = targetEpNums.map((epNum) => ({
     id: `ep-tr-${epNum}`,
     volumeId: p.volumes[0]?.id || 'vol-1',
     episodeNumber: epNum,
     title: `第 ${epNum} 集`,
-    body: parsedEpMap.get(epNum) || cleanOutput || `第 ${epNum} 集扒剧还原正文`,
+    body:
+      parsedEpMap.get(epNum) ||
+      `### 第 ${epNum} 集\n> 模拟测试稿（不是实际视频还原），第 ${epNum} 集结构占位。`,
     locked: false,
     updatedAt: now,
   }));
@@ -2726,26 +2754,26 @@ export async function POST(request: Request) {
       p.thinkingLevel = execControls.thinkingLevel;
       p.executionMode = execControls.executionMode;
 
-      if (
-        p.kind === 'transcribe' &&
-        p.total === null &&
-        p.attachments.length > 0 &&
-        p.attachments.every((a: any) => Number.isInteger(a.episode) && a.episode >= 1)
-      ) {
-        p.total = Math.min(
-          300,
-          Math.max(p.attachments.length, ...p.attachments.map((a: any) => Number(a.episode) || 1))
-        );
+      if (p.kind === 'transcribe' && p.total === null) {
+        const autoTotal = resolveAutoTotalFromSources(p.attachments);
+        if (autoTotal !== null) {
+          p.total = autoTotal;
+        }
       }
+
       if (!p.confirmed) {
         throw new Error('INVALID_INPUT');
       }
       if (
         p.kind === 'transcribe' &&
-        p.attachments.some((a: any) => !a.episode || (p.total !== null && a.episode > p.total))
+        (hasUnmappedSourceMaterials(p.attachments) ||
+          getSourceMaterialAttachments(p.attachments).some(
+            (a) => isValidEpisodeNumber(a.episode) && p.total !== null && a.episode > p.total
+          ))
       ) {
         throw new Error('EPISODE_MAPPING_REQUIRED');
       }
+
       const requiresTotalUpfront = p.kind !== 'original';
       if (
         requiresTotalUpfront &&
@@ -2806,7 +2834,7 @@ export async function POST(request: Request) {
 
         let gptRecap = '';
         if (p.kind === 'transcribe') {
-          gptRecap = `第 1 步已完成：已核对 ${p.attachments.length} 份视频/字幕素材（全剧共 ${p.total ?? 1} 集）。\n👉 请选择「⚡ 快速模式」或「🔍 详细模式」，确认后我将直接为您拆解并产出可下载的 Word (.docx)。`;
+          gptRecap = `第 1 步已完成：已核对 ${countSourceMaterials(p.attachments)} 份视频/字幕源素材（全剧${p.total !== null ? `共 ${p.total} 集` : '集数待定'}）。\n👉 请选择「⚡ 快速模式」或「🔍 详细模式」，确认后我将直接为您拆解并产出可下载的 Word (.docx)。`;
         } else {
           const recapRes = await runGptRecapIfConfigured(p, request);
           if (!recapRes.text) throw new Error(recapRes.error || 'BACKEND_REQUEST_FAILED');
@@ -2942,9 +2970,10 @@ export async function POST(request: Request) {
       const nextProj: any = {
         id: crypto.randomUUID(),
         sourceProjectId: p.id,
-        title: `${p.title}（${KIND_LABELS[targetKind]}）`.slice(0, 200),
+        title: (p.title.endsWith(`（${KIND_LABELS[targetKind]}）`) ? p.title : `${p.title}（${KIND_LABELS[targetKind]}）`).slice(0, 200),
         kind: targetKind,
-        total: p.total,
+        total: resolveAutoTotalFromSources(p.attachments) ?? (uniqueValidSourceEpisodes(p.attachments).length > 0 ? Math.min(300, uniqueValidSourceEpisodes(p.attachments).length) : p.total),
+
         lockedEpisodes: null,
         startEpisode: 1,
         brief: isDelivered
@@ -2977,7 +3006,7 @@ export async function POST(request: Request) {
       message(
         nextProj,
         'director',
-        `已根据你的选择，将扒剧项目「${p.title}」转入「${KIND_LABELS[targetKind]}」新项目，并复用了原有 ${p.attachments.length} 份素材与目录底稿（全剧 ${p.total ?? '待定'} 集）。\n\n【总编剧初步建议】\n${suggestions.map((s) => '• ' + s).join('\n')}\n\n请先核对下方卡片，确认后开始原稿分析${targetKind === 'domestic' ? '与桥段出海四级诊断' : ''}。`
+        `已根据你的选择，将扒剧项目「${p.title}」转入「${KIND_LABELS[targetKind]}」新项目，并复用了原有 ${countSourceMaterials(p.attachments)} 份源素材与目录底稿（全剧 ${nextProj.total ?? '待定'} 集）。\n\n【总编剧初步建议】\n${suggestions.map((s) => '• ' + s).join('\n')}\n\n请先核对下方卡片，确认后开始原稿分析。`
       );
       await bindings()
         .DB.prepare('INSERT INTO studio_projects (id,owner,data,version,updated_at) VALUES (?,?,?,1,?)')
