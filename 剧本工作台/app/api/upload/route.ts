@@ -10,9 +10,12 @@ import {
   saveProject,
   message,
   failure,
-  getMaxUploadBytes,
   sanitizeForClient,
 } from '../../../lib/server';
+import {
+  acquireUploadSlot,
+  getEffectiveUploadLimit,
+} from '../../../lib/upload-guard';
 import type { AttachmentRole, Project } from '../../../lib/types';
 
 const BUCKET_DIR = path.join(process.cwd(), '.data', 'buckets');
@@ -303,7 +306,8 @@ export async function POST(request: Request) {
     let p: Project | null = null;
     if (id) {
       p = await getProject(id, user);
-      const earlyMaxBytes = getMaxUploadBytes(p.kind);
+      // Even "unlimited" UI tiers remain bounded by effective limit, disk reserve, and concurrency slots.
+      const earlyMaxBytes = getEffectiveUploadLimit(p.kind);
       if (
         Number.isFinite(contentLenHeader) &&
         contentLenHeader > 0 &&
@@ -332,7 +336,7 @@ export async function POST(request: Request) {
         throw new Error('INVALID_INPUT');
       }
       if (!p) p = await getProject(id, user);
-      const maxBytes = getMaxUploadBytes(p.kind);
+      const maxBytes = getEffectiveUploadLimit(p.kind);
       const uploadedFile = fileEntry as File;
       const formName = String(formData.get('name') || '').trim();
       name = sanitizeAttachmentName(name || formName || uploadedFile.name || '未命名素材');
@@ -340,32 +344,42 @@ export async function POST(request: Request) {
       validateUploadType(name, fileType, p.kind);
       if (uploadedFile.size > maxBytes) throw new Error('FILE_TOO_LARGE');
 
-      const bucketKey = `${user}/${p.id}/${attId}`;
-      const fileStream = typeof uploadedFile.stream === 'function' ? uploadedFile.stream() : null;
-      if (!hasCustomBucketBinding() && fileStream) {
-        uploadedBytes = await streamToDiskWithLimit(fileStream, resolveLocalBucketPath(bucketKey), maxBytes);
-      } else {
-        const ab = await uploadedFile.arrayBuffer();
-        if (ab.byteLength > maxBytes) throw new Error('FILE_TOO_LARGE');
-        uploadedBytes = ab.byteLength;
-        await bindings().BUCKET.put(bucketKey, ab);
+      const releaseSlot = await acquireUploadSlot();
+      try {
+        const bucketKey = `${user}/${p.id}/${attId}`;
+        const fileStream = typeof uploadedFile.stream === 'function' ? uploadedFile.stream() : null;
+        if (!hasCustomBucketBinding() && fileStream) {
+          uploadedBytes = await streamToDiskWithLimit(fileStream, resolveLocalBucketPath(bucketKey), maxBytes);
+        } else {
+          const ab = await uploadedFile.arrayBuffer();
+          if (ab.byteLength > maxBytes) throw new Error('FILE_TOO_LARGE');
+          uploadedBytes = ab.byteLength;
+          await bindings().BUCKET.put(bucketKey, ab);
+        }
+      } finally {
+        releaseSlot();
       }
     } else {
       if (!id) throw new Error('INVALID_INPUT');
       if (!p) p = await getProject(id, user);
-      const maxBytes = getMaxUploadBytes(p.kind);
+      const maxBytes = getEffectiveUploadLimit(p.kind);
       if (Number.isFinite(contentLenHeader) && contentLenHeader > maxBytes) {
         throw new Error('FILE_TOO_LARGE');
       }
       name = sanitizeAttachmentName(name || '未命名素材');
       validateUploadType(name, fileType, p.kind);
-      const bucketKey = `${user}/${p.id}/${attId}`;
-      if (!hasCustomBucketBinding()) {
-        uploadedBytes = await streamToDiskWithLimit(request.body, resolveLocalBucketPath(bucketKey), maxBytes);
-      } else {
-        const bytes = await readStreamToBufferWithLimit(request.body, maxBytes);
-        uploadedBytes = bytes.byteLength;
-        await bindings().BUCKET.put(bucketKey, bytes);
+      const releaseSlot = await acquireUploadSlot();
+      try {
+        const bucketKey = `${user}/${p.id}/${attId}`;
+        if (!hasCustomBucketBinding()) {
+          uploadedBytes = await streamToDiskWithLimit(request.body, resolveLocalBucketPath(bucketKey), maxBytes);
+        } else {
+          const bytes = await readStreamToBufferWithLimit(request.body, maxBytes);
+          uploadedBytes = bytes.byteLength;
+          await bindings().BUCKET.put(bucketKey, bytes);
+        }
+      } finally {
+        releaseSlot();
       }
     }
 

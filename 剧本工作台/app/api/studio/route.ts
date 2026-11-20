@@ -28,6 +28,7 @@ import {
   normalizeRelayModelName,
   type MultimodalAttachmentInput,
 } from '../../../lib/server';
+import { isFfmpegDisabled } from '../../../lib/upload-guard';
 import type {
   Project,
   Kind,
@@ -1207,6 +1208,7 @@ export async function GET(request: Request) {
           themePreference,
           maxUploadBytes,
           maxTranscribeUploadBytes,
+          ffmpegAvailable: !isFfmpegDisabled(),
         })
       );
     }
@@ -1220,6 +1222,7 @@ export async function GET(request: Request) {
         testChannelAvailable: hasGptKey(),
         maxUploadBytes,
         maxTranscribeUploadBytes,
+        ffmpegAvailable: !isFfmpegDisabled(),
         currentAccount: activeAcc ? toPublicProfile(activeAcc) : null,
         globalRules,
         themePreference,
