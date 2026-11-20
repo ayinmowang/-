@@ -27,6 +27,7 @@ import {
   describeFallbackLimits,
   extractVideoFramesWithCanvas,
 } from '../lib/browser-video-frames';
+import { formatCreatorUploadError } from '../lib/upload-error-text';
 import type {
   CreatorPromptCatalog,
   CreatorTierSummary,
@@ -227,7 +228,7 @@ export default function BreakdownWorkspace() {
               },
             );
             const fData = await fr.json();
-            if (!fr.ok) throw new Error(fData.message || fData.error || 'KEYFRAME_UPLOAD_FAILED');
+            if (!fr.ok) throw new Error(formatCreatorUploadError(fData.message || fData.error || 'KEYFRAME_UPLOAD_FAILED'));
             cur = fData;
             syncActiveProject(cur);
           }
@@ -246,7 +247,7 @@ export default function BreakdownWorkspace() {
           signal: ctrl.signal,
         });
         const data = await r.json();
-        if (!r.ok) throw new Error(data.message || data.error || 'UPLOAD_FAILED');
+        if (!r.ok) throw new Error(formatCreatorUploadError(data.message || data.error || 'UPLOAD_FAILED'));
         cur = data;
         syncActiveProject(cur);
       }
@@ -308,7 +309,7 @@ export default function BreakdownWorkspace() {
         if (toolRes.project) syncActiveProject(toolRes.project);
       }
     } catch (err: any) {
-      setError(err.message || '建立任务失败');
+      setError(formatCreatorUploadError(err.message || '建立任务失败'));
     } finally {
       setBusy(false);
       setBusyLabel('');
@@ -934,7 +935,7 @@ export default function BreakdownWorkspace() {
                   await uploadToProject(active, list);
                   setToast(`已添加 ${list.length} 份素材`);
                 } catch (err: any) {
-                  setError(err.message || '上传失败');
+                  setError(formatCreatorUploadError(err.message || '上传失败'));
                 } finally {
                   setBusy(false);
                   setBusyLabel('');

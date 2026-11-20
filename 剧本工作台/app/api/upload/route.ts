@@ -38,6 +38,10 @@ const TRANSCRIBE_ALLOWED_EXTS = new Set([
   'docx',
   'txt',
   'md',
+  'jpg',
+  'jpeg',
+  'png',
+  'webp',
 ]);
 
 function sanitizeAttachmentName(rawName: string): string {
