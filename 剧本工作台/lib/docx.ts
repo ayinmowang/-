@@ -556,7 +556,7 @@ export function projectToDocxInput(project: Project): DocxDocumentInput {
     outputs.synopsis?.content ||
     outputs.recap?.content ||
     project.brief ||
-    '（待生成梗概）';
+    '（未完成占位：待生成梗概）';
 
   let characters: string | undefined;
   let characterTable: DocxTableInput | undefined;
@@ -569,7 +569,7 @@ export function projectToDocxInput(project: Project): DocxDocumentInput {
       ]),
     };
   } else {
-    characters = outputs.characters?.content || '（待生成人物小传）';
+    characters = outputs.characters?.content || '（未完成占位：待生成人物小传）';
   }
 
   const sections: DocxSectionInput[] = [];
@@ -627,7 +627,7 @@ export function projectToDocxInput(project: Project): DocxDocumentInput {
       outputs.outline?.content ||
       outputs.synopsis?.content ||
       project.brief ||
-      '（待生成剧本正文）';
+      '（未完成占位：待生成剧本正文）';
     sections.push({
       heading: '剧本正文',
       body: scriptBody,

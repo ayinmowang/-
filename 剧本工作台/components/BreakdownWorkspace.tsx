@@ -996,55 +996,70 @@ export default function BreakdownWorkspace() {
             }}
           >
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-              <a
-                href={`/api/upload?id=${active.id}&export=docx`}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  padding: '8px 16px',
-                  borderRadius: 999,
-                  background: '#8C3B2B',
-                  color: '#fff',
-                  textDecoration: 'none',
-                  fontWeight: 700,
-                  fontSize: 13,
-                }}
-              >
-                <Download size={14} /> 下载规范 Word (.docx)
-              </a>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => handleTransfer('foreign')}
-                style={{
-                  padding: '7px 12px',
-                  borderRadius: 999,
-                  border: '1px solid #d8cfc0',
-                  background: 'var(--warm-card, #fff)',
-                  fontSize: 12,
-                  cursor: 'pointer',
-                  fontWeight: 600,
-                }}
-              >
-                转入「国外迭代」→
-              </button>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => handleTransfer('domestic')}
-                style={{
-                  padding: '7px 12px',
-                  borderRadius: 999,
-                  border: '1px solid #d8cfc0',
-                  background: 'var(--warm-card, #fff)',
-                  fontSize: 12,
-                  cursor: 'pointer',
-                  fontWeight: 600,
-                }}
-              >
-                转入「国内迭代」→
-              </button>
+              {(() => {
+                const isDelivered =
+                  active.remote?.status === 'delivered' ||
+                  active.remote?.stage?.key === 'delivery';
+                return (
+                  <>
+                    <a
+                      href={`/api/upload?id=${active.id}&export=docx`}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        padding: '8px 16px',
+                        borderRadius: 999,
+                        border: isDelivered ? 'none' : '1px dashed #8C3B2B',
+                        background: isDelivered ? '#8C3B2B' : '#f7efe8',
+                        color: isDelivered ? '#fff' : '#8C3B2B',
+                        textDecoration: 'none',
+                        fontWeight: 700,
+                        fontSize: 13,
+                      }}
+                    >
+                      <Download size={14} />{' '}
+                      {isDelivered ? '下载规范 Word (.docx)' : '下载未完成占位稿 (.docx)'}
+                    </a>
+                    <button
+                      type="button"
+                      disabled={busy || !isDelivered}
+                      title={isDelivered ? undefined : '扒剧项目交付后才可转入'}
+                      onClick={() => handleTransfer('foreign')}
+                      style={{
+                        padding: '7px 12px',
+                        borderRadius: 999,
+                        border: '1px solid #d8cfc0',
+                        background: 'var(--warm-card, #fff)',
+                        fontSize: 12,
+                        cursor: busy || !isDelivered ? 'not-allowed' : 'pointer',
+                        opacity: isDelivered ? 1 : 0.55,
+                        fontWeight: 600,
+                      }}
+                    >
+                      转入「国外迭代」→
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy || !isDelivered}
+                      title={isDelivered ? undefined : '扒剧项目交付后才可转入'}
+                      onClick={() => handleTransfer('domestic')}
+                      style={{
+                        padding: '7px 12px',
+                        borderRadius: 999,
+                        border: '1px solid #d8cfc0',
+                        background: 'var(--warm-card, #fff)',
+                        fontSize: 12,
+                        cursor: busy || !isDelivered ? 'not-allowed' : 'pointer',
+                        opacity: isDelivered ? 1 : 0.55,
+                        fontWeight: 600,
+                      }}
+                    >
+                      转入「国内迭代」→
+                    </button>
+                  </>
+                );
+              })()}
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <button

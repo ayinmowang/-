@@ -2782,6 +2782,44 @@ export async function POST(request: Request) {
       if (p.kind !== 'transcribe' || !['foreign', 'domestic'].includes(targetKind)) {
         throw new Error('INVALID_INPUT');
       }
+      const blockedExts = new Set(['exe', 'bat', 'cmd', 'dll', 'com', 'msi']);
+      const blockedMimes = new Set([
+        'application/x-msdownload',
+        'application/x-msdos-program',
+        'application/x-executable',
+      ]);
+      const allowedTranscribeExts = new Set([
+        'mp4',
+        'mov',
+        'webm',
+        'mkv',
+        'avi',
+        'srt',
+        'ass',
+        'vtt',
+        'docx',
+        'txt',
+        'md',
+      ]);
+      const sanitizeAttachmentName = (raw: unknown): string => {
+        const cleaned = String(raw || '')
+          .replace(/[\u0000-\u001f\u007f]/g, '')
+          .replace(/\\/g, '/');
+        const base = cleaned.split('/').pop()?.replace(/^\.+/, '').trim() || '';
+        return base || 'attachment';
+      };
+
+      const safeAttachments = (Array.isArray(p.attachments) ? p.attachments : [])
+        .filter((a: any) => {
+          const rawName = sanitizeAttachmentName(a?.name);
+          const ext = rawName.includes('.') ? rawName.split('.').pop()!.toLowerCase() : '';
+          const mime = String(a?.type || a?.fileType || '').toLowerCase().split(';')[0].trim();
+          if (blockedExts.has(ext) || blockedMimes.has(mime)) return false;
+          if (!allowedTranscribeExts.has(ext)) return false;
+          return true;
+        })
+        .map((a: any) => ({ ...a, name: sanitizeAttachmentName(a?.name), role: 'source' }));
+      const isDelivered = p.remote?.status === 'delivered' || p.remote?.stage?.key === 'delivery';
       const now = new Date().toISOString();
       const nextProj: any = {
         id: crypto.randomUUID(),
@@ -2791,11 +2829,15 @@ export async function POST(request: Request) {
         total: p.total,
         lockedEpisodes: null,
         startEpisode: 1,
-        brief: `由扒剧项目「${p.title}」主动转入${KIND_LABELS[targetKind]}流程。${p.brief ? '\n原说明：' + p.brief : ''}`,
+        brief: isDelivered
+          ? `由扒剧项目「${p.title}」主动转入${KIND_LABELS[targetKind]}流程。${p.brief ? '\n原说明：' + p.brief : ''}`
+          : `【未完成占位转入】由尚未交付的扒剧项目「${p.title}」转入${KIND_LABELS[targetKind]}流程，当前底稿与素材仍为未完成占位状态。${p.brief ? '\n原说明：' + p.brief : ''}`,
         messages: [],
-        attachments: p.attachments.map((a: any) => ({ ...a, role: 'source' })),
+        attachments: safeAttachments,
         requirements: [
-          `[扒剧转入 · 全剧适用] 复用扒剧项目「${p.title}」已核对的 ${p.attachments.length} 份素材与还原底稿`,
+          isDelivered
+            ? `[扒剧转入 · 全剧适用] 复用已交付扒剧项目「${p.title}」的 ${safeAttachments.length} 份素材与还原底稿`
+            : `[未完成占位转入 · 全剧适用] 源扒剧项目「${p.title}」尚未交付，暂挂接 ${safeAttachments.length} 份基础素材与未完成占位底稿，待还原完成后补齐`,
         ],
         promptSelections: {},
         volumes: Array.isArray(p.volumes) ? p.volumes.map((v: any) => ({ ...v })) : [],

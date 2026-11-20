@@ -17,6 +17,45 @@ import type { AttachmentRole, Project } from '../../../lib/types';
 
 const BUCKET_DIR = path.join(process.cwd(), '.data', 'buckets');
 
+const DANGEROUS_EXTS = new Set(['exe', 'bat', 'cmd', 'dll', 'com', 'msi']);
+const DANGEROUS_MIMES = new Set([
+  'application/x-msdownload',
+  'application/x-msdos-program',
+  'application/x-executable',
+]);
+const TRANSCRIBE_ALLOWED_EXTS = new Set([
+  'mp4',
+  'mov',
+  'webm',
+  'mkv',
+  'avi',
+  'srt',
+  'ass',
+  'vtt',
+  'docx',
+  'txt',
+  'md',
+]);
+
+function sanitizeAttachmentName(rawName: string): string {
+  const cleaned = String(rawName || '')
+    .replace(/\0/g, '')
+    .replace(/[\x00-\x1f\x7f]/g, '');
+  const base = path.posix.basename(cleaned.replace(/\\/g, '/')).replace(/^\.+/, '');
+  return base || '未命名素材';
+}
+
+function validateUploadType(fileName: string, mimeType: string, projectKind?: string): void {
+  const ext = path.extname(fileName).toLowerCase().replace(/^\./, '');
+  const normalizedMime = String(mimeType || '').toLowerCase().split(';')[0].trim();
+  if (DANGEROUS_EXTS.has(ext) || DANGEROUS_MIMES.has(normalizedMime)) {
+    throw new Error('FILE_TYPE_REJECTED');
+  }
+  if (projectKind === 'transcribe' && !TRANSCRIBE_ALLOWED_EXTS.has(ext)) {
+    throw new Error('FILE_TYPE_REJECTED');
+  }
+}
+
 function resolveLocalBucketPath(key: string): string {
   const safeName = String(key || '')
     .replace(/[^a-zA-Z0-9._-]/g, '_')
@@ -296,8 +335,9 @@ export async function POST(request: Request) {
       const maxBytes = getMaxUploadBytes(p.kind);
       const uploadedFile = fileEntry as File;
       const formName = String(formData.get('name') || '').trim();
-      name = name || formName || uploadedFile.name || '未命名素材';
+      name = sanitizeAttachmentName(name || formName || uploadedFile.name || '未命名素材');
       fileType = uploadedFile.type || 'application/octet-stream';
+      validateUploadType(name, fileType, p.kind);
       if (uploadedFile.size > maxBytes) throw new Error('FILE_TOO_LARGE');
 
       const bucketKey = `${user}/${p.id}/${attId}`;
@@ -317,7 +357,8 @@ export async function POST(request: Request) {
       if (Number.isFinite(contentLenHeader) && contentLenHeader > maxBytes) {
         throw new Error('FILE_TOO_LARGE');
       }
-      name = name || '未命名素材';
+      name = sanitizeAttachmentName(name || '未命名素材');
+      validateUploadType(name, fileType, p.kind);
       const bucketKey = `${user}/${p.id}/${attId}`;
       if (!hasCustomBucketBinding()) {
         uploadedBytes = await streamToDiskWithLimit(request.body, resolveLocalBucketPath(bucketKey), maxBytes);
