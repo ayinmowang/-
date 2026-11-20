@@ -269,6 +269,126 @@ try {
     assert.equal(code, 'FILE_TYPE_REJECTED', `拒绝 ${badName} 响应错误码应仍为 FILE_TYPE_REJECTED`);
   }
   console.log('[step3-c2-keyframe-upload] PASS: 危险扩展与非白名单扩展拒绝契约通过');
+
+  {
+  const createRes2 = await fetch(`${BASE_URL}/api/studio`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-studio-token': token },
+    body: JSON.stringify({
+      operation: 'create',
+      kind: 'transcribe',
+      title: 'C2-Episode-Idempotent-Contract',
+    }),
+  });
+  assert.equal(createRes2.status, 201, `预期创建项目返回 201，实际 ${createRes2.status}`);
+  const created2 = await createRes2.json();
+  const newId = created2.project?.id || created2.id || '';
+  assert.ok(newId, '创建项目返回缺少项目 id');
+
+  const jpegBytesA = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0xff, 0xd9]);
+  const jpegBytesB = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x02, 0xff, 0xd9]);
+  const mp4Bytes = Buffer.from([0x00, 0x00, 0x00, 0x14, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0x00, 0x00, 0x02, 0x00, 0x69, 0x73, 0x6f, 0x6d]);
+
+  const uploadRaw = async (fileName, bytes, contentType, role) => {
+    const roleParam = role ? `&role=${encodeURIComponent(role)}` : '';
+    const res = await fetch(
+      `${BASE_URL}/api/upload?id=${encodeURIComponent(newId)}&name=${encodeURIComponent(fileName)}${roleParam}`,
+      {
+        method: 'POST',
+        headers: { 'x-studio-token': token, 'Content-Type': contentType },
+        body: bytes,
+      }
+    );
+    assert.ok(res.status >= 200 && res.status < 300, `上传 ${fileName} 预期 2xx，实际 ${res.status}`);
+    return res.json();
+  };
+
+  const fetchAttachments = async () => {
+    const res = await fetch(`${BASE_URL}/api/studio?id=${encodeURIComponent(newId)}`, {
+      method: 'GET',
+      headers: { 'x-studio-token': token },
+    });
+    assert.equal(res.status, 200, `获取详情预期 200，实际 ${res.status}`);
+    const detail = await res.json();
+    return detail.project?.attachments || detail.attachments || [];
+  };
+
+  const kf1Name = '女繼承人和她的怪物王子_第01集-kf-01-0ds.jpg';
+  const kf2Name = '女繼承人和她的怪物王子_第01集-kf-02-10ds.jpg';
+  const srcEp1Name = '女繼承人和她的怪物王子_第01集.mp4';
+
+  await uploadRaw(kf1Name, jpegBytesA, 'image/jpeg', 'setting');
+  await uploadRaw(kf2Name, jpegBytesA, 'image/jpeg', 'setting');
+  await uploadRaw(srcEp1Name, mp4Bytes, 'video/mp4');
+
+  let attachments = await fetchAttachments();
+  const kf1Att = attachments.find((a) => a.name === kf1Name);
+  const kf2Att = attachments.find((a) => a.name === kf2Name);
+  const srcEp1Att = attachments.find((a) => a.name === srcEp1Name);
+  assert.ok(kf1Att && kf2Att && srcEp1Att, '进程内/HTTP 契约：第01集三份附件均应归档');
+  assert.equal(kf1Att.episode, 1, `进程内/HTTP 契约：${kf1Name} episode 应为 1`);
+  assert.equal(kf2Att.episode, 1, `进程内/HTTP 契约：${kf2Name} episode 应为 1`);
+  assert.equal(srcEp1Att.episode, 1, `进程内/HTTP 契约：${srcEp1Name} episode 应为 1`);
+  const originalKf1Id = kf1Att.id;
+  assert.ok(originalKf1Id, '首帧附件应有 id');
+
+  const stressKfName = '压力样本_非真实剧集_大于30MB-kf-01-0ds.jpg';
+  const stressSrcName = '压力样本_非真实剧集_大于30MB.mp4';
+  const clipKfName = 'clip-kf-02-0ds.jpg';
+
+  await uploadRaw(stressKfName, jpegBytesA, 'image/jpeg', 'setting');
+  await uploadRaw(stressSrcName, mp4Bytes, 'video/mp4');
+  await uploadRaw(clipKfName, jpegBytesA, 'image/jpeg', 'setting');
+
+  attachments = await fetchAttachments();
+  for (const name of [stressKfName, stressSrcName, clipKfName]) {
+    const att = attachments.find((a) => a.name === name);
+    assert.ok(att, `进程内/HTTP 契约：未找到附件 ${name}`);
+    assert.equal(
+      att.episode ?? null,
+      null,
+      `进程内/HTTP 契约：${name} 不得默认或误判 episode，实际 ${att.episode}`
+    );
+  }
+
+  const countBeforeIdempotent = attachments.length;
+  await uploadRaw(kf1Name, jpegBytesA, 'image/jpeg', 'setting');
+  attachments = await fetchAttachments();
+  assert.equal(
+    attachments.length,
+    countBeforeIdempotent,
+    '进程内/HTTP 契约（不是浏览器验收）：同名同字节重复上传附件数不应增加'
+  );
+  assert.ok(
+    attachments.some((a) => a.id === originalKf1Id),
+    '进程内/HTTP 契约（不是浏览器验收）：同名同字节重复上传后原 id 应仍在'
+  );
+
+  await uploadRaw(kf1Name, jpegBytesB, 'image/jpeg', 'setting');
+  attachments = await fetchAttachments();
+  assert.equal(
+    attachments.length,
+    countBeforeIdempotent + 1,
+    '进程内/HTTP 契约（不是浏览器验收）：同名不同字节上传附件数应 +1'
+  );
+  assert.ok(
+    attachments.some((a) => a.id === originalKf1Id),
+    '进程内/HTTP 契约（不是浏览器验收）：同名不同字节上传后旧 id 应仍在'
+  );
+
+  const bareEpName = 'EP01.mp4';
+  await uploadRaw(bareEpName, mp4Bytes, 'video/mp4');
+  attachments = await fetchAttachments();
+  const bareEpAtt = attachments.find((a) => a.name === bareEpName);
+  assert.ok(bareEpAtt, `进程内/HTTP 契约：未找到附件 ${bareEpName}`);
+  assert.equal(
+    bareEpAtt.episode ?? null,
+    null,
+    `进程内/HTTP 契约（不是浏览器验收）：已有第01集前提下 ${bareEpName} episode 应为 undefined/null，实际 ${bareEpAtt.episode}`
+  );
+
+  console.log('[step3-c2-keyframe-upload] PASS: 源集号继承与同名同内容幂等复用契约通过（进程内/HTTP 契约，不是浏览器验收）');
+  }
 } finally {
   if (projectId) {
     try {

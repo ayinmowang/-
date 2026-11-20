@@ -2277,7 +2277,10 @@ export async function POST(request: Request) {
       ) {
         throw new Error('INVALID_INPUT');
       }
-      if (p.attachments.some((a: any) => a.id !== attachment.id && a.episode === episode)) {
+      if (
+        attachment.role === 'source' &&
+        p.attachments.some((a: any) => a.id !== attachment.id && a.role === 'source' && a.episode === episode)
+      ) {
         throw new Error('EPISODE_ALREADY_USED');
       }
       attachment.episode = episode;

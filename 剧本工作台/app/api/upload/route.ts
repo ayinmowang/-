@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -387,16 +388,74 @@ export async function POST(request: Request) {
       }
     }
 
-    let episode = p.kind === 'transcribe' ? detectEpisodeFromName(name) : undefined;
-    // Prevent duplicate auto-assigned episode numbers
-    if (episode !== undefined && p.attachments.some((a) => a.episode === episode)) {
+    const role = explicitRole || detectRoleFromName(name, p.kind);
+
+    const sameNameAttachments = p.attachments.filter((a) => a.name === name);
+    if (sameNameAttachments.length > 0) {
+      const currentKey = `${user}/${p.id}/${attId}`;
+      const computeObjectHash = async (objectKey: string): Promise<string> => {
+        if (hasCustomBucketBinding()) {
+          const obj = await bindings().BUCKET.get(objectKey);
+          if (!obj) throw new Error('missing bucket object');
+          const ab = await obj.arrayBuffer();
+          return createHash('sha256').update(new Uint8Array(ab)).digest('hex');
+        }
+        const fileBuf = await fs.promises.readFile(resolveLocalBucketPath(objectKey));
+        return createHash('sha256').update(fileBuf).digest('hex');
+      };
+
+      let isDuplicate = false;
+      try {
+        const currentHash = await computeObjectHash(currentKey);
+        for (const existing of sameNameAttachments) {
+          try {
+            const existingHash = await computeObjectHash(`${user}/${p.id}/${existing.id}`);
+            if (existingHash === currentHash) {
+              isDuplicate = true;
+              break;
+            }
+          } catch {
+            // Ignore single unreadable archived object; treat as non-duplicate
+          }
+        }
+      } catch {
+        isDuplicate = false;
+      }
+
+      if (isDuplicate) {
+        try {
+          if (hasCustomBucketBinding()) {
+            await bindings().BUCKET.delete(currentKey);
+          } else {
+            await fs.promises.unlink(resolveLocalBucketPath(currentKey));
+          }
+        } catch {
+          // Best-effort cleanup of unreferenced duplicate object
+        }
+        return Response.json(p);
+      }
+    }
+
+    let episodeName = name;
+    if (p.kind === 'transcribe') {
+      const ext = path.extname(name);
+      const base = ext ? name.slice(0, -ext.length) : name;
+      const strippedBase = base.replace(/-kf-\d+-\d+ds$/i, '');
+      episodeName = `${strippedBase}${ext}`;
+    }
+
+    let episode = p.kind === 'transcribe' ? detectEpisodeFromName(episodeName) : undefined;
+    // Prevent duplicate auto-assigned episode numbers among source attachments
+    if (
+      episode !== undefined &&
+      role === 'source' &&
+      p.attachments.some((a) => a.role === 'source' && a.episode === episode)
+    ) {
       episode = undefined;
     }
     if (episode !== undefined && p.total !== null && episode > p.total) {
       episode = undefined;
     }
-
-    const role = explicitRole || detectRoleFromName(name, p.kind);
     const attachment = {
       id: attId,
       name,

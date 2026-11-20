@@ -172,6 +172,7 @@ export default function BreakdownWorkspace() {
     let cur = proj;
     const ctrl = new AbortController();
     setUploadAbortCtrl(ctrl);
+    setError('');
     const hasSubtitleInBatch = files.some((item) => /\.(srt|vtt|ass|txt)$/i.test(item.name));
     const capBytes = typeof maxUploadBytes === 'number' && maxUploadBytes > 0 ? maxUploadBytes : MULTIMODAL_VIDEO_CAP_BYTES;
 
@@ -933,6 +934,7 @@ export default function BreakdownWorkspace() {
                 setBusy(true);
                 try {
                   await uploadToProject(active, list);
+                  setError('');
                   setToast(`已添加 ${list.length} 份素材`);
                 } catch (err: any) {
                   setError(formatCreatorUploadError(err.message || '上传失败'));
