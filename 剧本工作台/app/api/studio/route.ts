@@ -68,7 +68,10 @@ import {
   type StudioProjectLike,
 } from '../../../lib/director-generate';
 import {
+  buildTranscribeDeliveryCopy,
   countSourceMaterials,
+  describeSourceMaterials,
+  describeTranscribePromptSource,
   getSourceMaterialAttachments,
   hasUnmappedSourceMaterials,
   isValidEpisodeNumber,
@@ -1379,7 +1382,7 @@ export async function POST(request: Request) {
 
       const stepGuideByKind: Record<Kind, string> = {
         transcribe:
-          '第一步：请先核对下方视频素材的集号（或继续上传视频），核对无误后点击下方按钮进入「第 2 步：选择扒剧模式（快速/详细）」。',
+          '第一步：请先核对下方源素材的集号（或继续上传视频、字幕或文稿），核对无误后点击下方按钮进入「第 2 步：选择扒剧模式（快速/详细）」。',
         foreign:
           '第一步：请核对下方的集数与锁定范围，确认无误后点击按钮启动「原稿分析与情绪曲线对位」。',
         domestic:
@@ -2654,7 +2657,7 @@ export async function POST(request: Request) {
                   station: 'vision',
                   account: acc,
                   extraKeyframes,
-                  userPrompt: `请直接拆解短剧视频/字幕素材（${epLabel}，模式：${
+                  userPrompt: `${describeTranscribePromptSource(p.attachments).lead}（${epLabel}，模式：${
                     p.transcribeMode === 'detailed'
                       ? '详细模式（逐格拆解画面动作与台词）'
                       : '快速模式（整集还原场次、动作与台词）'
@@ -2677,7 +2680,7 @@ export async function POST(request: Request) {
                 station: 'vision',
                 account: acc,
                 extraKeyframes,
-                userPrompt: `请直接观看并拆解本次上传的短剧视频/字幕素材（${epListDesc}，模式：${
+                userPrompt: `${describeTranscribePromptSource(p.attachments).lead}（${epListDesc}，模式：${
                   p.transcribeMode === 'detailed'
                     ? '详细模式（每秒一帧逐格拆解画面动作与台词）'
                     : '快速模式（按整集还原场次、动作与台词并抽查）'
@@ -2697,10 +2700,16 @@ export async function POST(request: Request) {
 
             const epCount = Array.isArray(p.episodes) ? p.episodes.length : 1;
             const modeLabel = p.transcribeMode === 'detailed' ? '详细模式' : '快速模式';
+            const deliveryCopy = buildTranscribeDeliveryCopy({
+              episodeCount: epCount,
+              modeLabel,
+              synopsisContent: p.remote?.outputs?.synopsis?.content || '',
+              isFixture: isLlmFixture(),
+            });
             message(
               p,
               'director',
-              `老板，${epCount} 集素材已按「${modeLabel}」全部扒完！人物表、梗概和分集剧本已经归档到左侧目录，真 Word（.docx）文件也打包好了，您可以直接点下方下载或一键转入创作台继续改写。`,
+              deliveryCopy.directorText,
               {
                 file: {
                   name: `${p.title}-完整剧本.docx`,
@@ -2717,7 +2726,7 @@ export async function POST(request: Request) {
                 file: {
                   name: `${p.title}-完整剧本.docx`,
                   url: `/api/upload?id=${p.id}&export=docx`,
-                  description: '含人物锚定表、剧情梗概与分集正文',
+                  description: deliveryCopy.fileDescription,
                 },
               }
             );
@@ -2941,7 +2950,7 @@ export async function POST(request: Request) {
 
         let gptRecap = '';
         if (p.kind === 'transcribe') {
-          gptRecap = `第 1 步已完成：已核对 ${countSourceMaterials(p.attachments)} 份视频/字幕源素材（全剧${p.total !== null ? `共 ${p.total} 集` : '集数待定'}）。\n👉 请选择「⚡ 快速模式」或「🔍 详细模式」，确认后我将直接为您拆解并产出可下载的 Word (.docx)。`;
+          gptRecap = `第 1 步已完成：已核对 ${describeSourceMaterials(p.attachments)}（全剧${p.total !== null ? `共 ${p.total} 集` : '集数待定'}）。\n👉 请选择「⚡ 快速模式」或「🔍 详细模式」，确认后我将直接为您拆解并产出可下载的 Word (.docx)。`;
         } else {
           const recapRes = await runGptRecapIfConfigured(p, request);
           if (!recapRes.text) throw new Error(recapRes.error || 'BACKEND_REQUEST_FAILED');
