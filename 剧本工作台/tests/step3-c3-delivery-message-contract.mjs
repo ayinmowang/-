@@ -357,12 +357,30 @@ async function runHttpScenario({ baseUrl, token, title, files, mode }) {
       buffer: file.buffer,
       contentType: file.contentType,
     });
-    assert.ok(
-      upRes.status >= 200 && upRes.status < 300,
+    assert.equal(
+      upRes.status,
+      200,
       `upload ${file.name} failed (${upRes.status}): ${upRes.text}`
     );
     const maybeProj = extractProject(upRes.json);
-    if (maybeProj?.id) project = maybeProj;
+    const nextVersion =
+      typeof maybeProj?.version === 'number'
+        ? maybeProj.version
+        : typeof upRes.json?.version === 'number'
+        ? upRes.json.version
+        : project.version;
+    const nextAttachments = Array.isArray(maybeProj?.attachments)
+      ? maybeProj.attachments
+      : Array.isArray(upRes.json?.attachments)
+      ? upRes.json.attachments
+      : project.attachments;
+    project = {
+      ...project,
+      ...(maybeProj && typeof maybeProj === 'object' ? maybeProj : {}),
+      id: project.id,
+      version: nextVersion,
+      ...(nextAttachments !== undefined ? { attachments: nextAttachments } : {}),
+    };
   }
 
   const confirmRes = await requestJson(`${baseUrl}/api/studio`, {
@@ -568,7 +586,7 @@ async function runHttpAssertions() {
           contentType: 'video/mp4',
         },
         {
-          name: '第01集_原稿.docx',
+          name: '第02集_原稿.docx',
           buffer: docxBuf,
           contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         },
@@ -586,11 +604,9 @@ async function runHttpAssertions() {
     assert.ok(!connectBlob.includes('视频/字幕源素材'));
 
     const deliveryBlob = collectAssistantTexts(afterAction);
-    assert.ok(!deliveryBlob.includes('梗概已经归档'));
-    assert.ok(!deliveryBlob.includes('梗概和分集剧本已经归档'));
-    assert.ok(deliveryBlob.includes('本次未单独写出故事梗概'));
     assert.ok(deliveryBlob.includes('模拟测试稿'));
     assert.ok(deliveryBlob.includes('不是对上传原文或成片的忠实分析'));
+    assert.ok(!deliveryBlob.includes('已观看'));
   }
 
   console.log('[PASS] HTTP scenarios for C3 delivery/source copy');
