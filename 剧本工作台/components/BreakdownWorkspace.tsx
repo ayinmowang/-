@@ -982,12 +982,12 @@ export default function BreakdownWorkspace() {
       fullBleed
     >
       <div
-        className="v3-three-pane"
+        className="v3-three-pane breakdown-three-pane"
         style={{
           width: '100%',
           display: 'grid',
           gridTemplateColumns: '240px minmax(0, 1fr) 360px',
-          height: 'calc(100vh - 58px)',
+          height: 'calc(100dvh - 60px)',
           overflow: 'hidden',
         }}
       >
@@ -1001,7 +1001,7 @@ export default function BreakdownWorkspace() {
             overflow: 'hidden',
           }}
         >
-          <div style={{ padding: '12px', borderBottom: '1px solid var(--warm-border, #e6dfd3)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'relative' }}>
+          <div style={{ padding: '10px', borderBottom: '1px solid var(--warm-border, #e6dfd3)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, position: 'relative' }}>
             <button
               type="button"
               onClick={() => setLeftDropOpen((o) => !o)}
@@ -1009,13 +1009,15 @@ export default function BreakdownWorkspace() {
                 display: 'inline-flex',
                 alignItems: 'center',
                 gap: 6,
-                padding: '6px 12px',
+                padding: '5px 10px',
                 borderRadius: 999,
                 border: '1px solid #d8cfc0',
                 background: 'var(--warm-card, #fff)',
-                fontSize: 13,
+                fontSize: 12.5,
                 fontWeight: 600,
                 cursor: 'pointer',
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
               }}
             >
               <Clapperboard size={14} color="#8C3B2B" /> {leftLabels[leftTab]} <ChevronDown size={13} />
@@ -1025,12 +1027,14 @@ export default function BreakdownWorkspace() {
               onClick={() => fileInputRef.current?.click()}
               disabled={busy}
               style={{
-                padding: '6px 10px',
+                padding: '5px 8px',
                 borderRadius: 8,
                 border: '1px solid #d8cfc0',
                 background: 'var(--warm-card, #fff)',
                 fontSize: 12,
                 cursor: 'pointer',
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
               }}
             >
               + 传素材
@@ -1216,6 +1220,7 @@ export default function BreakdownWorkspace() {
         {/* CENTER COLUMN: Clean Script Preview + Direct Word (.docx) Delivery Bar */}
         <section style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--warm-bg, #f9f6f0)' }}>
           <div
+            className="breakdown-toolbar"
             style={{
               padding: '10px 18px',
               borderBottom: '1px solid var(--warm-border, #e6dfd3)',
@@ -1226,7 +1231,7 @@ export default function BreakdownWorkspace() {
               gap: 10,
             }}
           >
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', minWidth: 0 }}>
               {(() => {
                 return (
                   <>
@@ -1245,6 +1250,8 @@ export default function BreakdownWorkspace() {
                           textDecoration: 'none',
                           fontWeight: 700,
                           fontSize: 13,
+                          whiteSpace: 'nowrap',
+                          flexShrink: 0,
                         }}
                       >
                         <Download size={14} /> 下载规范 Word (.docx)
@@ -1268,6 +1275,8 @@ export default function BreakdownWorkspace() {
                           fontSize: 13,
                           cursor: 'not-allowed',
                           opacity: 0.78,
+                          whiteSpace: 'nowrap',
+                          flexShrink: 0,
                         }}
                       >
                         <Download size={14} /> 暂未通过验收，不可下载 (.docx)
@@ -1288,6 +1297,8 @@ export default function BreakdownWorkspace() {
                         cursor: busy || !isDelivered ? 'not-allowed' : 'pointer',
                         opacity: isDelivered ? 1 : 0.55,
                         fontWeight: 600,
+                        whiteSpace: 'nowrap',
+                        flexShrink: 0,
                       }}
                     >
                       转入「国外迭代」→
@@ -1307,6 +1318,8 @@ export default function BreakdownWorkspace() {
                         cursor: busy || !isDelivered ? 'not-allowed' : 'pointer',
                         opacity: isDelivered ? 1 : 0.55,
                         fontWeight: 600,
+                        whiteSpace: 'nowrap',
+                        flexShrink: 0,
                       }}
                     >
                       转入「国内迭代」→
@@ -1315,7 +1328,7 @@ export default function BreakdownWorkspace() {
                 );
               })()}
             </div>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', minWidth: 0 }}>
               <span
                 style={{
                   padding: '6px 10px',
@@ -1324,6 +1337,8 @@ export default function BreakdownWorkspace() {
                   background: 'transparent',
                   fontSize: 12,
                   color: '#5C5048',
+                  whiteSpace: 'nowrap',
+                  flexShrink: 0,
                 }}
               >
                 完整分场剧本（共{' '}
@@ -1351,6 +1366,8 @@ export default function BreakdownWorkspace() {
                   color: '#5C2D22',
                   cursor: busy || !active.episodes?.length ? 'not-allowed' : 'pointer',
                   opacity: busy || !active.episodes?.length ? 0.5 : 1,
+                  whiteSpace: 'nowrap',
+                  flexShrink: 0,
                 }}
               >
                 按 V7.2 规范排版
@@ -1365,6 +1382,8 @@ export default function BreakdownWorkspace() {
                   background: pageWidthMode ? 'rgba(140,59,43,0.1)' : 'transparent',
                   fontSize: 12,
                   cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                  flexShrink: 0,
                 }}
               >
                 页宽正文
@@ -1382,6 +1401,8 @@ export default function BreakdownWorkspace() {
                   fontSize: 12,
                   fontWeight: 600,
                   cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                  flexShrink: 0,
                 }}
               >
                 保存修改

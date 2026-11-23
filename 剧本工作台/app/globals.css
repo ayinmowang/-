@@ -1981,3 +1981,12 @@ select:focus-visible {
     overflow: visible !important;
   }
 }
+
+@media (max-width: 1280px) and (min-width: 961px) {
+  .breakdown-three-pane {
+    grid-template-columns: 212px minmax(0, 1fr) 296px !important;
+  }
+  .breakdown-toolbar {
+    padding: 10px 14px !important;
+  }
+}
