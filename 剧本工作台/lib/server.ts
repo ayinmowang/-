@@ -1828,18 +1828,42 @@ async function fetchAndReadWithTimeout(
   url: string,
   init: RequestInit,
   timeoutMs: number
-): Promise<{ ok: boolean; status: number; text: string }> {
+): Promise<{ ok: boolean; status: number; text: string; contentType: string }> {
   const controller = new AbortController();
   const timer = setTimeout(() => {
     controller.abort(new Error(`LLM_TIMEOUT_${timeoutMs}MS`));
   }, timeoutMs);
   try {
     const res = await fetch(url, { ...init, signal: controller.signal });
-    const text = await res.text();
+    const contentType = res.headers?.get('content-type') || '';
+    let text = '';
+    if (res.body && typeof res.body.getReader === 'function') {
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      const chunks: string[] = [];
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (controller.signal.aborted) {
+            throw new Error(`LLM_TIMEOUT_${timeoutMs}MS`);
+          }
+          if (value && value.byteLength > 0) {
+            chunks.push(decoder.decode(value, { stream: true }));
+          }
+        }
+        chunks.push(decoder.decode());
+        text = chunks.join('');
+      } finally {
+        reader.releaseLock();
+      }
+    } else {
+      text = await res.text();
+    }
     if (controller.signal.aborted) {
       throw new Error(`LLM_TIMEOUT_${timeoutMs}MS`);
     }
-    return { ok: res.ok, status: res.status, text };
+    return { ok: res.ok, status: res.status, text, contentType };
   } catch (err: any) {
     if (controller.signal.aborted) {
       throw new Error(`LLM_TIMEOUT_${timeoutMs}MS`);
@@ -1848,6 +1872,86 @@ async function fetchAndReadWithTimeout(
   } finally {
     clearTimeout(timer);
   }
+}
+
+export function parseOpenAIChatCompletionResponse(
+  rawText: string,
+  contentType = ''
+): { reply: string; totalTokens: number; finishReason?: string } {
+  const text = String(rawText || '');
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return { reply: '', totalTokens: 0 };
+  }
+
+  const looksLikeSse =
+    /text\/event-stream/i.test(contentType) ||
+    /^data:/m.test(trimmed) ||
+    trimmed.startsWith('event:');
+
+  if (looksLikeSse) {
+    const parts: string[] = [];
+    let totalTokens = 0;
+    let finishReason: string | undefined;
+    let sseErrorMsg: string | null = null;
+    const lines = text.replace(/\r\n?/g, '\n').split('\n');
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith(':') || line.startsWith('event:')) continue;
+      if (!line.startsWith('data:')) continue;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === '[DONE]') continue;
+      let chunk: any;
+      try {
+        chunk = JSON.parse(payload);
+      } catch {
+        continue;
+      }
+      if (chunk?.error) {
+        sseErrorMsg =
+          typeof chunk.error === 'string'
+            ? chunk.error
+            : String(chunk.error?.message || JSON.stringify(chunk.error)).slice(0, 200);
+        continue;
+      }
+      if (chunk?.usage?.total_tokens) {
+        totalTokens = Number(chunk.usage.total_tokens) || totalTokens;
+      }
+      const choice = chunk?.choices?.[0];
+      if (!choice) continue;
+      if (choice.finish_reason) {
+        finishReason = String(choice.finish_reason);
+      }
+      const deltaContent = choice?.delta?.content ?? choice?.message?.content;
+      if (typeof deltaContent === 'string') {
+        parts.push(deltaContent);
+      } else if (Array.isArray(deltaContent)) {
+        for (const item of deltaContent) {
+          if (typeof item === 'string') parts.push(item);
+          else if (item && typeof item.text === 'string') parts.push(item.text);
+        }
+      }
+    }
+
+    const reply = parts.join('');
+    if (!reply.trim() && sseErrorMsg) {
+      throw new Error(`SSE_ERROR: ${sseErrorMsg}`);
+    }
+    return { reply, totalTokens, finishReason };
+  }
+
+  const data: any = JSON.parse(trimmed);
+  const rawContent = data?.choices?.[0]?.message?.content;
+  const reply =
+    typeof rawContent === 'string'
+      ? rawContent
+      : Array.isArray(rawContent)
+        ? rawContent.map((c: any) => (typeof c === 'string' ? c : c?.text || '')).join('')
+        : '';
+  const totalTokens = Number(data?.usage?.total_tokens || 0);
+  const finishReason = data?.choices?.[0]?.finish_reason ? String(data.choices[0].finish_reason) : undefined;
+  return { reply, totalTokens, finishReason };
 }
 
 export async function getCachedRelayModels(params: {
@@ -2098,6 +2202,9 @@ export async function executeProviderChat(params: {
           Array.isArray(params.mediaAttachments) &&
           params.mediaAttachments.length > 0 &&
           /gemini/i.test(currentModel);
+        const useVideoStream =
+          canSendMultimodal &&
+          params.mediaAttachments!.some((m) => String(m.mimeType || '').toLowerCase().startsWith('video/'));
 
         const userContent: any = canSendMultimodal
           ? [
@@ -2114,7 +2221,12 @@ export async function executeProviderChat(params: {
           params.thinkingLevel,
           params.reasoningEffort
         );
-        let resp: { ok: boolean; status: number; text: string } = { ok: false, status: 500, text: '' };
+        let resp: { ok: boolean; status: number; text: string; contentType: string } = {
+          ok: false,
+          status: 500,
+          text: '',
+          contentType: '',
+        };
 
         for (let paramTry = 0; paramTry < 3; paramTry++) {
           resp = await fetchAndReadWithTimeout(
@@ -2123,12 +2235,14 @@ export async function executeProviderChat(params: {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
+                ...(useVideoStream ? { Accept: 'text/event-stream, application/json' } : {}),
                 Authorization: `Bearer ${params.apiKey}`,
               },
               body: JSON.stringify({
                 model: currentModel,
                 temperature: params.temperature,
                 max_tokens: params.maxTokens,
+                ...(useVideoStream ? { stream: true } : {}),
                 ...(allowToolChoice ? { tool_choice: 'none' } : {}),
                 ...(activeReasoningEffort ? { reasoning_effort: activeReasoningEffort } : {}),
                 messages: [
@@ -2153,13 +2267,13 @@ export async function executeProviderChat(params: {
         }
 
         if (resp.ok) {
-          const data: any = resp.text ? JSON.parse(resp.text) : {};
-          let reply = data?.choices?.[0]?.message?.content || '';
+          const parsedCompletion = parseOpenAIChatCompletionResponse(resp.text, resp.contentType);
+          let reply = parsedCompletion.reply;
           const totalTokens = Number(
-            data?.usage?.total_tokens ||
+            parsedCompletion.totalTokens ||
               Math.ceil((params.sysPrompt.length + params.userPrompt.length + reply.length) / 3)
           );
-          if (!reply.trim() && data?.choices?.[0]?.finish_reason === 'tool_calls') {
+          if (!reply.trim() && parsedCompletion.finishReason === 'tool_calls') {
             // Retry once explicitly forcing plain text without tools
             for (let toolRetry = 0; toolRetry < 2; toolRetry++) {
               const sendToolChoiceNone = toolRetry === 0;
@@ -2169,12 +2283,14 @@ export async function executeProviderChat(params: {
                   method: 'POST',
                   headers: {
                     'Content-Type': 'application/json',
+                    ...(useVideoStream ? { Accept: 'text/event-stream, application/json' } : {}),
                     Authorization: `Bearer ${params.apiKey}`,
                   },
                   body: JSON.stringify({
                     model: currentModel,
                     temperature: params.temperature,
                     max_tokens: params.maxTokens,
+                    ...(useVideoStream ? { stream: true } : {}),
                     ...(sendToolChoiceNone ? { tool_choice: 'none' } : {}),
                     messages: [
                       ...(params.sysPrompt
@@ -2187,8 +2303,7 @@ export async function executeProviderChat(params: {
                 timeoutMs
               );
               if (retryResp.ok) {
-                const retryData: any = retryResp.text ? JSON.parse(retryResp.text) : {};
-                reply = retryData?.choices?.[0]?.message?.content || '';
+                reply = parseOpenAIChatCompletionResponse(retryResp.text, retryResp.contentType).reply;
                 break;
               }
               if (sendToolChoiceNone && isToolChoiceRejectedError(retryResp.status, retryResp.text)) {

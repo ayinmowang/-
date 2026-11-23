@@ -409,4 +409,33 @@ const negKeep = formatMod.repairBrokenRelayLineWraps('### 第1集\n暂无正文'
 assert.equal(negKeep, '### 第1集\n暂无正文', 'complete episode heading must not merge next line');
 assert.equal(parseMod.parseTranscribeDeliveryBodies(negKeep, [1]).size, 0, 'negative placeholder must still be rejected');
 
-console.log('PASS: step3-v72-body-format (prompts, parser, guard, normalizer, relay-wrap-repair, web==Word XML, offline sync CLI)');
+// ---------------------------------------------------------------------------
+// 7. OpenAI-compatible SSE stream parser (bypasses Cloudflare 524 & joins cleanly)
+// ---------------------------------------------------------------------------
+const sseSample = [
+  ': keepalive',
+  'data: {"choices":[{"delta":{"reasoning_content":"INTERNAL_THOUGHT_MUST_NOT_APPEAR"}}]}',
+  'data: {"choices":[{"delta":{"content":"## 第"}}]}',
+  'data: {"choices":[{"delta":{"content":"17集\\n\\n【正文】\\n17-1 卧室 日 内\\n人物：林深\\n\\n△ 林"}}]}',
+  'data: {"choices":[{"delta":{"content":"深推门而入。\\n林深：你好。"},"finish_reason":"stop"}],"usage":{"total_tokens":321}}',
+  'data: [DONE]',
+].join('\n');
+const sseParsed = serverMod.parseOpenAIChatCompletionResponse(sseSample, 'text/event-stream; charset=utf-8');
+assert.equal(sseParsed.reply, '## 第17集\n\n【正文】\n17-1 卧室 日 内\n人物：林深\n\n△ 林深推门而入。\n林深：你好。');
+assert.ok(!sseParsed.reply.includes('INTERNAL_THOUGHT'), 'SSE parser must ignore reasoning_content');
+assert.equal(sseParsed.totalTokens, 321);
+assert.equal(sseParsed.finishReason, 'stop');
+
+const jsonFallback = serverMod.parseOpenAIChatCompletionResponse(
+  JSON.stringify({ choices: [{ message: { content: 'PLAIN_JSON_OK' }, finish_reason: 'stop' }], usage: { total_tokens: 42 } }),
+  'application/json',
+);
+assert.equal(jsonFallback.reply, 'PLAIN_JSON_OK');
+assert.equal(jsonFallback.totalTokens, 42);
+
+assert.throws(
+  () => serverMod.parseOpenAIChatCompletionResponse('data: {"error":{"message":"upstream overloaded"}}\ndata: [DONE]', 'text/event-stream'),
+  /SSE_ERROR/,
+);
+
+console.log('PASS: step3-v72-body-format (prompts, parser, guard, normalizer, relay-wrap-repair, SSE-parser, web==Word XML, offline sync CLI)');
