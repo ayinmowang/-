@@ -249,6 +249,7 @@ const STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
     </w:rPrDefault>
     <w:pPrDefault>
       <w:pPr>
+        <w:ind w:firstLine="0" w:left="0"/>
         <w:spacing w:after="120" w:line="320" w:lineRule="auto"/>
       </w:pPr>
     </w:pPrDefault>
@@ -256,6 +257,7 @@ const STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
     <w:name w:val="Normal"/>
     <w:pPr>
+      <w:ind w:firstLine="0" w:left="0"/>
       <w:spacing w:after="120" w:line="320" w:lineRule="auto"/>
     </w:pPr>
     <w:rPr>
@@ -323,6 +325,7 @@ const STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
     <w:basedOn w:val="Normal"/>
     <w:pPr>
       <w:keepNext/>
+      <w:ind w:firstLine="0" w:left="0"/>
       <w:shd w:val="clear" w:color="auto" w:fill="F4EFE6"/>
       <w:spacing w:before="160" w:after="80" w:line="300" w:lineRule="auto"/>
     </w:pPr>
@@ -337,7 +340,7 @@ const STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
     <w:name w:val="Action Line"/>
     <w:basedOn w:val="Normal"/>
     <w:pPr>
-      <w:ind w:left="240"/>
+      <w:ind w:firstLine="0" w:left="0"/>
       <w:spacing w:after="100" w:line="300" w:lineRule="auto"/>
     </w:pPr>
     <w:rPr>
@@ -364,7 +367,7 @@ const STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 
 function renderParagraph(text: string, styleId = 'Normal'): string {
   const safe = escapeXml(text);
-  return `<w:p><w:pPr><w:pStyle w:val="${styleId}"/></w:pPr><w:r><w:t xml:space="preserve">${safe}</w:t></w:r></w:p>`;
+  return `<w:p><w:pPr><w:pStyle w:val="${styleId}"/><w:ind w:firstLine="0" w:left="0"/></w:pPr><w:r><w:t xml:space="preserve">${safe}</w:t></w:r></w:p>`;
 }
 
 function renderMultilineParagraphs(
@@ -383,17 +386,21 @@ function renderMultilineParagraphs(
     }
     const trimmed = line.trim();
     if (!trimmed) {
-      out.push('<w:p/>');
+      out.push('<w:p><w:pPr><w:ind w:firstLine="0" w:left="0"/></w:pPr></w:p>');
       continue;
     }
     if (options.style) {
-      out.push(renderParagraph(line, options.style));
-    } else if (/^(?:第\s*\d+\s*[集话期]|场次\s*\d+|Scene\s+\d+|INT\.|EXT\.)/i.test(trimmed)) {
+      out.push(renderParagraph(trimmed, options.style));
+    } else if (
+      /^(?:第\s*\d+\s*[集话期]|场次\s*\d+|場次\s*\d+|\d+\s*[-－–—]\s*\d+\s+\S+|Scene\s+\d+|INT\.|EXT\.)/i.test(
+        trimmed
+      )
+    ) {
       out.push(renderParagraph(trimmed, 'SceneHeading'));
-    } else if (trimmed.startsWith('▲')) {
+    } else if (trimmed.startsWith('△') || trimmed.startsWith('▲')) {
       out.push(renderParagraph(trimmed, 'ActionLine'));
     } else {
-      out.push(renderParagraph(line, 'Normal'));
+      out.push(renderParagraph(trimmed, 'Normal'));
     }
   }
   return out;
@@ -532,6 +539,50 @@ function readEpisodeBody(ep: StudioEpisode | any): string {
   return '';
 }
 
+function formatEpisodeDocxHeading(episodeNumber: number, rawTitle?: string): string {
+  const title = String(rawTitle || '').trim();
+  if (!title) return `第${episodeNumber}集`;
+  const redundantRe = new RegExp(`^第\\s*0*${episodeNumber}\\s*集$`);
+  if (redundantRe.test(title)) return `第${episodeNumber}集`;
+  return `第${episodeNumber}集 · ${title}`;
+}
+
+function stripRedundantEpisodeHeadingFromBody(body: string, episodeNumber: number): string {
+  const lines = String(body || '').replace(/\r\n?/g, '\n').split('\n');
+  let i = 0;
+  while (i < lines.length && !lines[i].trim()) i++;
+  if (i < lines.length) {
+    const first = lines[i].trim();
+    const matchRe = new RegExp(`^(?:#{1,6}\\s*)?第\\s*0*${episodeNumber}\\s*集(?:《[^》]+》)?\\s*$`);
+    if (matchRe.test(first)) {
+      i++;
+      while (i < lines.length && !lines[i].trim()) i++;
+      return lines.slice(i).join('\n').trim();
+    }
+  }
+  return String(body || '').trim();
+}
+
+function isPlaceholderSynopsis(text?: string): boolean {
+  const t = String(text || '').trim();
+  if (!t) return true;
+  return (
+    t.includes('本交付未单独写出故事梗概') ||
+    t.includes('未完成占位：待生成梗概') ||
+    t === '（待生成梗概）'
+  );
+}
+
+function isPlaceholderCharacterText(text?: string): boolean {
+  const t = String(text || '').trim();
+  if (!t) return true;
+  return (
+    t === '人物锚定表已归档。' ||
+    t.includes('未完成占位：待生成人物小传') ||
+    t === '（待生成人物小传）'
+  );
+}
+
 export function projectToDocxInput(project: Project): DocxDocumentInput {
   const outputs = project.remote?.outputs || {};
   const kindLabel = KIND_LABELS[project.kind] || project.kind;
@@ -554,25 +605,43 @@ export function projectToDocxInput(project: Project): DocxDocumentInput {
   const episodes = Array.isArray(project.episodes) ? project.episodes : [];
 
   const rootOutlineBody = outlineNodes.map((n) => readNodeBody(n).trim()).find(Boolean);
-  const synopsis =
+  const rawSynopsis =
     rootOutlineBody ||
     outputs.synopsis?.content ||
     outputs.recap?.content ||
     project.brief ||
     '（未完成占位：待生成梗概）';
+  const synopsis =
+    project.kind === 'transcribe' && isPlaceholderSynopsis(rawSynopsis)
+      ? undefined
+      : rawSynopsis;
 
   let characters: string | undefined;
   let characterTable: DocxTableInput | undefined;
-  if (characterNodes.length > 0) {
+  const meaningfulCharNodes =
+    project.kind === 'transcribe'
+      ? characterNodes.filter(
+          (n) =>
+            !(
+              n.title === '核心角色锚定表' &&
+              readNodeBody(n).includes('人物定位与声线锚定已完成整理')
+            ),
+        )
+      : characterNodes;
+  if (meaningfulCharNodes.length > 0) {
     characterTable = {
       headers: ['角色名', '定位 / 设定详情'],
-      rows: characterNodes.map((n) => [
+      rows: meaningfulCharNodes.map((n) => [
         n.title || '未命名角色',
         [n.summary, readNodeBody(n)].filter(Boolean).join(' · ') || '（待补充）',
       ]),
     };
   } else {
-    characters = outputs.characters?.content || '（未完成占位：待生成人物小传）';
+    const rawChars = outputs.characters?.content || '（未完成占位：待生成人物小传）';
+    characters =
+      project.kind === 'transcribe' && isPlaceholderCharacterText(rawChars)
+        ? undefined
+        : rawChars;
   }
 
   const sections: DocxSectionInput[] = [];
@@ -587,8 +656,14 @@ export function projectToDocxInput(project: Project): DocxDocumentInput {
 
   if (episodes.length > 0) {
     const sortedEpisodes = [...episodes].sort((a, b) => a.episodeNumber - b.episodeNumber);
+    const hasLeadingSections = Boolean(synopsis || characters || characterTable);
     sections.push({
-      heading: project.kind === 'domestic' && outputs.gates?.content ? '四、分集剧本正文' : '三、分集剧本正文',
+      heading:
+        project.kind === 'domestic' && outputs.gates?.content
+          ? '四、分集剧本正文'
+          : hasLeadingSections
+            ? '三、分集剧本正文'
+            : '分集剧本正文',
       body: '',
       level: 1,
     });
@@ -596,16 +671,22 @@ export function projectToDocxInput(project: Project): DocxDocumentInput {
       const isLocked = Boolean(
         ep.locked || (project.lockedEpisodes && ep.episodeNumber <= project.lockedEpisodes)
       );
+      const rawEpBody = readEpisodeBody(ep);
       sections.push({
-        heading: `第 ${ep.episodeNumber} 集${ep.title ? ` · ${ep.title}` : ''}`,
-        body: readEpisodeBody(ep),
+        heading: formatEpisodeDocxHeading(ep.episodeNumber, ep.title),
+        body: isLocked ? rawEpBody : stripRedundantEpisodeHeadingFromBody(rawEpBody, ep.episodeNumber),
         locked: isLocked,
         level: 2,
       });
     }
 
     const extraOutline = outlineNodes
-      .filter((n) => readNodeBody(n).trim() && readNodeBody(n).trim() !== synopsis.trim())
+      .filter(
+        (n) =>
+          readNodeBody(n).trim() &&
+          readNodeBody(n).trim() !== (synopsis || '').trim() &&
+          !(project.kind === 'transcribe' && isPlaceholderSynopsis(readNodeBody(n)))
+      )
       .map((n) => `【${n.title}】\n${readNodeBody(n)}`);
     const extraWorld = worldNodes
       .filter((n) => readNodeBody(n).trim())
@@ -655,7 +736,11 @@ export function projectToDocxInput(project: Project): DocxDocumentInput {
     }
     sections.push({ heading: '附：繁體版分集劇本', body: '以下为同一剧本的繁體版分集正文，供对照使用。', level: 1 });
     for (const n of altEps) {
-      sections.push({ heading: `第 ${n} 集（繁體）`, body: altBodies.get(n) as string, level: 2 });
+      sections.push({
+        heading: `第${n}集（繁體）`,
+        body: stripRedundantEpisodeHeadingFromBody(altBodies.get(n) as string, n),
+        level: 2,
+      });
     }
   }
   return sanitizeForClient({

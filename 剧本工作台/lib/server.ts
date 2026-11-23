@@ -1,4 +1,5 @@
 import { isStrictNativeGeminiEnabled, runStrictNativeStation } from './strict-native-station';
+import { TRANSCRIBE_V72_VISION_SYSTEM_PROMPT } from './transcribe-format';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -227,8 +228,7 @@ function createDefaultSystemConfig(): AdminSystemConfig {
       temperature: 0.15,
       maxTokens: 4096,
       enabled: true,
-      systemPrompt:
-        '你是专业短剧扒剧还原师。严格按照锁定的主角标准人名表还原分集场次、环境、动作（▲）与台词，对看不清的特写或字幕统一标注【待人工補寫】，同步支持繁体单集与简体全集输出。',
+      systemPrompt: TRANSCRIBE_V72_VISION_SYSTEM_PROMPT,
     },
     planner: {
       roleKey: 'planner',

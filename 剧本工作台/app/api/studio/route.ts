@@ -41,7 +41,14 @@ import {
   mergePerSourceEpisodeBodies,
   parseEpisodeBodiesFromSingleSource,
   parseTranscribeDeliveryBodies,
+  parseTranscribeDeliveryVariants,
 } from '../../../lib/transcribe-parse';
+import {
+  TRANSCRIBE_V72_OUTPUT_GUIDE,
+  assembleTranscribeV72Script,
+  normalizeTranscribeEpisodeBodyV72,
+  normalizeTranscribeScriptMapV72,
+} from '../../../lib/transcribe-format';
 import { inspectTranscribeBodiesDelivery } from '../../../lib/transcribe-delivery-guard';
 import { inspectTranscribeProjectDeliveryReady } from '../../../lib/transcribe-delivery-ready';
 import { saveTranscribeRawEvidence } from '../../../lib/transcribe-private-evidence';
@@ -1628,8 +1635,12 @@ export async function POST(request: Request) {
         throw new Error('INVALID_INPUT');
       }
       const cleanScript = sanitizeForClient(body.script);
-      const parsedMap = parseEpisodeBodiesFromSingleSource(cleanScript);
       const existingEpisodes = Array.isArray(p.episodes) ? p.episodes : [];
+      const fallbackSingleEp =
+        existingEpisodes.length === 1 && Number.isInteger(Number(existingEpisodes[0]?.episodeNumber))
+          ? Number(existingEpisodes[0].episodeNumber)
+          : undefined;
+      const parsedMap = parseEpisodeBodiesFromSingleSource(cleanScript, fallbackSingleEp);
 
       for (const ep of existingEpisodes) {
         const epNum = Number(ep?.episodeNumber);
@@ -1672,7 +1683,11 @@ export async function POST(request: Request) {
         }
       }
 
-      const alignedScript = assembleScriptFromEpisodeBodies(updatedBodyMap);
+      const hasV72Heading = Array.from(updatedBodyMap.values()).some((b) => /^##\s*第\d+集/m.test(b));
+      const alignedScript =
+        p.kind === 'transcribe' && hasV72Heading
+          ? assembleTranscribeV72Script(updatedBodyMap)
+          : assembleScriptFromEpisodeBodies(updatedBodyMap);
       if (!p.remote) p.remote = {};
       if (!p.remote.outputs) p.remote.outputs = {};
       const prevScriptOut = p.remote.outputs.script || {};
@@ -1683,6 +1698,83 @@ export async function POST(request: Request) {
         updatedAt: now,
         version: (Number(prevScriptOut.version) || 0) + 1,
       };
+      p.updatedAt = now;
+      const saved = await saveProject(p, user);
+      return Response.json(withCatalogs(saved));
+    }
+
+    if (body.operation === 'normalize_transcribe_format') {
+      if (p.kind !== 'transcribe') {
+        throw new Error('INVALID_INPUT');
+      }
+      const existingEpisodes = Array.isArray(p.episodes) ? p.episodes : [];
+      if (existingEpisodes.length === 0) {
+        return Response.json(withCatalogs(p));
+      }
+      const now = new Date().toISOString();
+      const updatedBodyMap = new Map<number, string>();
+
+      for (const ep of existingEpisodes) {
+        const epNum = Number(ep?.episodeNumber);
+        if (!Number.isInteger(epNum) || epNum < 1) continue;
+        const prevBody =
+          typeof ep.body === 'string'
+            ? ep.body
+            : 'content' in ep && typeof ep.content === 'string'
+              ? ep.content
+              : '';
+        if (!prevBody.trim()) continue;
+        if (isEpisodeEffectivelyLocked(p, ep)) {
+          updatedBodyMap.set(epNum, prevBody);
+          continue;
+        }
+        const normalized = normalizeTranscribeEpisodeBodyV72(prevBody, epNum, { traditional: false });
+        if (normalized && normalized !== prevBody) {
+          const snap: StudioEpisodeSnapshot = {
+            id: 'snap-' + crypto.randomUUID(),
+            at: now,
+            body: prevBody,
+            wordCount: prevBody.length,
+            note: 'V7.2 格式规范化前自动快照',
+          };
+          ep.snapshots = [snap, ...(Array.isArray(ep.snapshots) ? ep.snapshots : [])].slice(0, 20);
+          ep.body = normalized;
+          if ('content' in ep) {
+            ep.content = normalized;
+          }
+          ep.title = `第${epNum}集`;
+          ep.updatedAt = now;
+        }
+        updatedBodyMap.set(epNum, typeof ep.body === 'string' ? ep.body : prevBody);
+      }
+
+      if (!p.remote) p.remote = {};
+      if (!p.remote.outputs) p.remote.outputs = {};
+      const alignedScript = assembleTranscribeV72Script(updatedBodyMap);
+      const prevScriptOut = p.remote.outputs.script || {};
+      p.remote.outputs.script = {
+        ...prevScriptOut,
+        title: prevScriptOut.title || '分集扒剧还原正文',
+        content: alignedScript,
+        updatedAt: now,
+        version: (Number(prevScriptOut.version) || 0) + 1,
+      };
+
+      const prevTrad = (p.remote.outputs as any).scriptTraditional;
+      if (prevTrad && typeof prevTrad.content === 'string' && prevTrad.content.trim()) {
+        const tradEps = Array.from(updatedBodyMap.keys()).sort((a, b) => a - b);
+        const parsedTrad = parseTranscribeDeliveryBodies(prevTrad.content, tradEps);
+        if (parsedTrad.size === tradEps.length) {
+          const normTradMap = normalizeTranscribeScriptMapV72(parsedTrad, { traditional: true });
+          (p.remote.outputs as any).scriptTraditional = {
+            ...prevTrad,
+            content: assembleTranscribeV72Script(normTradMap),
+            updatedAt: now,
+            version: (Number(prevTrad.version) || 0) + 1,
+          };
+        }
+      }
+
       p.updatedAt = now;
       const saved = await saveProject(p, user);
       return Response.json(withCatalogs(saved));
@@ -2810,7 +2902,7 @@ export async function POST(request: Request) {
                     p.transcribeMode === 'detailed'
                       ? '详细模式（逐格拆解画面动作与台词）'
                       : '快速模式（整集还原场次、动作与台词）'
-                  }）。请直接输出结构化扒剧结果：\n1. 【全剧人物标准人名锚定表】\n2. 【本集核心剧情梗概】\n3. 【分集分场次还原剧本】（格式：“第X集 场次1-1 内/外景 地点 日/夜”，动作以 ▲ 标示，逐句还原台词）。`,
+                  }）。\n\n${TRANSCRIBE_V72_OUTPUT_GUIDE}`,
                 });
                 const text =
                   r.ok && r.text
@@ -2839,8 +2931,7 @@ export async function POST(request: Request) {
                 p.transcribeMode === 'detailed'
                   ? '详细模式（每秒一帧逐格拆解画面动作与台词）'
                   : '快速模式（按整集还原场次、动作与台词并抽查）';
-              const outputGuide =
-                '请直接输出完整的结构化扒剧结果（不要索要文件或调用外部工具）：\n1. 【全剧人物标准人名锚定表】（角色名、身份定位、外貌/声线特征）\n2. 【本集核心剧情梗概】\n3. 【分集分场次还原剧本】（严格按“第X集 场次1-1 内/外景 地点 日/夜”格式，动作与神态以 ▲ 标示，逐句还原人物台词；对看不清的特写或字幕标注【待人工補寫】）。';
+              const outputGuide = TRANSCRIBE_V72_OUTPUT_GUIDE;
 
               let ranPerSourceLlm = false;
               if (!isLlmFixture()) {
@@ -2982,6 +3073,40 @@ export async function POST(request: Request) {
             // END_TRANSCRIBE_DELIVERY_GUARD
 
             populateTranscribeWorkspace(p, combinedRawOutput, perSourceChunks);
+            if (!isLlmFixture() && Array.isArray(p.episodes) && p.episodes.length > 0) {
+              const normalizedBodies = new Map<number, string>();
+              for (const ep of p.episodes) {
+                const epNum = Number(ep?.episodeNumber);
+                if (!Number.isInteger(epNum) || epNum < 1 || typeof ep.body !== 'string') continue;
+                const normBody = normalizeTranscribeEpisodeBodyV72(ep.body, epNum, { traditional: false });
+                if (normBody) {
+                  ep.body = normBody;
+                  ep.title = `第${epNum}集`;
+                  normalizedBodies.set(epNum, normBody);
+                }
+              }
+              if (normalizedBodies.size > 0 && p.remote?.outputs?.script) {
+                p.remote.outputs.script.content = assembleTranscribeV72Script(normalizedBodies);
+              }
+              const expectedEps = uniqueValidSourceEpisodes(p.attachments);
+              if (expectedEps.length > 0 && (!perSourceChunks || perSourceChunks.length === 0)) {
+                const variants = parseTranscribeDeliveryVariants(
+                  sanitizeForClient(combinedRawOutput || ''),
+                  expectedEps,
+                );
+                if (variants.traditional && variants.traditional.size === expectedEps.length) {
+                  const normTradMap = normalizeTranscribeScriptMapV72(variants.traditional, {
+                    traditional: true,
+                  });
+                  (p.remote.outputs as any).scriptTraditional = {
+                    title: '繁體版分集劇本',
+                    content: assembleTranscribeV72Script(normTradMap),
+                    updatedAt: new Date().toISOString(),
+                    version: 1,
+                  };
+                }
+              }
+            }
             p.remote.stage = { key: 'delivery', title: '扒剧完成 · Word (.docx) 已就绪' };
             p.remote.status = 'delivered';
             p.remote.progress.completed_steps = p.remote.progress.total_steps;

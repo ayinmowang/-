@@ -510,6 +510,27 @@ export default function BreakdownWorkspace() {
     }
   }
 
+  async function normalizeEditorV72() {
+    if (!active || busy || !active.episodes?.length) return;
+    setBusy(true);
+    setBusyLabel('正在按 V7.2 规范统一正文排版（不改台词与说话人）…');
+    setError('');
+    try {
+      const updated = await studioApi('/api/studio', {
+        operation: 'normalize_transcribe_format',
+        id: active.id,
+        version: active.version,
+      });
+      syncActiveProject(updated);
+      setToast('已按 V7.2 规范统一网页正文与 Word 格式（台词与说话人原字保留，已生成自动快照）');
+    } catch (e: any) {
+      setError(e.message || '格式统一失败');
+    } finally {
+      setBusy(false);
+      setBusyLabel('');
+    }
+  }
+
   async function sendChat() {
     if (!active || !chatInput.trim() || busy) return;
     const text = chatInput.trim();
@@ -1316,6 +1337,24 @@ export default function BreakdownWorkspace() {
                   )}{' '}
                 集）
               </span>
+              <button
+                type="button"
+                disabled={busy || !active.episodes?.length}
+                onClick={normalizeEditorV72}
+                title="按《扒剧小能手规范 V7.2》统一两行场头、空心三角 △、无首行缩进并清理引用残留（不改台词与说话人）"
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: 8,
+                  border: '1px solid #d8cfc0',
+                  background: 'transparent',
+                  fontSize: 12,
+                  color: '#5C2D22',
+                  cursor: busy || !active.episodes?.length ? 'not-allowed' : 'pointer',
+                  opacity: busy || !active.episodes?.length ? 0.5 : 1,
+                }}
+              >
+                按 V7.2 规范排版
+              </button>
               <button
                 type="button"
                 onClick={() => setPageWidthMode((v) => !v)}

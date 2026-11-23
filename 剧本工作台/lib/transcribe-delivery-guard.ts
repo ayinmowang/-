@@ -95,7 +95,7 @@ function isPlaceholderPhrase(text: string): boolean {
 
 function isEpisodeHeadingLine(line: string): boolean {
   const s = stripMarkdownWrapper(line);
-  if (/^#{1,6}\s*第\s*\d+\s*集(?:\s*[：:·\-—].*)?$/.test(s)) return true;
+  if (/^#{1,6}\s*第\s*\d+\s*集(?:\s*(?:[：:·\-—].*|《[^》]+》))?$/.test(s)) return true;
   if (/^【\s*第\s*\d+\s*集\s*】$/.test(s)) return true;
   if (/^第\s*\d+\s*集\s*$/.test(s)) return true;
   return false;
@@ -104,14 +104,14 @@ function isEpisodeHeadingLine(line: string): boolean {
 function isScriptBodyStartHeading(line: string): boolean {
   const s = stripMarkdownWrapper(line);
   if (
-    /^【\s*(?:分集分场次还原剧本|分集分场剧本|分场次还原剧本|分集还原剧本|还原剧本|剧本正文|分场剧本|分集剧本)\s*】$/.test(
+    /^【\s*(?:正文|分集分场次还原剧本|分集分场剧本|分场次还原剧本|分集还原剧本|还原剧本|剧本正文|分场剧本|分集剧本)\s*】$/.test(
       s
     )
   ) {
     return true;
   }
   if (
-    /^#{1,6}\s*(?:分集分场次还原剧本|分集分场剧本|分场次还原剧本|分集还原剧本|还原剧本|剧本正文|分场剧本|分集剧本)(?:\s*[：:·\-—].*)?$/.test(
+    /^#{1,6}\s*(?:正文|分集分场次还原剧本|分集分场剧本|分场次还原剧本|分集还原剧本|还原剧本|剧本正文|分场剧本|分集剧本)(?:\s*[：:·\-—].*)?$/.test(
       s
     )
   ) {
@@ -154,7 +154,11 @@ function isSceneHeadingLine(line: string): boolean {
   if (/^第\s*\d+\s*场(?:\s*[：:·\-—(（\s].*)?$/.test(s)) {
     return true;
   }
-  if (/^\d+\s*[-—.．]\s*\d+\s+(?:内景|外景|内外景|内|外)(?:\s+.*)?$/.test(s)) {
+  if (/^\d+\s*[-—–－.．]\s*\d+\s+(?:内景|外景|内外景|内|外)(?:\s+.*)?$/.test(s)) {
+    return true;
+  }
+  // V7.2 标准两行场头首行：例如 `1-1 客厅 日 内` / `1-1 客廳 日 內` / `1-2 走廊 夜 内外`
+  if (/^\d+\s*[-—–－.．]\s*\d+\s+\S+(?:\s+\S+)*\s+(?:日|夜|晨|昏|清晨|黄昏|黃昏|傍晚|不明)\s+(?:内外|内|外|不明)$/.test(s)) {
     return true;
   }
   if (/^(?:内景|外景|内外景)\s*[·•\-—:：\s]\s*\S+/.test(s) && s.length <= 40) {
@@ -185,12 +189,12 @@ function isValidDialogueLine(line: string): boolean {
   let speaker = "";
   let utterance = "";
 
-  const bracketMatch = s.match(/^\[([^\]\r\n]{1,16})\]\s*(.+)$/);
+  const bracketMatch = s.match(/^\[([^\]\r\n]{1,48})\]\s*(.+)$/);
   if (bracketMatch) {
     speaker = bracketMatch[1].trim();
     utterance = bracketMatch[2].trim();
   } else {
-    const colonMatch = s.match(/^([^：:\r\n]{1,16})[：:]\s*(.+)$/);
+    const colonMatch = s.match(/^([^：:\r\n]{1,48})[：:]\s*(.+)$/);
     if (!colonMatch) return false;
     speaker = colonMatch[1].trim();
     utterance = colonMatch[2].trim();

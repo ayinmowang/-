@@ -117,7 +117,10 @@ export function parseEpisodeBodiesFromSingleSource(
   for (let i = 0; i < boundaries.length; i++) {
     const curr = boundaries[i];
     const nextIdx = i + 1 < boundaries.length ? boundaries[i + 1].index : source.length;
-    const slice = source.slice(curr.index, nextIdx).trim();
+    const slice = source
+      .slice(curr.index, nextIdx)
+      .replace(/(?:\r?\n)+\s*-{3,}\s*$/, '')
+      .trim();
     if (slice) {
       appendSegmentDedup(result, curr.episode, slice);
     }
@@ -187,13 +190,17 @@ const TDV_MAX_EPISODE = 300;
 const TDV_PEOPLE_TITLE = '全剧人物标准人名锚定表';
 const TDV_SYNOPSIS_TITLE = '本集核心剧情梗概';
 const TDV_BODY_TITLES = ['分集分场次还原剧本', '正文', '剧本正文'];
+const TDV_INLINE_BODY_TAG_RE =
+  /^(?:人物字幕|字幕|特写|特寫|手机消息|手機消息|文件文字|闪回|閃回|闪出|閃出|梦境|夢境|前情回顾|前情回顧|下集预告|下集預告|待人工|素材缺失|物品未辨清|听不清|聽不清|文字不清)/;
 const TDV_OTHER_META_RE = /^(?:人物|角色|梗概|剧情|备注|说明|附注|附录|校验|自检|检查|总结|统计|下集|待确认)/;
 const TDV_SECTION_LINE_RE =
   /^(?:#{1,6}\s*)?(?:(?:\d{1,2}|[一二三四五六七八九十]{1,3})\s*[.．、]\s*)?【([^】\n]{1,40})】\s*[:：]?$/;
 const TDV_SCENE_LINE_RE =
   /^(?:#{1,6}\s*)?(?:第\s*0*(\d{1,3})\s*集\s*)?场次\s*\d{1,3}\s*[-－–—]\s*\d{1,3}\s*(?:内\/外景|内外景|内景|外景|内|外)\s+\S/;
+const TDV_V72_SCENE_LINE_RE =
+  /^0*(\d{1,3})\s*[-－–—]\s*\d{1,3}\s+\S+(?:\s+\S+)*\s+(?:日|夜|晨|昏|清晨|黄昏|黃昏|傍晚|不明)\s+(?:内外|内|外|不明)$/;
 const TDV_ACTION_LINE_RE = /^[▲△]\s*\S/;
-const TDV_DIALOGUE_LINE_RE = /^[^\s：:▲△【】#]{1,20}[：:]\s*\S/;
+const TDV_DIALOGUE_LINE_RE = /^[^\s：:▲△【】#]{1,48}[：:]\s*\S/;
 const TDV_FAKE_RE =
   /暂无(?:正文|内容)|正文缺失|原文缺失|原文未提供|未提供原文|无法(?:还原|提取|转写)|占位|待补(?:充|全)|此处省略|内容省略|[（(]略[）)]|\b(?:placeholder|lorem ipsum|todo|tbd)\b/i;
 const TDV_PLACEHOLDER_ONLY_RE = /^(?:略|无|暂无|空|待补|同上|省略|占位|na|none|null|undefined|tbd|todo)+$/i;
@@ -248,6 +255,7 @@ function tdvClassifyLine(trimmed: string): TdvHeadingKind | null {
   if (!m) return null;
   const title = m[1].trim();
   if (TDV_BODY_TITLES.indexOf(title) >= 0) return 'body';
+  if (TDV_INLINE_BODY_TAG_RE.test(title)) return null;
   if (title === TDV_PEOPLE_TITLE) return 'people';
   if (title === TDV_SYNOPSIS_TITLE) return 'synopsis';
   if (TDV_OTHER_META_RE.test(title)) return 'meta';
@@ -316,11 +324,27 @@ function tdvParse(text: string, expected: Set<number>): TranscribeDeliveryVarian
       synopsisCount++;
     }
   }
-  if (markerCount > 1 || peopleCount > 1 || synopsisCount > 1) return null;
+  if (peopleCount > 1 || synopsisCount > 1) return null;
 
-  const hasMarker = markerCount === 1;
+  // V7.2 per-episode format: each `【正文】` marker sits immediately after a `## 第N集` heading
+  // (with no metadata sections), e.g. `## 第1集\n\n【正文】\n1-1 ...` (single or multi-episode with `---`).
+  const isV72PerEpisodeMarkers =
+    markerCount >= 1 &&
+    kinds.every((k) => k === null || k === 'body') &&
+    lines.every((line, idx) => {
+      if (kinds[idx] !== 'body') return true;
+      let prev = idx - 1;
+      while (prev >= 0 && !lines[prev].trim()) prev--;
+      return prev >= 0 && tdvHeadingEpisode(lines[prev].trim()) !== null;
+    });
+
+  if (!isV72PerEpisodeMarkers && markerCount > 1) return null;
+
+  const hasMarker = !isV72PerEpisodeMarkers && markerCount === 1;
   let bodyText: string;
-  if (hasMarker) {
+  if (isV72PerEpisodeMarkers) {
+    bodyText = lines.filter((_, idx) => kinds[idx] !== 'body').join('\n').trim();
+  } else if (hasMarker) {
     // Only metadata sections may precede the body marker.
     for (let i = 0; i < markerLine; i++) {
       if (lines[i].trim()) {
@@ -370,11 +394,20 @@ function tdvParseBody(bodyText: string, hasMarker: boolean, expected: Set<number
       headings.push({ line: i, episode: headingEp });
       continue;
     }
-    const sm = TDV_SCENE_LINE_RE.exec(tdvRecog(t));
+    const recog = tdvRecog(t);
+    const sm = TDV_SCENE_LINE_RE.exec(recog);
     if (sm) {
       sceneSeen = true;
       if (sm[1] !== undefined) {
         const sceneEp = Number(sm[1]);
+        if (sceneEp < 1 || sceneEp > TDV_MAX_EPISODE) return null;
+        scenes.push({ line: i, episode: sceneEp });
+      }
+    } else {
+      const v72m = TDV_V72_SCENE_LINE_RE.exec(recog);
+      if (v72m) {
+        sceneSeen = true;
+        const sceneEp = Number(v72m[1]);
         if (sceneEp < 1 || sceneEp > TDV_MAX_EPISODE) return null;
         scenes.push({ line: i, episode: sceneEp });
       }
@@ -422,7 +455,11 @@ function tdvParseBody(bodyText: string, hasMarker: boolean, expected: Set<number
 
   const result = new Map<number, string>();
   for (const seg of segments) {
-    const body = bodyLines.slice(seg.start, seg.end).join('\n').trim();
+    const body = bodyLines
+      .slice(seg.start, seg.end)
+      .join('\n')
+      .replace(/(?:\r?\n)+\s*-{3,}\s*$/, '')
+      .trim();
     if (!tdvBodyUsable(body)) return null;
     result.set(seg.episode, body);
   }
