@@ -464,7 +464,12 @@ function normalizeCreationTier(raw: any, index: number): CreationTierConfig | nu
   const station: StationRoleKey = VALID_STATION_KEYS.includes(raw.station) ? raw.station : 'writer';
   const enabled = raw.enabled !== false;
   const providerId = typeof raw.providerId === 'string' && raw.providerId.trim() ? raw.providerId.trim() : undefined;
-  const model = typeof raw.model === 'string' && raw.model.trim() ? raw.model.trim() : undefined;
+  const rawModel = typeof raw.model === 'string' && raw.model.trim() ? raw.model.trim() : undefined;
+  const model =
+    rawModel ||
+    (id === 'tier-fast' || id === 'tier-standard' || id === 'tier-deep'
+      ? 'gemini-4-carbon'
+      : undefined);
   const hasTemp =
     raw.temperature !== undefined &&
     raw.temperature !== null &&
@@ -2546,8 +2551,11 @@ export async function callStationLLM(params: {
         });
       }
     }
-  } else if (trimmedModelOverride && candidateTargets.length > 0) {
-    candidateTargets[0].model = trimmedModelOverride;
+  }
+  if (trimmedModelOverride && candidateTargets.length > 0) {
+    for (const target of candidateTargets) {
+      target.model = trimmedModelOverride;
+    }
   }
 
   // Fallback to any enabled provider with a key or env GEMINI_API_KEY / OPENAI_API_KEY
@@ -2567,11 +2575,11 @@ export async function callStationLLM(params: {
           vendor: 'gemini',
           baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
           apiKeys: [String(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY)],
-          models: ['gemini-2.5-flash'],
+          models: [trimmedModelOverride || 'gemini-2.5-flash'],
           enabled: true,
           priority: 98,
         },
-        model: 'gemini-2.5-flash',
+        model: trimmedModelOverride || 'gemini-2.5-flash',
         isFallback: false,
       });
     } else if (process.env.OPENAI_API_KEY) {
@@ -2582,11 +2590,11 @@ export async function callStationLLM(params: {
           vendor: 'openai',
           baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
           apiKeys: [process.env.OPENAI_API_KEY],
-          models: [process.env.OPENAI_MODEL || 'gpt-4o-mini'],
+          models: [trimmedModelOverride || process.env.OPENAI_MODEL || 'gpt-4o-mini'],
           enabled: true,
           priority: 99,
         },
-        model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+        model: trimmedModelOverride || process.env.OPENAI_MODEL || 'gpt-4o-mini',
         isFallback: false,
       });
     }
