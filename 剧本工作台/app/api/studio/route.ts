@@ -2889,29 +2889,95 @@ export async function POST(request: Request) {
             }
             let combinedRawOutput = '';
             let perSourceChunks: EpisodeSourceChunk[] | undefined;
-            if (videoAtts.length > 3) {
+            const shouldRunPerVideo = videoAtts.length > 3 || (!isLlmFixture() && videoAtts.length > 1);
+            if (shouldRunPerVideo) {
               const sortedVideos = [...videoAtts].sort((a: any, b: any) => (a.episode || 0) - (b.episode || 0));
-              perSourceChunks = await runWithConcurrency(sortedVideos, 3, async (va: any) => {
+              const nonVideoContextAtts = (Array.isArray(p.attachments) ? p.attachments : []).filter(
+                (a: any) => !/\.(mp4|mov|webm|mkv|avi)$/i.test(String(a?.name || ''))
+              );
+              const rawConcurrency = Number(process.env.STUDIO_TRANSCRIBE_CONCURRENCY || 3);
+              const concurrency = Number.isInteger(rawConcurrency)
+                ? Math.max(1, Math.min(6, rawConcurrency))
+                : 3;
+              let completedVideos = 0;
+              perSourceChunks = await runWithConcurrency(sortedVideos, concurrency, async (va: any) => {
                 const epNum = Number(va.episode) || 1;
                 const epLabel = `第 ${epNum} 集《${va.name}》`;
-                const r = await callProjectStation({
-                  project: p,
-                  station: 'vision',
-                  account: acc,
-                  extraKeyframes,
-                  userPrompt: `${describeTranscribePromptSource(p.attachments).lead}（${epLabel}，模式：${
-                    p.transcribeMode === 'detailed'
-                      ? '详细模式（逐格拆解画面动作与台词）'
-                      : '快速模式（整集还原场次、动作与台词）'
-                  }）。\n\n${TRANSCRIBE_V72_OUTPUT_GUIDE}`,
-                });
-                const text =
-                  r.ok && r.text
-                    ? r.text
-                    : isLlmFixture()
-                      ? `第${epNum}集 场次1-1 内景 场景 日\n▲ 完成该集结构梳理。`
-                      : '';
-                return { episode: epNum, text };
+                const epScopedAtts = [
+                  va,
+                  ...nonVideoContextAtts.filter((a: any) => !a.episode || Number(a.episode) === epNum),
+                ];
+                const epPrompt = `${describeTranscribePromptSource(epScopedAtts).lead}（${epLabel}，模式：${
+                  p.transcribeMode === 'detailed'
+                    ? '详细模式（逐格拆解画面动作与台词）'
+                    : '快速模式（整集还原场次、动作与台词）'
+                }）。本次仅提供第 ${epNum} 集原始素材，请严格只还原第 ${epNum} 集，不要编造或混入其它集内容。\n\n${TRANSCRIBE_V72_OUTPUT_GUIDE}`;
+
+                const maxAttempts = isLlmFixture() ? 1 : 3;
+                let finalText = '';
+                const epStart = Date.now();
+                for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                  const r = await callProjectStation({
+                    project: { ...p, attachments: epScopedAtts },
+                    station: 'vision',
+                    account: acc,
+                    extraKeyframes,
+                    userPrompt: epPrompt,
+                  });
+                  if (isLlmFixture()) {
+                    finalText =
+                      r.ok && r.text
+                        ? r.text
+                        : `第${epNum}集 场次1-1 内景 场景 日\n▲ 完成该集结构梳理。`;
+                    break;
+                  }
+                  const repaired = r.ok && r.text ? repairBrokenRelayLineWraps(r.text) : '';
+                  const sanitized = sanitizeForClient(repaired);
+                  let epValid = false;
+                  if (sanitized.trim()) {
+                    try {
+                      const epMap = parseTranscribeDeliveryBodies(sanitized, [epNum]);
+                      const epCheck = inspectTranscribeBodiesDelivery([epNum], epMap);
+                      epValid = epCheck.ok;
+                    } catch {
+                      epValid = false;
+                    }
+                  }
+                  finalText = repaired;
+                  if (epValid) {
+                    break;
+                  }
+                  console.warn(
+                    JSON.stringify({
+                      event: 'transcribe_episode_retry',
+                      projectId: p.id,
+                      episode: epNum,
+                      attempt,
+                      maxAttempts,
+                      ok: r.ok,
+                      error: r.error || (sanitized.trim() ? 'INCOMPLETE_BODY' : 'EMPTY_RESPONSE'),
+                      elapsedMs: Date.now() - epStart,
+                    })
+                  );
+                  if (attempt < maxAttempts) {
+                    await new Promise((resolve) => setTimeout(resolve, attempt * 2000));
+                  }
+                }
+                completedVideos += 1;
+                if (!isLlmFixture()) {
+                  console.info(
+                    JSON.stringify({
+                      event: 'transcribe_episode_done',
+                      projectId: p.id,
+                      episode: epNum,
+                      completed: completedVideos,
+                      total: sortedVideos.length,
+                      chars: finalText.length,
+                      elapsedMs: Date.now() - epStart,
+                    })
+                  );
+                }
+                return { episode: epNum, text: finalText };
               });
               combinedRawOutput = perSourceChunks.map((item) => item.text).join('\n\n');
             } else {
@@ -3126,6 +3192,9 @@ export async function POST(request: Request) {
             p.remote.card = null;
 
             const epCount = Array.isArray(p.episodes) ? p.episodes.length : 1;
+            if (p.total === null && epCount > 0) {
+              p.total = epCount;
+            }
             const modeLabel = p.transcribeMode === 'detailed' ? '详细模式' : '快速模式';
             const deliveryCopy = buildTranscribeDeliveryCopy({
               episodeCount: epCount,
