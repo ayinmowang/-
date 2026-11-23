@@ -63,6 +63,7 @@ interface UsageData {
     latencyMs: number;
     usageUnits: number;
     estimatedCostUsd: number;
+    usageStatus?: 'known' | 'unknown';
     status: string;
     error?: string;
   }>;
@@ -434,7 +435,7 @@ export default function UsagePage() {
                           </span>
                         </td>
                         <td style={{ padding: '9px 10px' }}>{log.latencyMs} ms</td>
-                        <td style={{ padding: '9px 10px' }}>${log.estimatedCostUsd.toFixed(5)}</td>
+                        <td style={{ padding: '9px 10px' }}>{log.usageStatus === 'unknown' ? '用量及费用待确认' : `估算 $${log.estimatedCostUsd.toFixed(5)}`}</td>
                       </tr>
                     ))
                   )}

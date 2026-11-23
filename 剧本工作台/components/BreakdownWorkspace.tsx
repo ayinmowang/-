@@ -36,6 +36,11 @@ import {
   isSourceAttachmentMapped,
   sourceAttachmentEpisodeNumbers,
 } from '../lib/source-materials';
+import {
+  inspectTranscribeProjectDeliveryReady,
+  resolveTranscribeStartFeedback,
+  type TranscribeDeliveryReadyResult,
+} from '../lib/transcribe-delivery-ready';
 import type {
   CreatorPromptCatalog,
   CreatorTierSummary,
@@ -56,6 +61,60 @@ async function studioApi(path: string, body?: any) {
   if (!res.ok) throw new Error(data.message || data.error || 'REQUEST_FAILED');
   return data;
 }
+
+// BEGIN_TRANSCRIBE_UI_GATES
+export interface TransferGateDeps {
+  inspectReady: (p: unknown) => { ready: boolean; code: string; reason: string };
+  api: (path: string, body?: unknown) => Promise<any>;
+  setBusy: (v: boolean) => void;
+  setBusyLabel: (v: string) => void;
+  setError: (v: string) => void;
+  setToast: (v: string) => void;
+  navigate: (url: string) => void;
+}
+
+export function isDocxExportUrl(url: string | undefined | null): boolean {
+  if (!url) return false;
+  return /(?:^|[?&])export=docx(?:&|$)/i.test(String(url));
+}
+
+export async function executeGuardedTransfer(
+  project: unknown,
+  busy: boolean,
+  targetKind: 'foreign' | 'domestic',
+  deps: TransferGateDeps
+): Promise<boolean> {
+  if (!project || busy) return false;
+  const gate = deps.inspectReady(project);
+  if (!gate.ready) {
+    deps.setToast('');
+    deps.setError(gate.reason);
+    return false;
+  }
+  const proj = project as { id?: string; version?: number };
+  deps.setBusy(true);
+  deps.setBusyLabel(`正在转入「${targetKind === 'foreign' ? '国外迭代' : '国内迭代'}」创作台…`);
+  try {
+    const nextProj = await deps.api('/api/studio', {
+      operation: 'transfer_iteration',
+      id: proj.id,
+      version: proj.version,
+      target_kind: targetKind,
+    });
+    deps.setToast('已转入创作台并复用素材');
+    deps.navigate(`/studio?id=${nextProj.id}`);
+    return true;
+  } catch (e: any) {
+    deps.setError(e?.message || '转入失败');
+    return false;
+  } finally {
+    deps.setBusy(false);
+    deps.setBusyLabel('');
+  }
+}
+// END_TRANSCRIBE_UI_GATES
+
+
 
 function formatBytes(n: number) {
   if (n > 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
@@ -366,6 +425,11 @@ export default function BreakdownWorkspace() {
 
   async function startTranscribeDirect() {
     if (!active || !selectedMode || busy) return;
+    if (active.remote?.status === 'running') {
+      setToast('');
+      setError(inspectTranscribeProjectDeliveryReady(active).reason);
+      return;
+    }
     setBusy(true);
     setError('');
     try {
@@ -397,7 +461,14 @@ export default function BreakdownWorkspace() {
         },
       });
       syncActiveProject(cur);
-      setToast('扒剧已完成，规范 Word（.docx）已可直接下载！');
+      const feedback = resolveTranscribeStartFeedback(cur);
+      if (feedback.success) {
+        setToast(feedback.toast);
+        setError('');
+      } else {
+        setToast('');
+        setError(feedback.error);
+      }
     } catch (e: any) {
       setError(e.message || '扒剧执行未完成，请稍后重试');
     } finally {
@@ -407,24 +478,15 @@ export default function BreakdownWorkspace() {
   }
 
   async function handleTransfer(targetKind: 'foreign' | 'domestic') {
-    if (!active || busy) return;
-    setBusy(true);
-    setBusyLabel(`正在转入「${targetKind === 'foreign' ? '国外迭代' : '国内迭代'}」创作台…`);
-    try {
-      const nextProj = await studioApi('/api/studio', {
-        operation: 'transfer_iteration',
-        id: active.id,
-        version: active.version,
-        target_kind: targetKind,
-      });
-      setToast('已转入创作台并复用素材');
-      router.push(`/studio?id=${nextProj.id}`);
-    } catch (e: any) {
-      setError(e.message || '转入失败');
-    } finally {
-      setBusy(false);
-      setBusyLabel('');
-    }
+    await executeGuardedTransfer(active, busy, targetKind, {
+      inspectReady: inspectTranscribeProjectDeliveryReady,
+      api: studioApi,
+      setBusy,
+      setBusyLabel,
+      setError,
+      setToast,
+      navigate: (u) => router.push(u),
+    });
   }
 
   async function saveEditorBody() {
@@ -480,7 +542,11 @@ export default function BreakdownWorkspace() {
     return true;
   });
 
-  const isDelivered = active?.remote?.status === 'delivered' || active?.remote?.stage?.key === 'delivery';
+  const deliveryState: TranscribeDeliveryReadyResult | null = active
+    ? inspectTranscribeProjectDeliveryReady(active)
+    : null;
+  const isDelivered = Boolean(deliveryState?.ready);
+  const isTranscribeRunning = active?.remote?.status === 'running';
   const hasMissingEp = Boolean(
     getSourceMaterialAttachments(active?.attachments).some((a) => !isSourceAttachmentMapped(a)),
   );
@@ -657,7 +723,8 @@ export default function BreakdownWorkspace() {
               }}
             >
               {filteredProjects.map((p) => {
-                const done = p.remote?.status === 'delivered';
+                const cardReady = inspectTranscribeProjectDeliveryReady(p);
+                const done = cardReady.ready;
                 return (
                   <div
                     key={p.id}
@@ -688,8 +755,20 @@ export default function BreakdownWorkspace() {
                         >
                           {p.brief?.startsWith('[拆书分析]') ? '📖 拆书分析' : '🎬 视频扒剧'}
                         </span>
-                        <span style={{ fontSize: 11, color: done ? '#15803d' : '#b45309', fontWeight: 600 }}>
-                          {done ? '✓ 已交付 Word' : '待处理'}
+                        <span
+                          style={{
+                            fontSize: 11,
+                            color: done ? '#15803d' : p.remote?.status === 'failed' ? '#991b1b' : '#b45309',
+                            fontWeight: 600,
+                          }}
+                        >
+                          {done
+                            ? '✓ 已交付 Word'
+                            : p.remote?.status === 'failed'
+                              ? '验收未通过'
+                              : p.remote?.status === 'running'
+                                ? '正在执行'
+                                : '待交付'}
                         </span>
                       </div>
                       <h3 style={{ margin: '0 0 6px', fontSize: 16 }}>{p.title}</h3>
@@ -1128,34 +1207,56 @@ export default function BreakdownWorkspace() {
           >
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
               {(() => {
-                const isDelivered =
-                  active.remote?.status === 'delivered' ||
-                  active.remote?.stage?.key === 'delivery';
                 return (
                   <>
-                    <a
-                      href={`/api/upload?id=${active.id}&export=docx`}
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: 6,
-                        padding: '8px 16px',
-                        borderRadius: 999,
-                        border: isDelivered ? 'none' : '1px dashed #8C3B2B',
-                        background: isDelivered ? '#8C3B2B' : '#f7efe8',
-                        color: isDelivered ? '#fff' : '#8C3B2B',
-                        textDecoration: 'none',
-                        fontWeight: 700,
-                        fontSize: 13,
-                      }}
-                    >
-                      <Download size={14} />{' '}
-                      {isDelivered ? '下载规范 Word (.docx)' : '下载未完成占位稿 (.docx)'}
-                    </a>
+                    {isDelivered ? (
+                      <a
+                        href={`/api/upload?id=${active.id}&export=docx`}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          padding: '8px 16px',
+                          borderRadius: 999,
+                          border: 'none',
+                          background: '#8C3B2B',
+                          color: '#fff',
+                          textDecoration: 'none',
+                          fontWeight: 700,
+                          fontSize: 13,
+                        }}
+                      >
+                        <Download size={14} /> 下载规范 Word (.docx)
+                      </a>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled
+                        aria-disabled="true"
+                        title={deliveryState?.reason || '目标分集正文尚未通过完整度验收，暂不可下载'}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          padding: '8px 16px',
+                          borderRadius: 999,
+                          border: '1px dashed #d6c8b8',
+                          background: '#f5efe7',
+                          color: '#8a7a6a',
+                          fontWeight: 700,
+                          fontSize: 13,
+                          cursor: 'not-allowed',
+                          opacity: 0.78,
+                        }}
+                      >
+                        <Download size={14} /> 暂未通过验收，不可下载 (.docx)
+                      </button>
+                    )}
                     <button
                       type="button"
                       disabled={busy || !isDelivered}
-                      title={isDelivered ? undefined : '扒剧项目交付后才可转入'}
+                      aria-disabled={busy || !isDelivered}
+                      title={isDelivered ? undefined : (deliveryState?.reason || '目标分集正文通过完整度验收后才可转入')}
                       onClick={() => handleTransfer('foreign')}
                       style={{
                         padding: '7px 12px',
@@ -1173,7 +1274,8 @@ export default function BreakdownWorkspace() {
                     <button
                       type="button"
                       disabled={busy || !isDelivered}
-                      title={isDelivered ? undefined : '扒剧项目交付后才可转入'}
+                      aria-disabled={busy || !isDelivered}
+                      title={isDelivered ? undefined : (deliveryState?.reason || '目标分集正文通过完整度验收后才可转入')}
                       onClick={() => handleTransfer('domestic')}
                       style={{
                         padding: '7px 12px',
@@ -1250,6 +1352,31 @@ export default function BreakdownWorkspace() {
 
           <div style={{ flex: 1, overflowY: 'auto', padding: '24px 28px' }}>
             <div style={{ maxWidth: pageWidthMode ? 760 : '100%', margin: '0 auto' }}>
+              {active.remote && deliveryState && !deliveryState.ready && (
+                <div
+                  role={active.remote.status === 'failed' || active.remote.status === 'delivered' ? 'alert' : 'status'}
+                  aria-live="polite"
+                  style={{
+                    padding: '10px 12px',
+                    borderRadius: 10,
+                    background: active.remote.status === 'failed' ? '#fef2f2' : '#fffbeb',
+                    border: active.remote.status === 'failed' ? '1px solid #fecaca' : '1px solid #fde68a',
+                    color: active.remote.status === 'failed' ? '#991b1b' : '#92400e',
+                    marginBottom: 14,
+                    fontSize: 13,
+                    lineHeight: 1.5,
+                  }}
+                >
+                  <div style={{ fontWeight: 700, marginBottom: 2 }}>
+                    {active.remote.status === 'running'
+                      ? '扒剧正在运行中 · 请勿重复触发'
+                      : active.remote.status === 'failed'
+                        ? '交付验收未通过 · 已保留现有正文，暂不可下载或转入'
+                        : '尚未满足交付验收条件 · 暂不可下载或转入'}
+                  </div>
+                  <div>{deliveryState.reason}</div>
+                </div>
+              )}
               {error && (
                 <div style={{ padding: 10, borderRadius: 10, background: '#fee2e2', color: '#991b1b', marginBottom: 14, fontSize: 13 }}>
                   {error}
@@ -1349,7 +1476,9 @@ export default function BreakdownWorkspace() {
                 )}
                 <button
                   type="button"
-                  disabled={busy || !selectedMode || hasMissingEp}
+                  disabled={busy || !selectedMode || hasMissingEp || isTranscribeRunning}
+                  aria-disabled={busy || !selectedMode || hasMissingEp || isTranscribeRunning}
+                  title={isTranscribeRunning ? deliveryState?.reason : undefined}
                   onClick={startTranscribeDirect}
                   style={{
                     width: '100%',
@@ -1458,7 +1587,7 @@ export default function BreakdownWorkspace() {
                 }}
               >
                 {m.text}
-                {m.file && (
+                {m.file && (!isDocxExportUrl(m.file.url) || isDelivered ? (
                   <a
                     href={m.file.url}
                     style={{
@@ -1478,7 +1607,33 @@ export default function BreakdownWorkspace() {
                   >
                     <Download size={14} /> {m.file.name}
                   </a>
-                )}
+                ) : (
+                  <button
+                    type="button"
+                    disabled
+                    aria-disabled="true"
+                    title={deliveryState?.reason || '当前项目未通过交付验收，暂不可下载正式 Word'}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      marginTop: 8,
+                      padding: '8px 10px',
+                      borderRadius: 8,
+                      background: '#f5efe7',
+                      color: '#8a7a6a',
+                      fontWeight: 700,
+                      fontSize: 12,
+                      border: '1px dashed #d6c8b8',
+                      cursor: 'not-allowed',
+                      opacity: 0.8,
+                      width: '100%',
+                      textAlign: 'left',
+                    }}
+                  >
+                    <Download size={14} /> {m.file.name}（未通过验收，暂不可下载）
+                  </button>
+                ))}
               </div>
             ))}
           </div>

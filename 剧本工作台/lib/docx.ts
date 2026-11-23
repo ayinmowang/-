@@ -1,6 +1,9 @@
 import zlib from 'node:zlib';
 import { sanitizeForClient } from './server';
 import type { Kind, Project, StudioAssetNode, StudioEpisode } from './types';
+import { parseTranscribeDeliveryBodies as parseAltBodies } from './transcribe-parse';
+import { inspectTranscribeBodiesDelivery as inspectAltBodies } from './transcribe-delivery-guard';
+import { uniqueValidSourceEpisodes as uniqueAltEpisodes } from './source-materials';
 
 export interface DocxTableInput {
   headers: string[];
@@ -636,6 +639,25 @@ export function projectToDocxInput(project: Project): DocxDocumentInput {
     });
   }
 
+  const altOut = project.kind === 'transcribe' ? (outputs as any)?.scriptTraditional : undefined;
+  if (altOut) {
+    const altEps = uniqueAltEpisodes((project as any).attachments);
+    let altBodies = new Map<number, string>();
+    try {
+      if (typeof altOut.content === 'string' && altOut.content.trim() && altEps.length > 0) {
+        altBodies = parseAltBodies(altOut.content, altEps);
+      }
+    } catch {
+      altBodies = new Map<number, string>();
+    }
+    if (altEps.length === 0 || inspectAltBodies(altEps, altBodies).ok !== true) {
+      throw new Error('繁體版分集剧本校验未通过，无法导出 Word，请重新生成或联系管理员。');
+    }
+    sections.push({ heading: '附：繁體版分集劇本', body: '以下为同一剧本的繁體版分集正文，供对照使用。', level: 1 });
+    for (const n of altEps) {
+      sections.push({ heading: `第 ${n} 集（繁體）`, body: altBodies.get(n) as string, level: 2 });
+    }
+  }
   return sanitizeForClient({
     title: project.title || '未命名剧本',
     subtitle: `${kindLabel} · 交付剧本包`,

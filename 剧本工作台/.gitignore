@@ -26,3 +26,4 @@ tsconfig.tsbuildinfo
 npm-debug.log*
 .DS_Store
 Thumbs.db
+.private-transcribe-evidence/

@@ -375,6 +375,22 @@ export interface StationRouteConfig {
 }
 
 export interface ApiAuditLog {
+  usageStatus?: 'known' | 'unknown';
+  mediaCount?: number;
+  mediaMimes?: string[];
+  inputTokens?: number;
+  outputTokens?: number;
+  thoughtTokens?: number;
+  /** Server audit only. Never copied into project JSON or client responses. */
+  diagnostic?: {
+    phases: Record<string, number>;
+    lastPhase: string;
+    elapsedMs: number;
+    timeoutMs: number;
+    localDeadline: boolean;
+    reasonCode: string;
+    httpStatus?: number;
+  };
   id: string;
   time: string;
   accountId: string;

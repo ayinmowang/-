@@ -2560,7 +2560,7 @@ export default function AdminConsolePage() {
                           </td>
                           <td style={styles.td}>{log.latencyMs} ms</td>
                           <td style={styles.td}>
-                            {log.tokens} tokens (${log.estimatedCostUsd.toFixed(4)})
+                            {log.usageStatus === 'unknown' ? '用量及费用待确认' : `${log.tokens} tokens (估算 $${log.estimatedCostUsd.toFixed(4)})`}
                           </td>
                           <td style={styles.td}>
                             <span

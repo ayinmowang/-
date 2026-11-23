@@ -37,7 +37,39 @@ import {
   inspectManuscriptEpisodeCoverage,
   mergePerSourceEpisodeBodies,
   parseEpisodeBodiesFromSingleSource,
+  parseTranscribeDeliveryBodies,
 } from '../../../lib/transcribe-parse';
+import { inspectTranscribeBodiesDelivery } from '../../../lib/transcribe-delivery-guard';
+import { inspectTranscribeProjectDeliveryReady } from '../../../lib/transcribe-delivery-ready';
+import { saveTranscribeRawEvidence } from '../../../lib/transcribe-private-evidence';
+
+/** Strict delivery parse. Throws on any source mismatch, duplicate, or cross-chunk conflict. No permissive fallback. */
+function parseStrictTranscribeDeliveryMap(
+  combinedText: string,
+  perSource: ReadonlyArray<EpisodeSourceChunk> | undefined,
+  sourceEpisodes: number[],
+): Map<number, string> {
+  if (!perSource || perSource.length === 0) {
+    return parseTranscribeDeliveryBodies(combinedText, sourceEpisodes);
+  }
+  const allowed = new Set(sourceEpisodes);
+  const seen = new Set<number>();
+  const out = new Map<number, string>();
+  for (const src of perSource) {
+    if (!allowed.has(src.episode) || seen.has(src.episode)) {
+      throw new Error('transcribe delivery: per-source episode not in source mapping or duplicated');
+    }
+    seen.add(src.episode);
+    const parsed = parseTranscribeDeliveryBodies(src.text, [src.episode]);
+    for (const [ep, body] of parsed) {
+      if (!allowed.has(ep) || out.has(ep)) {
+        throw new Error('transcribe delivery: episode body conflict between sources');
+      }
+      out.set(ep, body);
+    }
+  }
+  return out;
+}
 import type {
   Project,
   Kind,
@@ -493,7 +525,7 @@ async function callProjectStation(params: {
   }
 
   const tierCfg = resolvedTier.tier;
-  return callStationLLM({
+  const result = await callStationLLM({
     station: params.station,
     account: params.account,
     projectId: params.project.id,
@@ -508,7 +540,31 @@ async function callProjectStation(params: {
     ...(typeof tierCfg.temperature === 'number' ? { temperatureOverride: tierCfg.temperature } : {}),
     ...(typeof tierCfg.maxTokens === 'number' ? { maxTokensOverride: tierCfg.maxTokens } : {}),
     ...(mediaAttachments.length > 0 ? { mediaAttachments } : {}),
+    ...(params.project.kind === 'transcribe' && params.station === 'vision'
+      ? {
+          onRawText: (rawText: string, auditId: string) =>
+            saveTranscribeRawEvidence({
+              owner: params.account.username,
+              projectId: params.project.id,
+              sourceEpisodes: uniqueValidSourceEpisodes(params.project.attachments),
+              auditId,
+              inputSource: mediaAttachments.some((m) => m.mimeType.startsWith('video/'))
+                ? 'video'
+                : mediaAttachments.some((m) => m.mimeType.startsWith('image/'))
+                ? 'image'
+                : 'manuscript',
+              text: rawText,
+            }),
+        }
+      : {}),
   });
+  if (
+    process.env.STUDIO_STRICT_NATIVE_GEMINI === '1' &&
+    (!result.ok || typeof result.text !== 'string' || !result.text.trim())
+  ) {
+    throw new Error('严格原生视觉模式调用失败，已阻断回退生成。');
+  }
+  return result;
 }
 
 function withCatalogs<T extends Record<string, any>>(payload: T): T {
@@ -1017,12 +1073,8 @@ function populateTranscribeWorkspace(
       }))
     : undefined;
 
-  const parsedEpMap =
-    sanitizedSources && sanitizedSources.length > 0
-      ? mergePerSourceEpisodeBodies(sanitizedSources)
-      : parseEpisodeBodiesFromSingleSource(cleanOutput);
-
   const validSourceEpisodes = uniqueValidSourceEpisodes(p.attachments);
+  const parsedEpMap = parseStrictTranscribeDeliveryMap(cleanOutput, sanitizedSources, validSourceEpisodes);
   const targetEpNums: number[] =
     validSourceEpisodes.length > 0
       ? validSourceEpisodes
@@ -1319,7 +1371,46 @@ export async function GET(request: Request) {
   }
 }
 
+// In-process lock only. It is not atomic across workers; the persisted running status is the cross-request guard.
+const transcribeActionLocks = new Set<string>();
+
 export async function POST(request: Request) {
+  const tfCtx: { key?: string; user?: string; pid?: string; actionId?: string; startedAt?: number; cid?: string; base?: any } = {};
+  const logTf = (code: string, event = 'transcribe_action_failed') => {
+    if (!tfCtx.key) return;
+    console.error(
+      JSON.stringify({
+        event,
+        correlationId: tfCtx.cid,
+        projectId: tfCtx.pid,
+        actionId: tfCtx.actionId,
+        elapsedMs: Date.now() - (tfCtx.startedAt || Date.now()),
+        code,
+      })
+    );
+  };
+  const failTf = async (): Promise<Response | null> => {
+    const b = tfCtx.base;
+    if (!tfCtx.key || !b || !tfCtx.user) return null;
+    logTf('TRANSCRIBE_THROWN');
+    try {
+      b.remote.status = 'failed';
+      b.remote.stage = { key: 'transcribe_failed', title: '扒剧处理失败 · 未交付' };
+      b.remote.card = null;
+      message(b, 'director', '本轮扒剧处理未能完成，已保留原有内容，未做覆盖。请稍后点击重试，或补充素材后再试。');
+      await saveProject(b, tfCtx.user);
+    } catch {
+      logTf('PERSIST_FAILED', 'persist_failed');
+      return Response.json(
+        { error: '扒剧处理失败，且失败状态未能保存。请刷新页面查看最新状态后再重试。', code: 'PERSIST_FAILED' },
+        { status: 500 }
+      );
+    }
+    return Response.json(
+      { error: '扒剧处理失败，已保留原有内容，未做覆盖。请刷新后点击重试，或补充素材后再试。', code: 'TRANSCRIBE_ACTION_FAILED' },
+      { status: 502 }
+    );
+  };
   try {
     const user = await owner(request);
     const body: any = await request.json().catch(() => {
@@ -2496,6 +2587,7 @@ export async function POST(request: Request) {
       p.executionMode = execControls.executionMode;
 
       const actionPayload = body.action || {};
+      const transcribeWasRunning = p.remote?.status === 'running';
       if (actionPayload.action_id && p.processedActionIds.includes(actionPayload.action_id)) {
         return Response.json(withCatalogs(p));
       }
@@ -2667,6 +2759,37 @@ export async function POST(request: Request) {
             }
 
             // Clean run (or anomaly confirmed): execute vision directly and deliver .docx without Step 3 empty card
+            {
+              const lockKey = `${user}:${p.id}`;
+              if (transcribeWasRunning || transcribeActionLocks.has(lockKey)) {
+                return Response.json(
+                  { error: '该扒剧任务正在处理中，请稍候刷新查看结果，请勿重复点击。', code: 'TRANSCRIBE_ALREADY_RUNNING' },
+                  { status: 409 }
+                );
+              }
+              transcribeActionLocks.add(lockKey);
+              tfCtx.key = lockKey;
+              tfCtx.user = user;
+              tfCtx.pid = String(p.id).slice(0, 128);
+              tfCtx.actionId = String(actionPayload.action_id || '').slice(0, 128);
+              tfCtx.startedAt = Date.now();
+              tfCtx.cid = globalThis.crypto.randomUUID();
+              try {
+                const runningSnap = JSON.parse(JSON.stringify(p));
+                runningSnap.remote.status = 'running';
+                runningSnap.remote.stage = { key: 'transcribe_running', title: '扒剧处理中' };
+                runningSnap.remote.card = null;
+                const savedRunning = await saveProject(runningSnap, user);
+                p.version = savedRunning.version;
+                tfCtx.base = JSON.parse(JSON.stringify(savedRunning));
+              } catch {
+                logTf('PERSIST_FAILED', 'persist_failed');
+                return Response.json(
+                  { error: '扒剧任务未能启动，状态未保存，请刷新后重试。', code: 'PERSIST_FAILED' },
+                  { status: 500 }
+                );
+              }
+            }
             let combinedRawOutput = '';
             let perSourceChunks: EpisodeSourceChunk[] | undefined;
             if (videoAtts.length > 3) {
@@ -2686,7 +2809,11 @@ export async function POST(request: Request) {
                   }）。请直接输出结构化扒剧结果：\n1. 【全剧人物标准人名锚定表】\n2. 【本集核心剧情梗概】\n3. 【分集分场次还原剧本】（格式：“第X集 场次1-1 内/外景 地点 日/夜”，动作以 ▲ 标示，逐句还原台词）。`,
                 });
                 const text =
-                  r.ok && r.text ? r.text : `第${epNum}集 场次1-1 内景 场景 日\n▲ 完成该集结构梳理。`;
+                  r.ok && r.text
+                    ? r.text
+                    : isLlmFixture()
+                      ? `第${epNum}集 场次1-1 内景 场景 日\n▲ 完成该集结构梳理。`
+                      : '';
                 return { episode: epNum, text };
               });
               combinedRawOutput = perSourceChunks.map((item) => item.text).join('\n\n');
@@ -2711,6 +2838,7 @@ export async function POST(request: Request) {
               const outputGuide =
                 '请直接输出完整的结构化扒剧结果（不要索要文件或调用外部工具）：\n1. 【全剧人物标准人名锚定表】（角色名、身份定位、外貌/声线特征）\n2. 【本集核心剧情梗概】\n3. 【分集分场次还原剧本】（严格按“第X集 场次1-1 内/外景 地点 日/夜”格式，动作与神态以 ▲ 标示，逐句还原人物台词；对看不清的特写或字幕标注【待人工補寫】）。';
 
+              let ranPerSourceLlm = false;
               if (!isLlmFixture()) {
                 const manuscriptAtts = (Array.isArray(p.attachments) ? p.attachments : []).filter(
                   (a: any) =>
@@ -2756,6 +2884,7 @@ export async function POST(request: Request) {
                   }
                 }
                 if (episodeBodies.length > 1) {
+                  ranPerSourceLlm = true;
                   perSourceChunks = await runWithConcurrency(episodeBodies, 3, async (chunk) => {
                     const epLabel = `第 ${chunk.episode} 集`;
                     message(p, 'progress', `正在处理${epLabel}`);
@@ -2770,14 +2899,16 @@ export async function POST(request: Request) {
                     const text =
                       r.ok && r.text
                         ? r.text
-                        : `第${chunk.episode}集 场次1-1 内景 场景 日\n▲ 完成该集结构梳理。`;
+                        : isLlmFixture()
+                          ? `第${chunk.episode}集 场次1-1 内景 场景 日\n▲ 完成该集结构梳理。`
+                          : '';
                     return { episode: chunk.episode, text };
                   });
                   combinedRawOutput = perSourceChunks.map((item) => item.text).join('\n\n');
                 }
               }
 
-              if (!combinedRawOutput) {
+              if (!ranPerSourceLlm && !combinedRawOutput) {
                 const llm = await callProjectStation({
                   project: p,
                   station: 'vision',
@@ -2788,9 +2919,63 @@ export async function POST(request: Request) {
                 combinedRawOutput =
                   llm.ok && llm.text
                     ? llm.text
-                    : `### 故事梗概\n已完成《${p.title}》分集拆解。\n\n### 分场剧本\n第1集 场次1-1 内景 主场景 日\n▲ 已按${p.transcribeMode === 'detailed' ? '详细模式' : '快速模式'}完成分集场次与台词还原。`;
+                    : isLlmFixture()
+                      ? `### 故事梗概\n已完成《${p.title}》分集拆解。\n\n### 分场剧本\n第1集 场次1-1 内景 主场景 日\n▲ 已按${p.transcribeMode === 'detailed' ? '详细模式' : '快速模式'}完成分集场次与台词还原。`
+                      : '';
               }
             }
+
+            // BEGIN_TRANSCRIBE_DELIVERY_GUARD
+            if (!isLlmFixture()) {
+              const sanitizedCombinedRaw = sanitizeForClient(combinedRawOutput || '');
+              const sanitizedPerSourceChunks = Array.isArray(perSourceChunks)
+                ? perSourceChunks.map((src) => ({
+                    episode: src.episode,
+                    text: sanitizeForClient(src.text || ''),
+                  }))
+                : undefined;
+              const expectedEpisodes = uniqueValidSourceEpisodes(p.attachments);
+              let candidateEpMap: Map<number, string>;
+              try {
+                candidateEpMap = parseStrictTranscribeDeliveryMap(
+                  sanitizedCombinedRaw,
+                  sanitizedPerSourceChunks,
+                  expectedEpisodes,
+                );
+              } catch {
+                // Strict parse rejected the output: an empty map makes the existing guard report failure.
+                candidateEpMap = new Map();
+              }
+              const deliveryCheck = inspectTranscribeBodiesDelivery(expectedEpisodes, candidateEpMap);
+              if (!deliveryCheck.ok) {
+                const { transcribeDraft: _legacyTranscribeDraft, ...outputsWithoutDraft } = (p.remote
+                  .outputs || {}) as Record<string, unknown>;
+                p.remote.outputs = outputsWithoutDraft as typeof p.remote.outputs;
+                p.remote.status = 'failed';
+                p.remote.stage = { key: 'transcribe_incomplete', title: '扒剧正文未完整 · 未交付' };
+                p.remote.card = null;
+                p.remote.cursor = Math.max(0, nextCursor - 1);
+                const totalSteps = Math.max(1, Number(p.remote.progress?.total_steps) || 1);
+                p.remote.progress = {
+                  ...(p.remote.progress || {}),
+                  total_steps: totalSteps,
+                  completed_steps: Math.max(
+                    0,
+                    Math.min((Number(p.remote.progress?.completed_steps) || 1) - 1, totalSteps - 1),
+                  ),
+                };
+                logTf('TRANSCRIBE_DELIVERY_REJECTED');
+                const safeReason = sanitizeForClient(deliveryCheck.reason || '分集正文未达到交付标准');
+                message(
+                  p,
+                  'director',
+                  `本轮扒剧正文未通过完整度验收（${safeReason}），已拦截交付并保留原有有效正文，未做覆盖。本次返回内容未交付，旧有内容已受保护。请补充或检查原始素材后手动点击重试。`,
+                );
+                const saved = await saveProject(p, user);
+                return Response.json(withCatalogs(saved));
+              }
+            }
+            // END_TRANSCRIBE_DELIVERY_GUARD
 
             populateTranscribeWorkspace(p, combinedRawOutput, perSourceChunks);
             p.remote.stage = { key: 'delivery', title: '扒剧完成 · Word (.docx) 已就绪' };
@@ -3184,7 +3369,14 @@ export async function POST(request: Request) {
           return true;
         })
         .map((a: any) => ({ ...a, name: sanitizeAttachmentName(a?.name), role: 'source' }));
-      const isDelivered = p.remote?.status === 'delivered' || p.remote?.stage?.key === 'delivery';
+      const check = inspectTranscribeProjectDeliveryReady(p);
+      if (!check.ready) {
+        return Response.json(
+          { error: check.reason, code: 'TRANSCRIBE_NOT_READY' },
+          { status: 409 },
+        );
+      }
+      const isDelivered = check.ready;
       const now = new Date().toISOString();
       const nextProj: any = {
         id: crypto.randomUUID(),
@@ -3239,6 +3431,10 @@ export async function POST(request: Request) {
     const saved = await saveProject(p, user);
     return Response.json(withCatalogs(saved));
   } catch (e) {
+    const failed = await failTf();
+    if (failed) return failed;
     return failure(e);
+  } finally {
+    if (tfCtx.key) transcribeActionLocks.delete(tfCtx.key);
   }
 }

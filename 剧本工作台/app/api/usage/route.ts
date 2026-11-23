@@ -272,6 +272,7 @@ export async function GET(request: Request) {
       latencyMs: log.latencyMs,
       usageUnits: Number(log.tokens || 0),
       estimatedCostUsd: Number((log.estimatedCostUsd || 0).toFixed(5)),
+      usageStatus: log.usageStatus || 'known',
       status: log.status,
       ...(log.error ? { error: sanitizeForClient(log.error) } : {}),
     }));

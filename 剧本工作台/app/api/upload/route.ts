@@ -20,6 +20,7 @@ import {
 import type { AttachmentRole, Project } from '../../../lib/types';
 import { extractManuscriptTextFromBuffer } from '../../../lib/manuscript-extract';
 import { inspectManuscriptEpisodeCoverage } from '../../../lib/transcribe-parse';
+import { inspectTranscribeProjectDeliveryReady } from '../../../lib/transcribe-delivery-ready';
 import { formatCoveredEpisodeRange, normalizeCoveredEpisodes } from '../../../lib/source-materials';
 
 const BUCKET_DIR = path.join(process.cwd(), '.data', 'buckets');
@@ -217,6 +218,15 @@ export async function GET(request: Request) {
     const p = await getProject(id, user);
 
     if (isDocxExport) {
+      if (p.kind === 'transcribe') {
+        const check = inspectTranscribeProjectDeliveryReady(p);
+        if (!check.ready) {
+          return Response.json(
+            { error: check.reason, code: 'TRANSCRIBE_NOT_READY' },
+            { status: 409 },
+          );
+        }
+      }
       const docxBuf = buildDocxBuffer(projectToDocxInput(p));
       const exportRawName = `${p.title || 'script'}-完整剧本.docx`;
       const encodedFileName = encodeURIComponent(exportRawName);

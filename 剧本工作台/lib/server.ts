@@ -1,3 +1,4 @@
+import { isStrictNativeGeminiEnabled, runStrictNativeStation } from './strict-native-station';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -1223,6 +1224,9 @@ export function connected(): boolean {
 }
 
 export function gptAvailable(): boolean {
+  if (isStrictNativeGeminiEnabled()) {
+    return typeof process.env.STUDIO_STRICT_NATIVE_API_KEY === "string" && process.env.STUDIO_STRICT_NATIVE_API_KEY.trim().length > 0;
+  }
   const store = loadPersistentStore();
   const hasProviderKey = store.systemConfig.providers.some((p) => p.enabled && p.apiKeys.some((k) => k.trim().length > 0));
   if (hasProviderKey) return true;
@@ -1237,6 +1241,7 @@ export function connectionMode(): 'remote' | 'test_channel' | 'local' {
 }
 
 const SENSITIVE_KEYS = new Set([
+  'transcribedraft',
   'model',
   'modelid',
   'model_id',
@@ -2136,11 +2141,12 @@ export async function executeProviderChat(params: {
  */
 export async function callStationLLM(params: {
   station: StationRoleKey;
+  onRawText?: (text: string, auditId: string) => void;
   userPrompt: string;
   systemPromptOverride?: string;
   account?: StudioAccount;
   projectId?: string;
-  project?: Pick<Project, 'kind' | 'promptSelections'>;
+  project?: Pick<Project, 'kind' | 'promptSelections' | 'transcribeMode'>;
   skillKind?: Kind;
   mediaAttachments?: MultimodalAttachmentInput[];
   thinkingLevel?: ThinkingLevel;
@@ -2161,6 +2167,95 @@ export async function callStationLLM(params: {
   if (acc && acc.budgetCapUsd > 0 && acc.budgetUsedUsd >= acc.budgetCapUsd) {
     return { ok: false, text: null, error: 'BUDGET_EXCEEDED' };
   }
+
+  if (isStrictNativeGeminiEnabled()) {
+    const t0 = Date.now();
+    try {
+      const strictRes = await runStrictNativeStation({
+        transcribeMode: params.project?.transcribeMode,
+        station: params.station,
+        userPrompt: params.userPrompt,
+        systemPrompt: params.systemPromptOverride ?? route?.systemPrompt,
+        temperature: params.temperatureOverride ?? route?.temperature,
+        maxTokens: params.maxTokensOverride ?? route?.maxTokens,
+        mediaAttachments: params.mediaAttachments,
+        timeoutMs: params.timeoutMs,
+      });
+      if (strictRes) {
+        if (acc && strictRes.audit.usageStatus === 'known') {
+          acc.tokensUsed = (acc.tokensUsed || 0) + strictRes.audit.tokens;
+          acc.budgetUsedUsd = Number(((acc.budgetUsedUsd || 0) + strictRes.audit.estimatedCostUsd).toFixed(6));
+        }
+        store.auditLogs.unshift({
+          id: `audit_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          time: new Date().toISOString(),
+          accountId: acc?.id || 'system',
+          username: acc?.username || 'system',
+          projectId: params.projectId,
+          station: params.station,
+          stationTitle: route?.title || params.station,
+          providerId: 'strict-native-gemini',
+          providerName: 'Native Vision Channel',
+          model: 'native-vision',
+          latencyMs: Date.now() - t0,
+          tokens: strictRes.audit.tokens,
+          estimatedCostUsd: strictRes.audit.estimatedCostUsd,
+          usageStatus: strictRes.audit.usageStatus,
+          mediaCount: strictRes.audit.mediaCount,
+          mediaMimes: strictRes.audit.mediaMimes,
+          ...(typeof strictRes.audit.inputTokens === 'number' ? { inputTokens: strictRes.audit.inputTokens } : {}),
+          ...(typeof strictRes.audit.outputTokens === 'number' ? { outputTokens: strictRes.audit.outputTokens } : {}),
+          ...(typeof strictRes.audit.thoughtTokens === 'number' ? { thoughtTokens: strictRes.audit.thoughtTokens } : {}),
+          ...(strictRes.audit.diagnostic ? { diagnostic: strictRes.audit.diagnostic } : {}),
+          status: strictRes.ok ? 'success' : 'failed',
+          ...(strictRes.error ? { error: sanitizeForClient(strictRes.error) } : {}),
+          tierId: params.tierId,
+          tierName: params.tierName,
+        });
+        if (store.auditLogs.length > 200) store.auditLogs.length = 200;
+        flushPersistentStore();
+        if (!strictRes.ok || !strictRes.text) {
+          return { ok: false, text: null, error: sanitizeForClient(strictRes.error || '原生视觉服务调用失败') };
+        }
+        if (params.onRawText) {
+          try {
+            params.onRawText(strictRes.rawText ?? strictRes.text, store.auditLogs[0].id);
+          } catch {
+            return { ok: false, text: null, error: '原文留存失败，本次未交付，请检查存储后重试' };
+          }
+        }
+        return { ok: true, text: sanitizeForClient(strictRes.text) };
+      }
+      return { ok: false, text: null, error: '严格原生视觉通道返回空结果，已禁止回退。' };
+    } catch {
+      store.auditLogs.unshift({
+        id: `audit_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        time: new Date().toISOString(),
+        accountId: acc?.id || 'system',
+        username: acc?.username || 'system',
+        projectId: params.projectId,
+        station: params.station,
+        stationTitle: route?.title || params.station,
+        providerId: 'strict-native-gemini',
+        providerName: 'Native Vision Channel',
+        model: 'native-vision',
+        latencyMs: Date.now() - t0,
+        tokens: 0,
+        estimatedCostUsd: 0,
+        usageStatus: 'unknown',
+        mediaCount: 0,
+        mediaMimes: [],
+        status: 'failed',
+        error: '原生视觉入口执行异常',
+        tierId: params.tierId,
+        tierName: params.tierName,
+      });
+      if (store.auditLogs.length > 200) store.auditLogs.length = 200;
+      flushPersistentStore();
+      return { ok: false, text: null, error: '原生视觉入口执行异常' };
+    }
+  }
+
 
   const candidateTargets: { provider: ApiProviderConfig; model: string; isFallback: boolean }[] = [];
 
@@ -2369,6 +2464,13 @@ export async function callStationLLM(params: {
           if (resolvedSkills?.secondary?.content) extraSensitive.push(resolvedSkills.secondary.content);
           if (baseSysPrompt) extraSensitive.push(baseSysPrompt);
           if (params.systemPromptOverride) extraSensitive.push(params.systemPromptOverride);
+          if (params.onRawText) {
+            try {
+              params.onRawText(reply, logEntry.id);
+            } catch {
+              return { ok: false, text: null, error: '原文留存失败，本次未交付，请检查存储后重试' };
+            }
+          }
           return { ok: true, text: sanitizeForClient(reply.trim(), extraSensitive) };
         }
       } catch (err: any) {
