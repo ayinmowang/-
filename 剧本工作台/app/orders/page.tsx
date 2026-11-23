@@ -33,8 +33,8 @@ interface OrderItem {
 const STATUS_FILTERS = [
   { key: '', label: '全部订单' },
   { key: 'pending', label: '待管理员确认入账' },
-  { key: 'confirmed', label: '已确认入账' },
-  { key: 'canceled', label: '已取消' },
+  { key: 'paid', label: '已确认入账' },
+  { key: 'cancelled', label: '已取消' },
 ];
 
 export default function OrdersPage() {
@@ -60,6 +60,7 @@ export default function OrdersPage() {
       setAccount(json.account || null);
       setOrders(Array.isArray(json.orders) ? json.orders : []);
     } catch (err: any) {
+      setOrders([]);
       setError(err.message || '加载失败，请稍后重试');
     } finally {
       setLoading(false);
@@ -134,7 +135,7 @@ export default function OrdersPage() {
     if (period === 'monthly') return '月度订阅';
     if (period === 'quarterly') return '季度订阅';
     if (period === 'yearly') return '年度订阅';
-    if (period === 'one_time') return '单次额度';
+    if (period === 'one_time' || period === 'once') return '单次额度';
     return period || '标准';
   }
 

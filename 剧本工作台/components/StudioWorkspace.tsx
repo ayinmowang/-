@@ -94,6 +94,17 @@ export default function StudioWorkspace() {
   const [newTitle, setNewTitle] = useState('');
   const [newBrief, setNewBrief] = useState('');
 
+  useEffect(() => {
+    if (!showCreateModal) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !busy) {
+        setShowCreateModal(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showCreateModal, busy]);
+
   // Left panel
   const [leftMode, setLeftMode] = useState<LeftMode>('toc');
   const [leftDropOpen, setLeftDropOpen] = useState(false);
@@ -951,6 +962,9 @@ export default function StudioWorkspace() {
               style={{ position: 'fixed', inset: 0, background: 'rgba(28,22,18,0.48)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 90, padding: 16 }}
             >
               <form
+                role="dialog"
+                aria-modal="true"
+                aria-label="新建短剧作品"
                 onSubmit={handleCreate}
                 onClick={(e) => e.stopPropagation()}
                 style={{ width: '100%', maxWidth: 500, background: 'var(--warm-card, #fff)', borderRadius: 18, padding: 26, display: 'flex', flexDirection: 'column', gap: 14 }}
@@ -1390,17 +1404,17 @@ export default function StudioWorkspace() {
           </div>
 
           {/* Row 3: Minimal Formatting Bar */}
-          <div style={{ padding: '6px 16px', borderBottom: '1px solid var(--warm-border, #e6dfd3)', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
-            <button type="button" onClick={() => wrapSelection('**', '**')} style={{ padding: '3px 8px', borderRadius: 6, border: '1px solid transparent', background: 'transparent', fontWeight: 800, cursor: 'pointer' }}>B</button>
-            <button type="button" onClick={() => wrapSelection('*', '*')} style={{ padding: '3px 8px', borderRadius: 6, border: '1px solid transparent', background: 'transparent', fontStyle: 'italic', cursor: 'pointer' }}>I</button>
-            <button type="button" onClick={() => wrapSelection('「', '」')} style={{ padding: '3px 8px', borderRadius: 6, border: '1px solid transparent', background: 'transparent', cursor: 'pointer' }}>「」</button>
+          <div style={{ padding: '6px 16px', borderBottom: '1px solid var(--warm-border, #e6dfd3)', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6, fontSize: 12 }}>
+            <button type="button" onClick={() => wrapSelection('**', '**')} style={{ padding: '3px 8px', borderRadius: 6, border: '1px solid transparent', background: 'transparent', fontWeight: 800, cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0 }}>B</button>
+            <button type="button" onClick={() => wrapSelection('*', '*')} style={{ padding: '3px 8px', borderRadius: 6, border: '1px solid transparent', background: 'transparent', fontStyle: 'italic', cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0 }}>I</button>
+            <button type="button" onClick={() => wrapSelection('「', '」')} style={{ padding: '3px 8px', borderRadius: 6, border: '1px solid transparent', background: 'transparent', cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0 }}>「」</button>
             <span style={{ opacity: 0.25 }}>|</span>
             {(['left', 'center', 'justify'] as const).map((al) => (
               <button
                 key={al}
                 type="button"
                 onClick={() => setTextAlign(al)}
-                style={{ padding: '3px 7px', borderRadius: 6, border: 'none', background: textAlign === al ? 'rgba(140,59,43,0.14)' : 'transparent', cursor: 'pointer', fontSize: 12 }}
+                style={{ padding: '3px 7px', borderRadius: 6, border: 'none', background: textAlign === al ? 'rgba(140,59,43,0.14)' : 'transparent', cursor: 'pointer', fontSize: 12, whiteSpace: 'nowrap', flexShrink: 0 }}
               >
                 {al === 'left' ? '左' : al === 'center' ? '中' : '齐'}
               </button>
@@ -1408,7 +1422,7 @@ export default function StudioWorkspace() {
             <button
               type="button"
               onClick={() => setPageWidth((v) => !v)}
-              style={{ marginLeft: 8, padding: '3px 9px', borderRadius: 6, border: 'none', background: pageWidth ? 'rgba(140,59,43,0.14)' : 'transparent', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}
+              style={{ marginLeft: 8, padding: '3px 9px', borderRadius: 6, border: 'none', background: pageWidth ? 'rgba(140,59,43,0.14)' : 'transparent', fontWeight: 600, cursor: 'pointer', fontSize: 12, whiteSpace: 'nowrap', flexShrink: 0 }}
             >
               页宽正文
             </button>

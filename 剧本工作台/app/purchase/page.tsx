@@ -33,20 +33,32 @@ interface PlanItem {
 const CHANNEL_OPTIONS = [
   {
     value: 'manual_admin',
-    label: 'manual_admin（人工核验入账）',
+    label: '人工核验入账',
     desc: '提交订单后联系管理员完成转账核验，核验通过后发放额度',
   },
   {
     value: 'test',
-    label: 'test（沙盒测试通道）',
+    label: '沙盒测试通道',
     desc: '用于内部流程联调，生成待审核订单记录',
   },
   {
     value: 'pending_gateway',
-    label: 'pending_gateway（外部收银台扩展槽）',
+    label: '外部收银台扩展槽',
     desc: '预留外部支付网关接入槽位，当前统一走待管理员确认入账流程',
   },
 ];
+
+function formatChannelLabel(channel?: string): string {
+  const matched = CHANNEL_OPTIONS.find((item) => item.value === channel);
+  return matched ? matched.label : channel || '人工核验入账';
+}
+
+function formatOrderStatusLabel(status?: string): string {
+  if (status === 'pending') return '待管理员确认入账';
+  if (status === 'paid' || status === 'confirmed' || status === 'completed') return '已确认入账';
+  if (status === 'cancelled' || status === 'canceled') return '已取消';
+  return status || '待处理';
+}
 
 export default function PurchasePage() {
   const [account, setAccount] = useState<PublicAccountProfile | null>(null);
@@ -141,7 +153,7 @@ export default function PurchasePage() {
     if (period === 'monthly') return '月度订阅';
     if (period === 'quarterly') return '季度订阅';
     if (period === 'yearly') return '年度订阅';
-    if (period === 'one_time') return '单次额度充值';
+    if (period === 'one_time' || period === 'once') return '单次额度充值';
     return period || '标准周期';
   }
 
@@ -221,8 +233,8 @@ export default function PurchasePage() {
                 选购套餐：{createdOrder.planName}（应付金额 ${createdOrder.priceUsd.toFixed(2)}，到账额度 $
                 {createdOrder.creditUsd.toFixed(2)}）
               </div>
-              <div>支付渠道扩展槽：{createdOrder.paymentChannel}</div>
-              <div>当前状态：{createdOrder.status}（待管理员确认入账）</div>
+              <div>支付渠道：{formatChannelLabel(createdOrder.paymentChannel)}</div>
+              <div>当前状态：{formatOrderStatusLabel(createdOrder.status)}</div>
             </div>
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
               <Link
