@@ -2291,7 +2291,7 @@ export async function callStationLLM(params: {
         temperature: params.temperatureOverride ?? route?.temperature,
         maxTokens: params.maxTokensOverride ?? route?.maxTokens,
         mediaAttachments: params.mediaAttachments,
-        timeoutMs: params.timeoutMs,
+        timeoutMs: params.timeoutMs ?? getDefaultLlmTimeoutMs(),
       });
       if (strictRes) {
         if (acc && strictRes.audit.usageStatus === 'known') {

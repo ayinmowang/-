@@ -104,6 +104,7 @@ function parseSceneHeaderLine(
   rawLine: string,
   episodeNumber: number,
   traditional: boolean,
+  explicitTraditional?: boolean,
 ): { sceneLine: string; ep: number; scene: number } | null {
   const unwrapped = stripOuterBold(rawLine).replace(/^#{1,6}\s*/, '').trim();
   if (!unwrapped) return null;
@@ -114,7 +115,8 @@ function parseSceneHeaderLine(
     const sc = Number(v72[2]);
     const loc = v72[3].trim();
     const time = v72[4].trim();
-    const space = mapSpaceWord(v72[5], traditional || v72[5].includes('內'));
+    const useTrad = typeof explicitTraditional === 'boolean' ? explicitTraditional : traditional || v72[5].includes('內');
+    const space = mapSpaceWord(v72[5], useTrad);
     return { sceneLine: `${ep}-${sc} ${loc} ${time} ${space}`, ep, scene: sc };
   }
 
@@ -122,7 +124,8 @@ function parseSceneHeaderLine(
   if (leg1) {
     const ep = Number(leg1[2] || leg1[1] || episodeNumber);
     const sc = Number(leg1[3]);
-    const space = mapSpaceWord(leg1[4], traditional || leg1[4].includes('內'));
+    const useTrad = typeof explicitTraditional === 'boolean' ? explicitTraditional : traditional || leg1[4].includes('內');
+    const space = mapSpaceWord(leg1[4], useTrad);
     const loc = leg1[5].trim();
     const time = (leg1[6] || '不明').trim();
     return { sceneLine: `${ep}-${sc} ${loc} ${time} ${space}`, ep, scene: sc };
@@ -134,7 +137,8 @@ function parseSceneHeaderLine(
     const sc = Number(leg2[3]);
     const loc = leg2[4].trim();
     const time = leg2[5].trim();
-    const space = mapSpaceWord(leg2[6], traditional || leg2[6].includes('內'));
+    const useTrad = typeof explicitTraditional === 'boolean' ? explicitTraditional : traditional || leg2[6].includes('內');
+    const space = mapSpaceWord(leg2[6], useTrad);
     return { sceneLine: `${ep}-${sc} ${loc} ${time} ${space}`, ep, scene: sc };
   }
 
@@ -176,14 +180,94 @@ interface ParsedSceneBlock {
   lines: string[];
 }
 
+const DIALOGUE_LINE_START_RE =
+  /^(?:\*\*)?[^\s：:▲△【】#*]{1,48}(?:\*\*)?[：:]\s*\S/;
+
+const VERSION_LABEL_LINE_RE =
+  /^(?:#{1,6}\s*)?(?:\*\*)?(?:(?:\d{1,2}|[一二三四五六七八九十]{1,3})\s*[.．、]\s*)?(?:繁[體体](?:[單单]集|全集)?版|[简簡][体體](?:[單单]集|全集)?版)(?:\*\*)?\s*[:：]?$/;
+
+function isStructuralLineStart(trimmed: string): boolean {
+  if (!trimmed) return true;
+  if (/^#{1,6}\s/.test(trimmed)) return true;
+  if (/^-{3,}$/.test(trimmed)) return true;
+  if (/^[【\[]/.test(trimmed)) return true;
+  if (/^[▲△●◆▪>*•\-]\s*/.test(trimmed)) return true;
+  if (/^人物[：:]/.test(trimmed)) return true;
+  if (/^(?:\*\*)?(?:第\s*\d+\s*集\s+)?(?:场次|場次)\s*\d+/.test(trimmed)) return true;
+  if (/^(?:\*\*)?\d{1,3}\s*[-－–—]\s*\d{1,3}\s+/.test(trimmed)) return true;
+  if (/^\d{1,2}\s*[.．、]\s*\S/.test(trimmed)) return true;
+  if (VERSION_LABEL_LINE_RE.test(trimmed)) return true;
+  if (DIALOGUE_LINE_START_RE.test(trimmed)) return true;
+  return false;
+}
+
+function isSplittablePrevLine(trimmed: string): boolean {
+  if (!trimmed) return false;
+  // Never merge onto already-complete standalone structural headers/markers
+  if (/^【[^】]+】$/.test(trimmed)) return false;
+  if (/^-{3,}$/.test(trimmed)) return false;
+  if (VERSION_LABEL_LINE_RE.test(trimmed)) return false;
+  if (/^(?:#{1,6}\s*)?第\s*\d+\s*集(?:《[^》]+》)?\s*$/.test(stripOuterBold(trimmed))) return false;
+  if (V72_SCENE_LINE_RE.test(stripOuterBold(trimmed))) return false;
+  if (LEGACY_SCENE_TYPE_FIRST_RE.test(stripOuterBold(trimmed))) return false;
+  if (LEGACY_SCENE_LOC_FIRST_RE.test(stripOuterBold(trimmed))) return false;
+
+  // Incomplete heading (e.g. `## 第` split before `17集`)
+  if (/^#{1,6}\s+\S/.test(trimmed)) return true;
+  // Incomplete V7.2 scene line (e.g. `17-2 走` split before `廊 日 内`)
+  if (/^\d{1,3}\s*[-－–—]\s*\d{1,3}\s+\S/.test(stripOuterBold(trimmed))) return true;
+  // Action line (`△ ...` or `▲ ...`)
+  if (/^[▲△]/.test(trimmed)) return true;
+  // Dialogue line (`说话人：...`)
+  if (DIALOGUE_LINE_START_RE.test(trimmed)) return true;
+  // People line (`人物：...`)
+  if (/^人物[：:]/.test(trimmed)) return true;
+  return false;
+}
+
+/**
+ * Repairs stray single `\n` breaks inserted mid-word/mid-line by OpenAI-compatible
+ * relays when aggregating streaming chunks (e.g. `## 第\n17集`, `17-2 走\n廊 日 内`,
+ * `△ 男\n生...`, `男生：我绝对不会\n多想`). Preserves all genuine paragraph breaks (`\n\n`)
+ * and structural boundaries.
+ */
+export function repairBrokenRelayLineWraps(rawText: string): string {
+  const normalized = String(rawText || '').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+  if (!normalized.includes('\n')) return normalized;
+
+  const lines = normalized.split('\n');
+  const out: string[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      out.push('');
+      continue;
+    }
+
+    if (out.length > 0) {
+      const prevRaw = out[out.length - 1];
+      const prevTrimmed = prevRaw.trim();
+      if (prevTrimmed && isSplittablePrevLine(prevTrimmed) && !isStructuralLineStart(trimmed)) {
+        const needsSpace = /[A-Za-z0-9]$/.test(prevTrimmed) && /^[A-Za-z]/.test(trimmed);
+        out[out.length - 1] = prevRaw.trimEnd() + (needsSpace ? ' ' : '') + trimmed;
+        continue;
+      }
+    }
+
+    out.push(raw);
+  }
+
+  return out.join('\n');
+}
+
 export function normalizeTranscribeEpisodeBodyV72(
   rawBody: string,
   episodeNumber: number,
   options: NormalizeV72Options = {},
 ): string {
-  const cleanedRaw = String(rawBody || '')
-    .replace(/^\uFEFF/, '')
-    .replace(/\r\n?/g, '\n')
+  const cleanedRaw = repairBrokenRelayLineWraps(String(rawBody || ''))
     .replace(CITE_TAG_RE, '')
     .trim();
 
@@ -229,7 +313,7 @@ export function normalizeTranscribeEpisodeBodyV72(
     if (/^-{3,}$/.test(line) && i === contentLines.length - 1) continue;
 
     // Check if this line is a scene header
-    const parsedScene = parseSceneHeaderLine(line, episodeNumber, traditional);
+    const parsedScene = parseSceneHeaderLine(line, episodeNumber, traditional, options.traditional);
     if (parsedScene) {
       currentScene = { header: parsedScene.sceneLine, lines: [] };
       scenes.push(currentScene);

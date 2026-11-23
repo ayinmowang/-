@@ -48,6 +48,7 @@ import {
   assembleTranscribeV72Script,
   normalizeTranscribeEpisodeBodyV72,
   normalizeTranscribeScriptMapV72,
+  repairBrokenRelayLineWraps,
 } from '../../../lib/transcribe-format';
 import { inspectTranscribeBodiesDelivery } from '../../../lib/transcribe-delivery-guard';
 import { inspectTranscribeProjectDeliveryReady } from '../../../lib/transcribe-delivery-ready';
@@ -3017,6 +3018,18 @@ export async function POST(request: Request) {
                     : isLlmFixture()
                       ? `### 故事梗概\n已完成《${p.title}》分集拆解。\n\n### 分场剧本\n第1集 场次1-1 内景 主场景 日\n▲ 已按${p.transcribeMode === 'detailed' ? '详细模式' : '快速模式'}完成分集场次与台词还原。`
                       : '';
+              }
+            }
+
+            if (!isLlmFixture()) {
+              if (combinedRawOutput) {
+                combinedRawOutput = repairBrokenRelayLineWraps(combinedRawOutput);
+              }
+              if (Array.isArray(perSourceChunks)) {
+                perSourceChunks = perSourceChunks.map((item) => ({
+                  ...item,
+                  text: repairBrokenRelayLineWraps(item.text || ''),
+                }));
               }
             }
 

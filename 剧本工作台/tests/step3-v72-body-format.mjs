@@ -361,4 +361,52 @@ const syncedProj = JSON.parse(syncedDisk.projects['p-v72-sync'].data);
 assert.equal(syncedProj.episodes[0].body, normalizedSimp);
 assert.equal(syncedProj.remote.outputs.scriptTraditional.content, normalizedTrad);
 
-console.log('PASS: step3-v72-body-format (prompts, parser, guard, normalizer, web==Word XML, offline sync CLI)');
+// ---------------------------------------------------------------------------
+// 6. Relay mid-line chunk wrap repair (e.g. OpenAI-compat SSE aggregation quirks)
+// ---------------------------------------------------------------------------
+const brokenRelayRaw = [
+  '## 第',
+  '17集',
+  '',
+  '【正文】',
+  '',
+  '17-1 卧室 日 内',
+  '',
+  '人物：林深、苏晴',
+  '',
+  '△ 林',
+  '深坐在书桌前翻看旧档案',
+  '',
+  '林深：好，我绝对不会',
+  '多想',
+  '',
+  '17-2 走',
+  '廊 日 内',
+  '人物：值班护士、林深',
+  '',
+  '△ 门外传来敲',
+  '门声',
+  '',
+  '值班护士：你必须为她考虑，',
+  '你知道吗？',
+].join('\n');
+
+const repairedRelay = formatMod.repairBrokenRelayLineWraps(brokenRelayRaw);
+assert.ok(repairedRelay.includes('## 第17集'), 'broken ## 第\\n17集 must be repaired');
+assert.ok(repairedRelay.includes('17-2 走廊 日 内\n人物：值班护士、林深'), 'broken scene header must be repaired without merging 人物：');
+assert.ok(repairedRelay.includes('△ 林深坐在书桌前翻看旧档案'), 'broken action line must be repaired');
+assert.ok(repairedRelay.includes('林深：好，我绝对不会多想'), 'broken dialogue line must be repaired');
+assert.ok(repairedRelay.includes('值班护士：你必须为她考虑，你知道吗？'), 'broken multi-clause dialogue must be repaired');
+
+const parsedRepaired = parseMod.parseTranscribeDeliveryBodies(repairedRelay, [17]);
+assert.equal(parsedRepaired.size, 1, 'repaired relay output must pass strict parser');
+assert.equal(guardMod.inspectTranscribeBodiesDelivery([17], parsedRepaired).ok, true, 'repaired relay output must pass delivery guard');
+const normRepaired = formatMod.normalizeTranscribeEpisodeBodyV72(parsedRepaired.get(17), 17);
+assert.equal(formatMod.inspectV72BodyFormat(normRepaired, 17).ok, true, 'normalized repaired output must pass V7.2 check');
+
+// Must NOT merge lines following already-complete standalone headers/markers
+const negKeep = formatMod.repairBrokenRelayLineWraps('### 第1集\n暂无正文');
+assert.equal(negKeep, '### 第1集\n暂无正文', 'complete episode heading must not merge next line');
+assert.equal(parseMod.parseTranscribeDeliveryBodies(negKeep, [1]).size, 0, 'negative placeholder must still be rejected');
+
+console.log('PASS: step3-v72-body-format (prompts, parser, guard, normalizer, relay-wrap-repair, web==Word XML, offline sync CLI)');
