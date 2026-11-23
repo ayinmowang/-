@@ -265,6 +265,7 @@ export interface StudioAssetNode {
 
 export interface Project {
   id: string;
+  sourceProjectId?: string;
   owner?: string;
   title: string;
   kind: Kind;

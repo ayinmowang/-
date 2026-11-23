@@ -1044,12 +1044,120 @@ export function toPublicProfile(acc: StudioAccount): PublicAccountProfile {
   };
 }
 
-function resolveSafeBucketPath(key: string): string {
+export function hasCustomBucketBinding(): boolean {
+  const g = globalThis as any;
+  return Boolean(g.__STUDIO_BINDINGS__ && g.__STUDIO_BINDINGS__.BUCKET);
+}
+
+export function resolveSafeBucketPath(key: string): string {
   const safeName = String(key || '')
     .replace(/[^a-zA-Z0-9._-]/g, '_')
     .replace(/^\.+/, '_');
   if (!safeName) throw new Error('INVALID_INPUT');
   return path.join(BUCKET_DIR, safeName);
+}
+
+export async function bucketObjectExists(key: string): Promise<boolean> {
+  if (!key) return false;
+  if (!hasCustomBucketBinding()) {
+    try {
+      const stat = await fs.promises.stat(resolveSafeBucketPath(key));
+      return stat.isFile();
+    } catch {
+      return false;
+    }
+  }
+  try {
+    const obj = await bindings().BUCKET.get(key);
+    return Boolean(obj);
+  } catch {
+    return false;
+  }
+}
+
+export async function copyBucketObject(
+  srcKey: string,
+  dstKey: string
+): Promise<{ copied: boolean; bytes: number }> {
+  if (!srcKey || !dstKey) return { copied: false, bytes: 0 };
+  if (!hasCustomBucketBinding()) {
+    const srcPath = resolveSafeBucketPath(srcKey);
+    const dstPath = resolveSafeBucketPath(dstKey);
+    let srcStat: fs.Stats;
+    try {
+      srcStat = await fs.promises.stat(srcPath);
+    } catch (err: any) {
+      if (err?.code === 'ENOENT') return { copied: false, bytes: 0 };
+      throw err;
+    }
+    if (!srcStat.isFile()) return { copied: false, bytes: 0 };
+    if (srcPath === dstPath) return { copied: true, bytes: srcStat.size };
+    await fs.promises.mkdir(path.dirname(dstPath), { recursive: true });
+    const tmpPath = `${dstPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    try {
+      await fs.promises.copyFile(srcPath, tmpPath);
+      const dstStat = await fs.promises.stat(tmpPath);
+      if (dstStat.size !== srcStat.size) {
+        throw new Error('ATTACHMENT_COPY_SIZE_MISMATCH');
+      }
+      await fs.promises.rename(tmpPath, dstPath);
+      return { copied: true, bytes: dstStat.size };
+    } catch (err) {
+      await fs.promises.unlink(tmpPath).catch(() => {});
+      throw err;
+    }
+  }
+
+  const obj = await bindings().BUCKET.get(srcKey);
+  if (!obj) return { copied: false, bytes: 0 };
+  const ab = await obj.arrayBuffer();
+  await bindings().BUCKET.put(dstKey, ab);
+  return { copied: true, bytes: ab.byteLength };
+}
+
+export async function deleteBucketObject(key: string): Promise<void> {
+  if (!key) return;
+  if (!hasCustomBucketBinding()) {
+    await fs.promises.unlink(resolveSafeBucketPath(key)).catch(() => {});
+    return;
+  }
+  if (typeof bindings().BUCKET?.delete === 'function') {
+    await bindings().BUCKET.delete(key).catch(() => {});
+  }
+}
+
+export async function resolveAttachmentBucketKey(
+  user: string,
+  project: Pick<Project, 'id' | 'sourceProjectId' | 'attachments'>,
+  attachmentId: string
+): Promise<string | null> {
+  if (!user || !project?.id || !attachmentId) return null;
+  const directKey = `${user}/${project.id}/${attachmentId}`;
+  if (await bucketObjectExists(directKey)) {
+    return directKey;
+  }
+
+  const visited = new Set<string>([project.id]);
+  let currentSourceId = typeof project.sourceProjectId === 'string' ? project.sourceProjectId.trim() : '';
+  let depth = 0;
+  while (currentSourceId && !visited.has(currentSourceId) && depth < 3) {
+    visited.add(currentSourceId);
+    depth += 1;
+    let srcProject: Project;
+    try {
+      srcProject = await getProject(currentSourceId, user);
+    } catch {
+      break;
+    }
+    if (Array.isArray(srcProject.attachments) && srcProject.attachments.some((a) => a.id === attachmentId)) {
+      const fallbackKey = `${user}/${srcProject.id}/${attachmentId}`;
+      if (await bucketObjectExists(fallbackKey)) {
+        return fallbackKey;
+      }
+    }
+    currentSourceId = typeof srcProject.sourceProjectId === 'string' ? srcProject.sourceProjectId.trim() : '';
+  }
+  return null;
 }
 
 export function bindings(): any {
@@ -1134,6 +1242,10 @@ export function bindings(): any {
             ? value
             : new Uint8Array(value);
         await fs.promises.writeFile(safeFile, bytes);
+      },
+      async delete(key: string) {
+        const safeFile = resolveSafeBucketPath(key);
+        await fs.promises.unlink(safeFile).catch(() => {});
       },
     },
     STUDIO_BACKEND_URL: store.systemConfig.backendUrl || process.env.STUDIO_BACKEND_URL || '',

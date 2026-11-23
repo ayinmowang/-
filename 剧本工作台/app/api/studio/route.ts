@@ -26,6 +26,9 @@ import {
   inspectBucketMediaFile,
   formatVideoMetadataSummary,
   normalizeRelayModelName,
+  copyBucketObject,
+  deleteBucketObject,
+  resolveAttachmentBucketKey,
   type MultimodalAttachmentInput,
 } from '../../../lib/server';
 import { isFfmpegDisabled } from '../../../lib/upload-guard';
@@ -351,7 +354,8 @@ async function extractProjectAttachmentsForLLM(
 
   for (const att of project.attachments || []) {
     try {
-      const bucketKey = `${user}/${project.id}/${att.id}`;
+      const bucketKey =
+        (await resolveAttachmentBucketKey(user, project, att.id)) || `${user}/${project.id}/${att.id}`;
       const lowerName = String(att.name || '').toLowerCase();
       const declaredSize = Number(att.size || 0);
 
@@ -3205,7 +3209,8 @@ export async function POST(request: Request) {
         const remote: any = await (await backend('/api/projects/' + p.remoteId)).json();
         for (const a of p.attachments) {
           if (remote.attachments?.some((r: any) => r.name === a.id + '-' + a.name)) continue;
-          const object = await bindings().BUCKET.get(user + '/' + p.id + '/' + a.id);
+          const resolvedKey = (await resolveAttachmentBucketKey(user, p, a.id)) || user + '/' + p.id + '/' + a.id;
+          const object = await bindings().BUCKET.get(resolvedKey);
           const role = a.role || 'source';
           if (object) {
             await backend(
@@ -3378,8 +3383,33 @@ export async function POST(request: Request) {
       }
       const isDelivered = check.ready;
       const now = new Date().toISOString();
+      const nextProjectId = crypto.randomUUID();
+      const copiedBucketKeys: string[] = [];
+      try {
+        for (const att of safeAttachments) {
+          if (!att?.id) continue;
+          const srcKey = await resolveAttachmentBucketKey(user, p, att.id);
+          if (!srcKey) continue;
+          const dstKey = `${user}/${nextProjectId}/${att.id}`;
+          const copyRes = await copyBucketObject(srcKey, dstKey);
+          if (copyRes.copied) {
+            copiedBucketKeys.push(dstKey);
+            if (typeof att.size === 'number' && att.size > 0 && copyRes.bytes === 0) {
+              throw new Error('ATTACHMENT_COPY_EMPTY');
+            }
+            if (copyRes.bytes > 0) {
+              att.size = copyRes.bytes;
+            }
+          }
+        }
+      } catch (copyErr) {
+        for (const key of copiedBucketKeys) {
+          await deleteBucketObject(key).catch(() => {});
+        }
+        throw copyErr;
+      }
       const nextProj: any = {
-        id: crypto.randomUUID(),
+        id: nextProjectId,
         sourceProjectId: p.id,
         title: (p.title.endsWith(`（${KIND_LABELS[targetKind]}）`) ? p.title : `${p.title}（${KIND_LABELS[targetKind]}）`).slice(0, 200),
         kind: targetKind,
@@ -3419,10 +3449,17 @@ export async function POST(request: Request) {
         'director',
         `已根据你的选择，将扒剧项目「${p.title}」转入「${KIND_LABELS[targetKind]}」新项目，并复用了原有 ${countSourceMaterials(p.attachments)} 份源素材与目录底稿（全剧 ${nextProj.total ?? '待定'} 集）。\n\n【总编剧初步建议】\n${suggestions.map((s) => '• ' + s).join('\n')}\n\n请先核对下方卡片，确认后开始原稿分析。`
       );
-      await bindings()
-        .DB.prepare('INSERT INTO studio_projects (id,owner,data,version,updated_at) VALUES (?,?,?,1,?)')
-        .bind(nextProj.id, user, JSON.stringify(sanitizeForClient(nextProj)), now)
-        .run();
+      try {
+        await bindings()
+          .DB.prepare('INSERT INTO studio_projects (id,owner,data,version,updated_at) VALUES (?,?,?,1,?)')
+          .bind(nextProj.id, user, JSON.stringify(sanitizeForClient(nextProj)), now)
+          .run();
+      } catch (insertErr) {
+        for (const key of copiedBucketKeys) {
+          await deleteBucketObject(key).catch(() => {});
+        }
+        throw insertErr;
+      }
       return Response.json(withCatalogs(nextProj), { status: 201 });
     } else {
       throw new Error('INVALID_INPUT');

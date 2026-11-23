@@ -12,6 +12,9 @@ import {
   message,
   failure,
   sanitizeForClient,
+  hasCustomBucketBinding,
+  resolveSafeBucketPath,
+  resolveAttachmentBucketKey,
 } from '../../../lib/server';
 import {
   acquireUploadSlot,
@@ -22,8 +25,6 @@ import { extractManuscriptTextFromBuffer } from '../../../lib/manuscript-extract
 import { inspectManuscriptEpisodeCoverage } from '../../../lib/transcribe-parse';
 import { inspectTranscribeProjectDeliveryReady } from '../../../lib/transcribe-delivery-ready';
 import { formatCoveredEpisodeRange, normalizeCoveredEpisodes } from '../../../lib/source-materials';
-
-const BUCKET_DIR = path.join(process.cwd(), '.data', 'buckets');
 
 const DANGEROUS_EXTS = new Set(['exe', 'bat', 'cmd', 'dll', 'com', 'msi']);
 const DANGEROUS_MIMES = new Set([
@@ -69,16 +70,7 @@ function validateUploadType(fileName: string, mimeType: string, projectKind?: st
 }
 
 function resolveLocalBucketPath(key: string): string {
-  const safeName = String(key || '')
-    .replace(/[^a-zA-Z0-9._-]/g, '_')
-    .replace(/^\.+/, '_');
-  if (!safeName) throw new Error('INVALID_INPUT');
-  return path.join(BUCKET_DIR, safeName);
-}
-
-function hasCustomBucketBinding(): boolean {
-  const g = globalThis as any;
-  return Boolean(g.__STUDIO_BINDINGS__ && g.__STUDIO_BINDINGS__.BUCKET);
+  return resolveSafeBucketPath(key);
 }
 
 async function streamToDiskWithLimit(
@@ -291,7 +283,13 @@ export async function GET(request: Request) {
     if (fileId) {
       const att = p.attachments.find((a) => a.id === fileId);
       if (!att) throw new Error('NOT_FOUND');
-      const bucketKey = `${user}/${p.id}/${att.id}`;
+      const bucketKey = await resolveAttachmentBucketKey(user, p, att.id);
+      if (!bucketKey) {
+        return Response.json(
+          { error: '附件文件不存在或已缺失，无法下载', code: 'ATTACHMENT_DATA_MISSING' },
+          { status: 404 },
+        );
+      }
       const encodedName = encodeURIComponent(att.name);
       const asciiFallback = att.name.replace(/[^\x20-\x7E]/g, '_').replace(/["\\]/g, '_') || 'attachment';
       const commonHeaders: Record<string, string> = {
@@ -301,19 +299,32 @@ export async function GET(request: Request) {
 
       if (!hasCustomBucketBinding()) {
         const safeFile = resolveLocalBucketPath(bucketKey);
+        let stat: fs.Stats;
         try {
-          const stat = await fs.promises.stat(safeFile);
-          commonHeaders['Content-Length'] = String(stat.size);
-          if (stat.size === 0) {
-            return new Response(new Uint8Array(0), { status: 200, headers: commonHeaders });
-          }
-          const webStream = Readable.toWeb(fs.createReadStream(safeFile)) as ReadableStream;
-          return new Response(webStream, { status: 200, headers: commonHeaders });
-        } catch {}
+          stat = await fs.promises.stat(safeFile);
+        } catch {
+          return Response.json(
+            { error: '附件文件不存在或已缺失，无法下载', code: 'ATTACHMENT_DATA_MISSING' },
+            { status: 404 },
+          );
+        }
+        commonHeaders['Content-Length'] = String(stat.size);
+        if (stat.size === 0) {
+          return new Response(new Uint8Array(0), { status: 200, headers: commonHeaders });
+        }
+        const webStream = Readable.toWeb(fs.createReadStream(safeFile)) as ReadableStream;
+        return new Response(webStream, { status: 200, headers: commonHeaders });
       }
 
       const obj = await bindings().BUCKET.get(bucketKey);
-      const buf = obj ? await obj.arrayBuffer() : new TextEncoder().encode('').buffer;
+      if (!obj) {
+        return Response.json(
+          { error: '附件文件不存在或已缺失，无法下载', code: 'ATTACHMENT_DATA_MISSING' },
+          { status: 404 },
+        );
+      }
+      const buf = await obj.arrayBuffer();
+      commonHeaders['Content-Length'] = String(buf.byteLength);
       return new Response(buf, { status: 200, headers: commonHeaders });
     }
 
@@ -441,7 +452,9 @@ export async function POST(request: Request) {
         const currentHash = await computeObjectHash(currentKey);
         for (const existing of sameNameAttachments) {
           try {
-            const existingHash = await computeObjectHash(`${user}/${p.id}/${existing.id}`);
+            const existingKey =
+              (await resolveAttachmentBucketKey(user, p, existing.id)) || `${user}/${p.id}/${existing.id}`;
+            const existingHash = await computeObjectHash(existingKey);
             if (existingHash === currentHash) {
               isDuplicate = true;
               break;
