@@ -618,6 +618,21 @@ async function callProjectStation(params: {
   }
 
   const tierCfg = resolvedTier.tier;
+  const visionRouteModel =
+    params.station === 'vision'
+      ? String(store.systemConfig.routes?.vision?.primaryModel || '').trim()
+      : '';
+  const visionRouteNorm = visionRouteModel
+    ? normalizeRelayModelName(visionRouteModel).trim().toLowerCase()
+    : '';
+  const useVisionRoutePrimary = Boolean(
+    visionRouteModel &&
+      (ALLOWED_RELAY_MODELS.has(visionRouteNorm) ||
+        ALLOWED_RELAY_MODELS.has(visionRouteModel.toLowerCase()))
+  );
+  const effectiveModelOverride = useVisionRoutePrimary
+    ? visionRouteModel
+    : tierCfg.model?.trim() || '';
   const result = await callStationLLM({
     station: params.station,
     account: params.account,
@@ -629,7 +644,7 @@ async function callProjectStation(params: {
     tierId: tierCfg.id,
     tierName: tierCfg.name,
     ...(tierCfg.providerId?.trim() ? { providerIdOverride: tierCfg.providerId.trim() } : {}),
-    ...(tierCfg.model?.trim() ? { modelOverride: tierCfg.model.trim() } : {}),
+    ...(effectiveModelOverride ? { modelOverride: effectiveModelOverride } : {}),
     ...(typeof tierCfg.temperature === 'number' ? { temperatureOverride: tierCfg.temperature } : {}),
     ...(typeof tierCfg.maxTokens === 'number' ? { maxTokensOverride: tierCfg.maxTokens } : {}),
     ...(params.excludeTargets ? { excludeTargets: params.excludeTargets } : {}),
@@ -722,6 +737,17 @@ const ALLOWED_RELAY_MODELS = new Set([
   'gemini4neon',
   'gemini-4-neon',
   'gemini-4.0-neon',
+  'hydrogen',
+  'gemini4h',
+  'gemini-4h',
+  'gemini4hydrogen',
+  'gemini-4-hydrogen',
+  'gemini-4.0-hydrogen',
+  'gemini3.8',
+  'gemini-3.8',
+  'gemini3.8-flash',
+  'gemini-3.8-flash',
+  'gemini-3.8-flash-lite',
 ]);
 
 function assertAllowedRelayModel(rawModel: string): void {
@@ -3206,10 +3232,10 @@ export async function POST(request: Request) {
               const nonVideoContextAtts = (Array.isArray(p.attachments) ? p.attachments : []).filter(
                 (a: any) => !/\.(mp4|mov|webm|mkv|avi)$/i.test(String(a?.name || ''))
               );
-              const rawConcurrency = Number(process.env.STUDIO_TRANSCRIBE_CONCURRENCY || 4);
+              const rawConcurrency = Number(process.env.STUDIO_TRANSCRIBE_CONCURRENCY || 6);
               const concurrency = Number.isInteger(rawConcurrency)
-                ? Math.max(1, Math.min(6, rawConcurrency))
-                : 4;
+                ? Math.max(1, Math.min(8, rawConcurrency))
+                : 6;
               let completedVideos = 0;
               perSourceChunks = await runWithConcurrency(sortedVideos, concurrency, async (va: any) => {
                 const epNum = Number(va.episode) || 1;

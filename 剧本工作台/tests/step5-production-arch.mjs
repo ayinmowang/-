@@ -70,6 +70,7 @@ try {
     getStore,
     flushPersistentStore,
     callStationLLM,
+    isAllowedRelayModel,
     saveProjectProgress,
     resolveSafeBucketPath,
   } = await imp('lib/server.ts');
@@ -945,6 +946,15 @@ try {
     assert.ok(vcSrc.includes('trunc(min(${shortEdge},iw)/2)*2'));
     assert.ok(vcSrc.includes('trunc(min(${shortEdge},ih)/2)*2'));
     assert.ok(vcSrc.includes('${maxBytes}:'));
+
+    // 7. Fast model whitelist (gemini-4-hydrogen & gemini-3.8-flash) + default vision route
+    assert.equal(isAllowedRelayModel('gemini-4-hydrogen'), true);
+    assert.equal(isAllowedRelayModel('gemini4h'), true);
+    assert.equal(isAllowedRelayModel('hydrogen'), true);
+    assert.equal(isAllowedRelayModel('gemini-3.8-flash'), true);
+    assert.equal(isAllowedRelayModel('gemini3.8'), true);
+    assert.equal(isAllowedRelayModel('gemini-2.5-pro'), false);
+    assert.equal(isAllowedRelayModel('gpt-4o'), false);
   }
 
   console.log('PASS: step5-production-arch (ffmpeg, fallback preservation, /v1beta SSE, 403/524 retry, strict native bypass, async pause/checkpoint/resume, orphan reconcile, atomic store, UI/deploy)');

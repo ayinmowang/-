@@ -159,7 +159,7 @@ function createDefaultSystemConfig(): AdminSystemConfig {
         process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY
           ? [String(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY)]
           : [],
-      models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gpt-4o', 'gpt-4o-mini', 'gpt-4.1'],
+      models: ['gemini-4-hydrogen', 'gemini-3.8-flash', 'gemini-4-argon', 'gemini-4-carbon', 'gemini-4-neon'],
       enabled: true,
       priority: 2,
       keyCursor: 0,
@@ -224,13 +224,13 @@ function createDefaultSystemConfig(): AdminSystemConfig {
       badge: '视觉还原 · Gemini/GPT',
       description: '负责按快速模式（整集看写+抽查）或详细模式（每秒一帧逐格看写）还原分集剧本、锚定标准人名并标记待补写镜头。',
       primaryProviderId: 'prov-gemini',
-      primaryModel: 'gemini-2.5-pro',
-      fallbackProviderId: 'prov-openai',
-      fallbackModel: 'gpt-4o',
-      fallbackProvider2Id: 'prov-relay-backup2',
-      fallbackModel2: 'gemini-2.5-flash',
+      primaryModel: 'gemini-4-hydrogen',
+      fallbackProviderId: 'prov-gemini',
+      fallbackModel: 'gemini-3.8-flash',
+      fallbackProvider2Id: 'prov-gemini',
+      fallbackModel2: 'gemini-4-argon',
       temperature: 0.15,
-      maxTokens: 4096,
+      maxTokens: 8192,
       enabled: true,
       systemPrompt: TRANSCRIBE_V72_VISION_SYSTEM_PROMPT,
     },
@@ -2114,8 +2114,13 @@ export function normalizeRelayModelName(rawModel: string): string {
 
   const lower = first.toLowerCase().replace(/\s+/g, '');
   if (lower === 'gemini4' || lower === 'gemini-4') return 'gemini-4-argon';
-  if (lower === 'gemini4h' || lower === 'gemini-4h' || lower === 'gemini4hydrogen') return 'gemini-4-hydrogen';
+  if (lower === 'gemini4h' || lower === 'gemini-4h' || lower === 'gemini4hydrogen' || lower === 'hydrogen') {
+    return 'gemini-4-hydrogen';
+  }
   if (lower === 'gemini4c' || lower === 'gemini-4c' || lower === 'gemini4carbon') return 'gemini-4-carbon';
+  if (lower === 'gemini3.8' || lower === 'gemini-3.8' || lower === 'gemini3.8flash' || lower === 'gemini3.8-flash') {
+    return 'gemini-3.8-flash';
+  }
   if (lower === 'gpt6.1sol' || lower === 'gpt-6.1sol') return 'gpt-6.1-sol';
   if (lower === 'gpt6.2sol' || lower === 'gpt-6.2sol') return 'gpt-6.2-sol';
 
@@ -2150,7 +2155,7 @@ export function isAllowedRelayModel(rawModel: string): boolean {
     .filter(Boolean)[0] || '';
   if (!raw) return false;
   const normalized = normalizeRelayModelName(raw);
-  return /^(gemini-4(\.0)?-)?(carbon|argon|neon)$/i.test(normalized);
+  return /^(?:(?:gemini-4(?:\.0)?-)?(carbon|argon|neon|hydrogen)|gemini-3\.8-flash(?:-lite)?)$/i.test(normalized);
 }
 
 function isNonRetryableAuthOrQuotaMsg(msg: string): boolean {
@@ -2194,7 +2199,7 @@ export async function executeProviderChat(params: {
     .map((s) => s.trim())
     .filter(Boolean)[0] || '';
   const normalizedRequested = normalizeRelayModelName(rawRequested);
-  if (!normalizedRequested || !/^(gemini-4(\.0)?-)?(carbon|argon|neon)$/i.test(normalizedRequested)) {
+  if (!normalizedRequested || !isAllowedRelayModel(normalizedRequested)) {
     throw new Error('MODEL_NOT_ALLOWED');
   }
   const timeoutMs =

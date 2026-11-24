@@ -51,11 +51,11 @@ function jobKey(user: string, projectId: string): string {
 }
 
 export function getTranscribeConcurrency(): number {
-  const raw = Number(process.env.STUDIO_TRANSCRIBE_CONCURRENCY || 4);
+  const raw = Number(process.env.STUDIO_TRANSCRIBE_CONCURRENCY || 6);
   if (Number.isFinite(raw) && raw >= 1) {
-    return Math.max(1, Math.min(6, Math.floor(raw)));
+    return Math.max(1, Math.min(8, Math.floor(raw)));
   }
-  return 4;
+  return 6;
 }
 
 function checkpointDir(): string {
