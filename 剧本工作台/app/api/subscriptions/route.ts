@@ -6,13 +6,13 @@ import {
 } from '../../../lib/commerce';
 import {
   failure,
-  resolveAccountFromRequest,
+  resolveUserAccount,
   toPublicProfile,
 } from '../../../lib/server';
 
 export async function GET(request: Request) {
   try {
-    const account = resolveAccountFromRequest(request);
+    const account = resolveUserAccount(request);
     if (!account) {
       return Response.json({ error: 'AUTH_REQUIRED' }, { status: 401 });
     }
@@ -35,7 +35,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const account = resolveAccountFromRequest(request);
+    const account = resolveUserAccount(request);
     if (!account) {
       return Response.json({ error: 'AUTH_REQUIRED' }, { status: 401 });
     }

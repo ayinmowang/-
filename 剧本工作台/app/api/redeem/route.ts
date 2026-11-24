@@ -1,10 +1,14 @@
 import {
+  checkAuthRateLimit,
+  clearAuthRateLimit,
   createSessionForAccount,
   failure,
   flushPersistentStore,
   generateRandomCode,
   getStore,
+  hashPassword,
   maskSecret,
+  recordAuthFailure,
   resolveAccountFromRequest,
   sanitizeForClient,
   toPublicProfile,
@@ -59,6 +63,13 @@ export async function POST(request: Request) {
       return Response.json({ error: 'INVALID_INPUT', message: '请求体格式错误' }, { status: 400 });
     }
 
+    const rl = checkAuthRateLimit(request, 'redeem_code');
+    if (!rl.allowed) {
+      return Response.json(
+        { error: 'RATE_LIMITED', message: `兑换尝试过于频繁，请 ${rl.retryAfterSec} 秒后再试` },
+        { status: 429, headers: { 'Retry-After': String(rl.retryAfterSec) } }
+      );
+    }
     const code = String(body.code ?? body.key ?? body.inviteCode ?? '').trim();
     if (!code) {
       return Response.json({ error: 'INVALID_INPUT', message: '请输入专属 Key 或邀请码' }, { status: 400 });
@@ -74,6 +85,7 @@ export async function POST(request: Request) {
       if (targetAcc.status === 'disabled') {
         throw new Error('ACCOUNT_DISABLED');
       }
+      clearAuthRateLimit(request, 'redeem_code');
       const token = createSessionForAccount(targetAcc);
       return buildRedeemSessionResponse(
         {
@@ -95,6 +107,7 @@ export async function POST(request: Request) {
     }
     const invite = store.invites.find((inv) => inv.code.toLowerCase() === code.toLowerCase());
     if (!invite || invite.status === 'revoked') {
+      recordAuthFailure(request, 'redeem_code');
       return Response.json(
         { error: 'INVALID_INVITE_CODE', message: '无效的专属 Key 或邀请码' },
         { status: 400 }
@@ -122,7 +135,7 @@ export async function POST(request: Request) {
       username: autoUsername,
       displayName: invite.note ? `${invite.note.slice(0, 12)} #${seq}` : `受邀成员 #${seq}`,
       role: invite.role,
-      password: generateRandomCode('PWD').slice(-8),
+      password: hashPassword(generateRandomCode('PWD').slice(-8)),
       accessKey: invite.maxUses === 1 ? invite.code : generateRandomCode('AYIN-KEY'),
       status: 'active',
       budgetCapUsd: invite.budgetCapUsd,

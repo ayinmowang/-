@@ -40,6 +40,7 @@ import { prepareCompressedVideoForLLM } from '../../../lib/video-compress';
 import {
   PROCESS_BOOT_AT_MS,
   cancelTranscribeJob,
+  clearTranscribeCheckpoint,
   getTranscribeJobState,
   isTranscribeJobRunning,
   startTranscribeJob,
@@ -1445,9 +1446,11 @@ function formatShortDramaScript(rawText: string): string {
     }
 
     // Action line standardization
-    if (line.startsWith('▲')) {
+    if (line.startsWith('△')) {
+      formatted.push(`△ ${line.slice(1).trim()}`);
+    } else if (line.startsWith('▲')) {
       formatted.push(`▲ ${line.slice(1).trim()}`);
-    } else if (/^第\s*\d+\s*集/.test(line) || /^场次/.test(line)) {
+    } else if (/^第\s*\d+\s*集/.test(line) || /^场次/.test(line) || /^\d+[-_]\d+\s/.test(line) || /^人物\s*[:：]/.test(line)) {
       formatted.push(line);
     } else {
       formatted.push(`▲ ${line}`);
@@ -2467,6 +2470,7 @@ export async function POST(request: Request) {
           : typeof body.clientId === 'string' && body.clientId.trim()
             ? body.clientId.trim()
             : undefined;
+      const nodeId = typeof body.nodeId === 'string' && body.nodeId.trim() ? body.nodeId.trim() : undefined;
       const episodeId = typeof body.episodeId === 'string' && body.episodeId.trim() ? body.episodeId.trim() : undefined;
       const episodeNumber =
         typeof body.episodeNumber === 'number' && Number.isFinite(body.episodeNumber)
@@ -2495,6 +2499,7 @@ export async function POST(request: Request) {
                 task,
                 text,
                 clientId,
+                nodeId,
                 episodeId,
                 episodeNumber,
                 fixtureMode,
@@ -2516,6 +2521,7 @@ export async function POST(request: Request) {
           task,
           text,
           clientId,
+          nodeId,
           episodeId,
           episodeNumber,
           fixtureMode,
@@ -2550,6 +2556,7 @@ export async function POST(request: Request) {
                 task,
                 text,
                 clientId,
+                nodeId,
                 episodeId,
                 episodeNumber,
                 signal: acquired.controller.signal,
@@ -2600,6 +2607,7 @@ export async function POST(request: Request) {
           task,
           text,
           clientId,
+          nodeId,
           episodeId,
           episodeNumber,
           signal: acquired.controller.signal,
@@ -2941,6 +2949,25 @@ export async function POST(request: Request) {
       p.promptSelections = currentSelections;
     } else if (body.operation === 'archive') {
       p.archived = Boolean(body.archived);
+    } else if (body.operation === 'delete_project') {
+      if (isProjectBusy(p.id) || isTranscribeJobRunning(user, p.id)) {
+        return Response.json({ error: 'PROJECT_BUSY' }, { status: 409 });
+      }
+      const atts = Array.isArray(p.attachments) ? p.attachments : [];
+      let reclaimedFiles = 0;
+      for (const att of atts) {
+        if (!att?.id) continue;
+        try {
+          await deleteBucketObject(`${user}/${p.id}/${att.id}`);
+          reclaimedFiles += 1;
+        } catch {}
+      }
+      clearTranscribeCheckpoint(user, p.id);
+      await bindings()
+        .DB.prepare('DELETE FROM studio_projects WHERE id=? AND owner=?')
+        .bind(p.id, user)
+        .run();
+      return Response.json({ ok: true, deletedId: p.id, reclaimedFiles });
     } else if (body.operation === 'set_episode') {
       const episode = Number(body.episode);
       const attachment = p.attachments.find((a: any) => a.id === body.attachment_id);

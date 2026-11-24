@@ -12,6 +12,7 @@ import {
   flushPersistentStore,
   generateRandomCode,
   getStore,
+  hashPassword,
   invalidateProviderModelCache,
   normalizeCreationTiers,
   replaceSkillPlugin,
@@ -75,6 +76,8 @@ function buildAdminSnapshot(adminAcc: StudioAccount) {
 
   const accountsWithStats = store.accounts.map((acc) => ({
     ...acc,
+    password: '••••••••',
+    passwordHashed: Boolean(typeof acc.password === 'string' && acc.password.startsWith('scrypt$')),
     projectCount: projectCountByOwner[acc.username] || 0,
   }));
   const commerce = listAllCommerceForAdmin();
@@ -201,7 +204,7 @@ export async function POST(request: Request) {
         username,
         displayName: displayName.slice(0, 50),
         role,
-        password,
+        password: hashPassword(password),
         accessKey: customKey || generateRandomCode('AYIN-KEY'),
         status: 'active',
         budgetCapUsd,
@@ -223,7 +226,7 @@ export async function POST(request: Request) {
 
       if (body.displayName !== undefined) acc.displayName = String(body.displayName).trim().slice(0, 50);
       if (body.password !== undefined && String(body.password).trim()) {
-        acc.password = String(body.password).trim();
+        acc.password = hashPassword(String(body.password).trim());
       }
       if (body.role && ['admin', 'creator', 'reviewer'].includes(body.role)) {
         acc.role = body.role;

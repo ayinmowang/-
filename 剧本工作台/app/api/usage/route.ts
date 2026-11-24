@@ -1,7 +1,7 @@
 import {
   failure,
   getStore,
-  resolveAccountFromRequest,
+  resolveUserAccount,
   sanitizeForClient,
   toPublicProfile,
 } from '../../../lib/server';
@@ -25,7 +25,7 @@ function toDayKey(iso: string): string {
 
 export async function GET(request: Request) {
   try {
-    const acc = resolveAccountFromRequest(request);
+    const acc = resolveUserAccount(request);
     if (!acc) {
       return Response.json({ error: 'AUTH_REQUIRED' }, { status: 401 });
     }

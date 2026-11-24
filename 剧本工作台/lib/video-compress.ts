@@ -246,6 +246,74 @@ function safeUnlink(filePath: string) {
   } catch {}
 }
 
+export function pruneTranscodeCache(
+  cacheDir: string = path.join(process.cwd(), '.data', 'transcode-cache'),
+  protectFile?: string,
+  opts?: { maxBytes?: number; ttlMs?: number },
+): { removed: number; freedBytes: number } {
+  let removed = 0;
+  let freedBytes = 0;
+  try {
+    if (!fs.existsSync(/*turbopackIgnore: true*/ cacheDir)) return { removed, freedBytes };
+    const envMaxMb = Number(process.env.STUDIO_TRANSCODE_CACHE_MAX_MB);
+    const maxBytes =
+      typeof opts?.maxBytes === 'number' && Number.isFinite(opts.maxBytes) && opts.maxBytes > 0
+        ? opts.maxBytes
+        : (Number.isFinite(envMaxMb) && envMaxMb >= 50 ? envMaxMb : 1024) * 1024 * 1024;
+    const envTtlHrs = Number(process.env.STUDIO_TRANSCODE_CACHE_TTL_HOURS);
+    const ttlMs =
+      typeof opts?.ttlMs === 'number' && Number.isFinite(opts.ttlMs) && opts.ttlMs > 0
+        ? opts.ttlMs
+        : (Number.isFinite(envTtlHrs) && envTtlHrs >= 1 ? envTtlHrs : 24) * 3600_000;
+
+    const now = Date.now();
+    const protectAbs = protectFile ? path.resolve(/*turbopackIgnore: true*/ protectFile) : '';
+    const entries: Array<{ full: string; size: number; mtimeMs: number }> = [];
+
+    for (const name of fs.readdirSync(/*turbopackIgnore: true*/ cacheDir)) {
+      const full = path.join(/*turbopackIgnore: true*/ cacheDir, name);
+      if (protectAbs && path.resolve(/*turbopackIgnore: true*/ full) === protectAbs) continue;
+      let st: fs.Stats;
+      try {
+        st = fs.statSync(/*turbopackIgnore: true*/ full);
+      } catch {
+        continue;
+      }
+      if (!st.isFile()) continue;
+      if (now - st.mtimeMs > ttlMs) {
+        try {
+          fs.unlinkSync(full);
+          removed += 1;
+          freedBytes += st.size;
+        } catch {}
+      } else {
+        entries.push({ full, size: st.size, mtimeMs: st.mtimeMs });
+      }
+    }
+
+    let totalBytes = entries.reduce((sum, e) => sum + e.size, 0);
+    if (protectAbs && fs.existsSync(protectAbs)) {
+      try {
+        totalBytes += fs.statSync(protectAbs).size;
+      } catch {}
+    }
+
+    if (totalBytes > maxBytes) {
+      entries.sort((a, b) => a.mtimeMs - b.mtimeMs);
+      for (const e of entries) {
+        if (totalBytes <= maxBytes) break;
+        try {
+          fs.unlinkSync(e.full);
+          totalBytes -= e.size;
+          removed += 1;
+          freedBytes += e.size;
+        } catch {}
+      }
+    }
+  } catch {}
+  return { removed, freedBytes };
+}
+
 /**
  * Generates a transient pre-LLM compressed MP4 in `.data/transcode-cache/`
  * while leaving `.data/buckets/` 100% lossless and untouched.
@@ -415,6 +483,7 @@ export async function prepareCompressedVideoForLLM(
       }
 
       fs.renameSync(finalTmp, cacheFile);
+      pruneTranscodeCache(cacheDir, cacheFile);
       return {
         filePath: cacheFile,
         compressed: true,

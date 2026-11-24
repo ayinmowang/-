@@ -567,7 +567,7 @@ export default function AdminConsolePage() {
       `成员名称：${acc.displayName} (${ROLE_LABELS[acc.role]?.label || acc.role})`,
       `--------------------------------`,
       `方式一（专属 Key 一键登录）：${acc.accessKey}`,
-      `方式二（账号 + 密码登录）：账号 ${acc.username} ｜ 密码 ${acc.password}`,
+      `方式二（账号 + 密码登录）：账号 ${acc.username} ｜ 密码请由管理员私信告知（或在后台点「改密」重置）`,
       `可用额度上限：$${acc.budgetCapUsd.toFixed(2)}`,
     ].join('\n');
     copyText(cardText, `「${acc.displayName}」完整登录卡（含专属Key+账号密码）`);
@@ -1257,14 +1257,25 @@ export default function AdminConsolePage() {
                               </button>
                             </div>
                           ) : (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                              <code>{acc.password}</code>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'nowrap' }}>
+                              <span
+                                style={{
+                                  fontSize: 11,
+                                  padding: '2px 8px',
+                                  borderRadius: 999,
+                                  background: (acc as any).passwordHashed ? 'rgba(48,209,88,0.14)' : 'rgba(255,159,10,0.14)',
+                                  color: (acc as any).passwordHashed ? '#30d158' : '#ff9f0a',
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
+                                {(acc as any).passwordHashed ? '🔒 已加密' : '🔐 待登录升级'}
+                              </span>
                               <button
                                 type="button"
                                 style={styles.smallSecondaryBtn}
                                 onClick={() => {
                                   setEditingPassId(acc.id);
-                                  setEditingPassVal(acc.password);
+                                  setEditingPassVal('');
                                 }}
                               >
                                 改密

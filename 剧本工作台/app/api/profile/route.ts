@@ -1,14 +1,16 @@
 import {
   failure,
   flushPersistentStore,
-  resolveAccountFromRequest,
+  hashPassword,
+  resolveUserAccount,
   sanitizeForClient,
   toPublicProfile,
+  verifyPassword,
 } from '../../../lib/server';
 
 async function handleProfileUpdate(request: Request): Promise<Response> {
   try {
-    const acc = resolveAccountFromRequest(request);
+    const acc = resolveUserAccount(request);
     if (!acc) {
       return Response.json({ error: 'AUTH_REQUIRED' }, { status: 401 });
     }
@@ -39,7 +41,7 @@ async function handleProfileUpdate(request: Request): Promise<Response> {
 
     const nextPasswordRaw = body.newPassword !== undefined ? body.newPassword : body.password;
     if (nextPasswordRaw !== undefined) {
-      if (typeof body.currentPassword !== 'string' || body.currentPassword !== acc.password) {
+      if (typeof body.currentPassword !== 'string' || !verifyPassword(body.currentPassword, acc.password).ok) {
         return Response.json(
           { error: 'INVALID_CURRENT_PASSWORD', message: '当前密码不正确' },
           { status: 400 }
@@ -51,7 +53,7 @@ async function handleProfileUpdate(request: Request): Promise<Response> {
           { status: 400 }
         );
       }
-      acc.password = nextPasswordRaw;
+      acc.password = hashPassword(nextPasswordRaw);
     }
 
     flushPersistentStore();
@@ -69,7 +71,7 @@ async function handleProfileUpdate(request: Request): Promise<Response> {
 
 export async function GET(request: Request) {
   try {
-    const acc = resolveAccountFromRequest(request);
+    const acc = resolveUserAccount(request);
     if (!acc) {
       return Response.json({ error: 'AUTH_REQUIRED' }, { status: 401 });
     }

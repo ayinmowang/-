@@ -3,7 +3,7 @@ import { parseGeminiSse } from './gemini-native-sse';
 import { TRANSCRIBE_V72_VISION_SYSTEM_PROMPT } from './transcribe-format';
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import type {
   AccountRole,
   AdminSystemConfig,
@@ -1031,6 +1031,103 @@ export function resolveWorkflowSkillPrompts(
   return { primary, secondary, composedSystemPrompt };
 }
 
+export function hashPassword(plain: string): string {
+  const raw = String(plain ?? '');
+  if (raw.startsWith('scrypt$')) return raw;
+  const salt = randomBytes(16).toString('hex');
+  const derived = scryptSync(raw, salt, 32).toString('hex');
+  return `scrypt$${salt}$${derived}`;
+}
+
+export function verifyPassword(
+  plain: string,
+  stored: string,
+): { ok: boolean; needsUpgrade: boolean } {
+  const candidate = String(plain ?? '');
+  const saved = String(stored ?? '');
+  if (!candidate || !saved) return { ok: false, needsUpgrade: false };
+  if (saved.startsWith('scrypt$')) {
+    const parts = saved.split('$');
+    if (parts.length !== 3 || !parts[1] || !parts[2]) {
+      return { ok: false, needsUpgrade: false };
+    }
+    try {
+      const expectedBuf = Buffer.from(parts[2], 'hex');
+      const actualBuf = scryptSync(candidate, parts[1], expectedBuf.length);
+      const ok =
+        expectedBuf.length === actualBuf.length && timingSafeEqual(expectedBuf, actualBuf);
+      return { ok, needsUpgrade: false };
+    } catch {
+      return { ok: false, needsUpgrade: false };
+    }
+  }
+  const ok = candidate === saved;
+  return { ok, needsUpgrade: ok };
+}
+
+const AUTH_RATE_BUCKET_KEY = '__STUDIO_AUTH_RATE_BUCKETS__';
+
+function getAuthRateBuckets(): Map<string, number[]> {
+  const g = globalThis as any;
+  if (!(g[AUTH_RATE_BUCKET_KEY] instanceof Map)) {
+    g[AUTH_RATE_BUCKET_KEY] = new Map<string, number[]>();
+  }
+  return g[AUTH_RATE_BUCKET_KEY];
+}
+
+function resolveClientRateKey(request: Request | undefined, scope: string): string {
+  const fwd = request?.headers?.get('x-forwarded-for')?.split(',')[0]?.trim();
+  const realIp = request?.headers?.get('x-real-ip')?.trim();
+  const cfIp = request?.headers?.get('cf-connecting-ip')?.trim();
+  const ip = cfIp || fwd || realIp || 'local';
+  return `${scope}:${ip}`;
+}
+
+export function checkAuthRateLimit(
+  request: Request | undefined,
+  scope: string,
+  maxAttempts = 20,
+  windowMs = 5 * 60_000,
+): { allowed: boolean; retryAfterSec: number } {
+  if (process.env.STUDIO_DISABLE_RATE_LIMIT === '1') {
+    return { allowed: true, retryAfterSec: 0 };
+  }
+  const buckets = getAuthRateBuckets();
+  const key = resolveClientRateKey(request, scope);
+  const now = Date.now();
+  const recent = (buckets.get(key) || []).filter((ts) => now - ts < windowMs);
+  if (recent.length === 0) {
+    buckets.delete(key);
+    return { allowed: true, retryAfterSec: 0 };
+  }
+  buckets.set(key, recent);
+  if (recent.length >= maxAttempts) {
+    const oldest = recent[0];
+    const retryAfterSec = Math.max(1, Math.ceil((windowMs - (now - oldest)) / 1000));
+    return { allowed: false, retryAfterSec };
+  }
+  return { allowed: true, retryAfterSec: 0 };
+}
+
+export function recordAuthFailure(
+  request: Request | undefined,
+  scope: string,
+  windowMs = 5 * 60_000,
+): void {
+  if (process.env.STUDIO_DISABLE_RATE_LIMIT === '1') return;
+  const buckets = getAuthRateBuckets();
+  const key = resolveClientRateKey(request, scope);
+  const now = Date.now();
+  const recent = (buckets.get(key) || []).filter((ts) => now - ts < windowMs);
+  recent.push(now);
+  buckets.set(key, recent);
+}
+
+export function clearAuthRateLimit(request: Request | undefined, scope: string): void {
+  const buckets = getAuthRateBuckets();
+  buckets.delete(resolveClientRateKey(request, scope));
+}
+
 export function generateRandomCode(prefix = 'AYIN-KEY'): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const seg = (len: number) =>
@@ -1225,6 +1322,13 @@ export function bindings(): any {
                     store.projects[id] = { owner: row.owner, data, version, updated_at };
                     flushPersistentStore();
                   }
+                } else if (sql.startsWith('DELETE FROM studio_projects')) {
+                  const [id, ownerId] = args;
+                  const row = store.projects[id];
+                  if (row && (row.owner === ownerId || ownerId === '__ADMIN_ALL__')) {
+                    delete store.projects[id];
+                    flushPersistentStore();
+                  }
                 }
                 return { success: true };
               },
@@ -1328,6 +1432,13 @@ export function getActiveAccountOrDefault(request?: Request): StudioAccount {
   if (acc) return acc;
   const store = loadPersistentStore();
   return store.accounts.find((a) => a.username === 'ayin') || store.accounts[0];
+}
+
+export function resolveUserAccount(request?: Request): StudioAccount | null {
+  const acc = resolveAccountFromRequest(request);
+  if (acc) return acc;
+  const store = loadPersistentStore();
+  return store.systemConfig.requireAuthOnFrontend ? null : getActiveAccountOrDefault(request);
 }
 
 export function createSessionForAccount(acc: StudioAccount): string {
@@ -3488,6 +3599,7 @@ export function failure(e: any): Response {
     MODE_SELECTION_REQUIRED: 400,
     UNDERSTOOD_GATE_REQUIRED: 400,
     BUDGET_EXCEEDED: 402,
+    RATE_LIMITED: 429,
     SERVICE_NOT_CONNECTED: 503,
     BACKEND_REQUEST_FAILED: 502,
   };

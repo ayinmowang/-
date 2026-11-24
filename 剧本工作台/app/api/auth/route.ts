@@ -1,13 +1,18 @@
 import {
+  checkAuthRateLimit,
+  clearAuthRateLimit,
   createSessionForAccount,
   failure,
   flushPersistentStore,
   generateRandomCode,
   getActiveAccountOrDefault,
   getStore,
+  hashPassword,
   parseSessionTokenFromRequest,
+  recordAuthFailure,
   resolveAccountFromRequest,
   toPublicProfile,
+  verifyPassword,
 } from '../../../lib/server';
 import type { StudioAccount } from '../../../lib/types';
 
@@ -66,15 +71,32 @@ export async function POST(request: Request) {
 
     // 1. Login with Username + Password
     if (action === 'login_password') {
+      const rl = checkAuthRateLimit(request, 'auth_login');
+      if (!rl.allowed) {
+        return Response.json(
+          { error: 'RATE_LIMITED', message: `尝试过于频繁，请 ${rl.retryAfterSec} 秒后再试` },
+          { status: 429, headers: { 'Retry-After': String(rl.retryAfterSec) } }
+        );
+      }
       const username = String(body.username || '').trim().toLowerCase();
       const password = String(body.password || '');
-      if (!username || !password) throw new Error('INVALID_CREDENTIALS');
+      if (!username || !password) {
+        recordAuthFailure(request, 'auth_login');
+        throw new Error('INVALID_CREDENTIALS');
+      }
 
-      const acc = store.accounts.find(
-        (a) => a.username.toLowerCase() === username && a.password === password
-      );
-      if (!acc) throw new Error('INVALID_CREDENTIALS');
+      const acc = store.accounts.find((a) => a.username.toLowerCase() === username);
+      const pwCheck = acc ? verifyPassword(password, acc.password) : { ok: false, needsUpgrade: false };
+      if (!acc || !pwCheck.ok) {
+        recordAuthFailure(request, 'auth_login');
+        throw new Error('INVALID_CREDENTIALS');
+      }
       if (acc.status === 'disabled') throw new Error('ACCOUNT_DISABLED');
+      clearAuthRateLimit(request, 'auth_login');
+      if (pwCheck.needsUpgrade) {
+        acc.password = hashPassword(password);
+        flushPersistentStore();
+      }
 
       const token = createSessionForAccount(acc);
       return buildSessionResponse(
@@ -89,8 +111,18 @@ export async function POST(request: Request) {
 
     // 2. Login with Exclusive Access Key OR Admin-generated Invite Code
     if (action === 'login_key') {
+      const rl = checkAuthRateLimit(request, 'auth_login');
+      if (!rl.allowed) {
+        return Response.json(
+          { error: 'RATE_LIMITED', message: `尝试过于频繁，请 ${rl.retryAfterSec} 秒后再试` },
+          { status: 429, headers: { 'Retry-After': String(rl.retryAfterSec) } }
+        );
+      }
       const rawKey = String(body.key ?? body.code ?? '').trim();
-      if (!rawKey) throw new Error('INVALID_CREDENTIALS');
+      if (!rawKey) {
+        recordAuthFailure(request, 'auth_login');
+        throw new Error('INVALID_CREDENTIALS');
+      }
 
       // 2a. Check if it matches an existing account's exclusive accessKey
       const byAccessKey = store.accounts.find(
@@ -98,6 +130,7 @@ export async function POST(request: Request) {
       );
       if (byAccessKey) {
         if (byAccessKey.status === 'disabled') throw new Error('ACCOUNT_DISABLED');
+        clearAuthRateLimit(request, 'auth_login');
         const token = createSessionForAccount(byAccessKey);
         return buildSessionResponse(
           {
@@ -112,6 +145,7 @@ export async function POST(request: Request) {
       // 2b. Check if it matches an Admin-generated Invite Code
       const invite = store.invites.find((inv) => inv.code.toLowerCase() === rawKey.toLowerCase());
       if (!invite || invite.status === 'revoked') {
+        recordAuthFailure(request, 'auth_login');
         throw new Error('INVALID_INVITE_CODE');
       }
 
@@ -212,7 +246,7 @@ export async function POST(request: Request) {
         username,
         displayName: displayName.slice(0, 40),
         role: invite.role,
-        password,
+        password: hashPassword(password),
         accessKey: generateRandomCode('AYIN-KEY'),
         status: 'active',
         budgetCapUsd: invite.budgetCapUsd,
