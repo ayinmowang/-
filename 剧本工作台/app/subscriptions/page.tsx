@@ -64,7 +64,12 @@ export default function SubscriptionsPage() {
       }
       setAccount(json.account || null);
       setCurrent(json.current || null);
-      setHistory(Array.isArray(json.history) ? json.history : []);
+      const subList = Array.isArray(json.subscriptions)
+        ? json.subscriptions
+        : Array.isArray(json.history)
+          ? json.history
+          : [];
+      setHistory(subList);
       setPlans(Array.isArray(json.plans) ? json.plans : []);
     } catch (err: any) {
       setError(err.message || '加载失败，请稍后重试');
@@ -92,7 +97,15 @@ export default function SubscriptionsPage() {
       if (!res.ok) {
         throw new Error(json.message || json.error || '操作失败');
       }
-      setNotice(action === 'cancel' ? '已取消到期自动续期设置' : '已开启到期自动续期');
+      if (action === 'cancel') {
+        setNotice(json.alreadyCancelled ? '该订阅此前已终止' : '已终止当前订阅周期');
+      } else {
+        setNotice(
+          json.order?.id
+            ? `已创建续费订单 ${json.order.id}，请前往订单记录页查看或等待管理员确认入账`
+            : '已提交续期申请'
+        );
+      }
       await loadData();
     } catch (err: any) {
       setError(err.message || '请求失败，请稍后重试');
@@ -105,7 +118,7 @@ export default function SubscriptionsPage() {
     if (period === 'monthly') return '月度周期';
     if (period === 'quarterly') return '季度周期';
     if (period === 'yearly') return '年度周期';
-    if (period === 'one_time') return '单次额度包';
+    if (period === 'one_time' || period === 'once') return '单次额度包';
     return period || '标准周期';
   }
 
@@ -290,7 +303,10 @@ export default function SubscriptionsPage() {
                     </span>
                   </div>
                   <div style={{ fontSize: 13, color: '#78716c' }}>
-                    周期类型：{formatPeriod(current.period)} · 套餐标价 ${Number(current.priceUsd || 0).toFixed(2)}
+                    周期类型：{formatPeriod(current.period)}
+                    {Number(current.priceUsd || 0) > 0
+                      ? ` · 套餐标价 $${Number(current.priceUsd).toFixed(2)}`
+                      : ''}
                   </div>
                 </div>
 

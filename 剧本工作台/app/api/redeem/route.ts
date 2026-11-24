@@ -87,6 +87,12 @@ export async function POST(request: Request) {
     }
 
     // Branch B: Admin Invite Code
+    if (!store.systemConfig.allowInviteRegistration) {
+      return Response.json(
+        { error: 'INVITE_REGISTRATION_DISABLED', message: '管理员当前已暂停邀请码自助激活' },
+        { status: 403 }
+      );
+    }
     const invite = store.invites.find((inv) => inv.code.toLowerCase() === code.toLowerCase());
     if (!invite || invite.status === 'revoked') {
       return Response.json(

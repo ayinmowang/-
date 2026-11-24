@@ -3388,7 +3388,13 @@ export default function AdminConsolePage() {
                             <td style={styles.td}>${Number(ord.priceUsd || 0).toFixed(2)}</td>
                             <td style={styles.td}>${Number(ord.creditUsd || 0).toFixed(2)}</td>
                             <td style={styles.td}>{ord.period}</td>
-                            <td style={styles.td}>{ord.paymentChannel || 'manual_admin'}</td>
+                            <td style={styles.td}>
+                              {ord.paymentChannel === 'test'
+                                ? '沙盒测试'
+                                : ord.paymentChannel === 'pending_gateway'
+                                  ? '外部收银台扩展槽'
+                                  : '人工核验入账'}
+                            </td>
                             <td style={styles.td}>
                               {isPending ? 'pending（待管理员确认入账）' : `${ord.status}（已入账）`}
                             </td>

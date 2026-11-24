@@ -1,6 +1,7 @@
 import {
   cancelSubscription,
   getSubscriptions,
+  listPlansForCreator,
   renewSubscription,
 } from '../../../lib/commerce';
 import {
@@ -17,10 +18,13 @@ export async function GET(request: Request) {
     }
 
     const data = getSubscriptions(account.id);
+    const plans = listPlansForCreator();
     return Response.json({
       account: toPublicProfile(account),
       current: data.current,
       subscriptions: data.subscriptions,
+      history: data.subscriptions,
+      plans,
       budgetCapUsd: account.budgetCapUsd,
       budgetUsedUsd: account.budgetUsedUsd,
     });
