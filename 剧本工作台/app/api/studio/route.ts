@@ -618,20 +618,20 @@ async function callProjectStation(params: {
   }
 
   const tierCfg = resolvedTier.tier;
-  const visionRouteModel =
-    params.station === 'vision'
-      ? String(store.systemConfig.routes?.vision?.primaryModel || '').trim()
+  const stationRouteModel =
+    params.station !== 'director'
+      ? String(store.systemConfig.routes?.[params.station]?.primaryModel || '').trim()
       : '';
-  const visionRouteNorm = visionRouteModel
-    ? normalizeRelayModelName(visionRouteModel).trim().toLowerCase()
+  const stationRouteNorm = stationRouteModel
+    ? normalizeRelayModelName(stationRouteModel).trim().toLowerCase()
     : '';
-  const useVisionRoutePrimary = Boolean(
-    visionRouteModel &&
-      (ALLOWED_RELAY_MODELS.has(visionRouteNorm) ||
-        ALLOWED_RELAY_MODELS.has(visionRouteModel.toLowerCase()))
+  const useStationRoutePrimary = Boolean(
+    stationRouteModel &&
+      (ALLOWED_RELAY_MODELS.has(stationRouteNorm) ||
+        ALLOWED_RELAY_MODELS.has(stationRouteModel.toLowerCase()))
   );
-  const effectiveModelOverride = useVisionRoutePrimary
-    ? visionRouteModel
+  const effectiveModelOverride = useStationRoutePrimary
+    ? stationRouteModel
     : tierCfg.model?.trim() || '';
   const result = await callStationLLM({
     station: params.station,
@@ -1240,6 +1240,178 @@ function populateTranscribeWorkspace(
     updatedAt: now,
     version: 1,
   };
+}
+
+function buildCreativeStageContext(p: any): string {
+  const blocks: string[] = [];
+  if (typeof p.brief === 'string' && p.brief.trim()) {
+    blocks.push(`【项目原始创意/改编说明】\n${p.brief.trim().slice(0, 1500)}`);
+  }
+  const reqs = Array.isArray(p.requirements) ? p.requirements : [];
+  if (reqs.length > 0) {
+    const reqText = reqs
+      .slice(-10)
+      .map((r: any) => (typeof r === 'string' ? r : String(r?.text || '')))
+      .filter(Boolean)
+      .join('\n');
+    if (reqText) blocks.push(`【已确认拍板与要求台账】\n${reqText.slice(0, 1200)}`);
+  }
+  const outputs = p.remote?.outputs || {};
+  if (outputs.recap?.content) {
+    blocks.push(`【阶段复述与前期诊断】\n${String(outputs.recap.content).trim().slice(0, 900)}`);
+  }
+  if (outputs.gates?.content) {
+    blocks.push(`【已确认三道门方案】\n${String(outputs.gates.content).trim().slice(0, 1000)}`);
+  }
+  if (outputs.synopsis?.content) {
+    blocks.push(`【已确认主线方案与简化主线单】\n${String(outputs.synopsis.content).trim().slice(0, 1000)}`);
+  }
+  if (outputs.outline?.content) {
+    blocks.push(`【已有细纲与前序样稿】\n${String(outputs.outline.content).trim().slice(0, 1200)}`);
+  }
+  const eps = Array.isArray(p.episodes) ? [...p.episodes].sort((a: any, b: any) => (a.episodeNumber || 0) - (b.episodeNumber || 0)) : [];
+  if (eps.length > 0) {
+    const lockedN = typeof p.lockedEpisodes === 'number' && p.lockedEpisodes > 0 ? p.lockedEpisodes : 0;
+    const sampleEps = lockedN > 0
+      ? eps.filter((e: any) => e.episodeNumber <= lockedN).slice(-2)
+      : eps.slice(0, 2);
+    const epSummary = sampleEps
+      .map((e: any) => `第${e.episodeNumber}集${isEpisodeEffectivelyLocked(p, e) ? '（已锁定，严禁改动）' : ''}：\n${String(e.body || e.content || '').trim().slice(0, 600)}`)
+      .join('\n\n');
+    if (epSummary) {
+      blocks.push(`【已有/锁定前序集正文参考】\n${epSummary}`);
+    }
+  }
+  return blocks.join('\n\n').slice(0, 6000);
+}
+
+function extractCreativeEpisodeSections(text: string): Map<number, string> {
+  const result = new Map<number, string>();
+  const normalized = String(text || '').replace(/\r\n?/g, '\n');
+  const headingRe = /^#{1,4}\s*第\s*0*(\d{1,3})\s*集[^\n]*$/gm;
+  const matches: Array<{ epNum: number; index: number }> = [];
+  let m: RegExpExecArray | null;
+  while ((m = headingRe.exec(normalized)) !== null) {
+    const epNum = Number(m[1]);
+    if (Number.isInteger(epNum) && epNum >= 1 && epNum <= 300) {
+      matches.push({ epNum, index: m.index });
+    }
+  }
+  for (let i = 0; i < matches.length; i++) {
+    const cur = matches[i];
+    const nextIdx = i + 1 < matches.length ? matches[i + 1].index : normalized.length;
+    const slice = normalized.slice(cur.index, nextIdx).trim();
+    if (slice.length >= 40) {
+      result.set(cur.epNum, slice);
+    }
+  }
+  return result;
+}
+
+function upsertWorkspaceAssetNode(
+  list: any[],
+  id: string,
+  title: string,
+  body: string,
+  now: string,
+): void {
+  const clean = body.trim();
+  if (!clean) return;
+  const idx = list.findIndex((n: any) => n?.id === id);
+  const nextNode = {
+    id,
+    title,
+    body: clean,
+    content: clean,
+    order: idx >= 0 ? list[idx].order : list.length + 1,
+    updatedAt: now,
+  };
+  if (idx >= 0) list[idx] = nextNode;
+  else list.push(nextNode);
+}
+
+function hydrateCreativeWorkspaceStage(
+  p: any,
+  stage: 'gates' | 'mainline' | 'script_episodes' | 'delivery',
+  rawContent: string,
+): void {
+  const clean = sanitizeForClient(rawContent || '').trim();
+  if (!clean) return;
+  const now = new Date().toISOString();
+  if (!Array.isArray(p.volumes) || p.volumes.length === 0) {
+    p.volumes = [{ id: 'vol-1', title: '第一卷', order: 1 }];
+  }
+  if (!Array.isArray(p.outlineNodes)) p.outlineNodes = [];
+  if (!Array.isArray(p.characterNodes)) p.characterNodes = [];
+  if (!Array.isArray(p.worldNodes)) p.worldNodes = [];
+  if (!Array.isArray(p.episodes)) p.episodes = [];
+
+  if (stage === 'gates') {
+    upsertWorkspaceAssetNode(p.worldNodes, 'wld-domestic-gates', '桥段出海四级诊断与三道门方案', clean, now);
+    return;
+  }
+  if (stage === 'mainline') {
+    upsertWorkspaceAssetNode(p.outlineNodes, 'out-mainline', '主线方案与简化主线单', clean, now);
+    return;
+  }
+
+  const parsedEps = extractCreativeEpisodeSections(clean);
+  if (stage === 'script_episodes') {
+    const charMatch = clean.match(/(?:^|\n)#{1,3}\s*(?:一、|二、)?[^\n]*人物[^\n]*\n([\s\S]*?)(?=\n#{1,3}\s|$)/);
+    if (charMatch && charMatch[1].trim()) {
+      upsertWorkspaceAssetNode(p.characterNodes, 'char-stage-bios', '核心人物小传与关系网', charMatch[1].trim(), now);
+    } else if (p.characterNodes.length === 0) {
+      upsertWorkspaceAssetNode(p.characterNodes, 'char-stage-bios', '核心人物小传与关系网', clean.slice(0, 1200), now);
+    }
+    const outlineMatch = clean.match(/(?:^|\n)#{1,3}\s*(?:一、|二、|三、)?[^\n]*(?:细纲|大纲)[^\n]*\n([\s\S]*?)(?=\n#{1,3}\s*第\s*\d+\s*集|$)/);
+    if (outlineMatch && outlineMatch[1].trim()) {
+      upsertWorkspaceAssetNode(p.outlineNodes, 'out-stage-episodes', '分集细纲', outlineMatch[1].trim(), now);
+    } else if (p.outlineNodes.length === 0) {
+      upsertWorkspaceAssetNode(p.outlineNodes, 'out-stage-episodes', '分集细纲与开篇样稿', clean.slice(0, 1800), now);
+    }
+  }
+
+  const lockedN = typeof p.lockedEpisodes === 'number' && p.lockedEpisodes > 0 ? p.lockedEpisodes : 0;
+  for (const [epNum, body] of parsedEps.entries()) {
+    if (epNum <= lockedN) continue;
+    const existingIdx = p.episodes.findIndex((e: any) => Number(e?.episodeNumber) === epNum);
+    if (existingIdx >= 0) {
+      if (isEpisodeEffectivelyLocked(p, p.episodes[existingIdx])) continue;
+      p.episodes[existingIdx].body = body;
+      p.episodes[existingIdx].content = body;
+      p.episodes[existingIdx].updatedAt = now;
+    } else {
+      p.episodes.push({
+        id: `ep-stage-${epNum}`,
+        volumeId: p.volumes[0]?.id || 'vol-1',
+        episodeNumber: epNum,
+        title: `第 ${epNum} 集`,
+        body,
+        content: body,
+        locked: false,
+        updatedAt: now,
+      });
+    }
+  }
+
+  if (stage === 'delivery') {
+    const hasUnlockedEp = p.episodes.some((e: any) => !isEpisodeEffectivelyLocked(p, e));
+    if (!hasUnlockedEp) {
+      const startEp = lockedN + 1;
+      p.episodes.push({
+        id: `ep-stage-${startEp}`,
+        volumeId: p.volumes[0]?.id || 'vol-1',
+        episodeNumber: startEp,
+        title: `第 ${startEp} 集`,
+        body: clean,
+        content: clean,
+        locked: false,
+        updatedAt: now,
+      });
+    }
+  }
+
+  p.episodes.sort((a: any, b: any) => (Number(a.episodeNumber) || 0) - (Number(b.episodeNumber) || 0));
 }
 
 function formatShortDramaScript(rawText: string): string {
@@ -3569,15 +3741,24 @@ export async function POST(request: Request) {
               }
             );
           } else if (p.kind === 'domestic' && nextCursor === 2) {
+            const stageCtx = buildCreativeStageContext(p);
             const llm = await callProjectStation({
               project: p,
               station: 'planner',
               account: acc,
-              userPrompt: `请针对国内迭代国外项目《${p.title}》（${p.total ?? 60}集）输出「桥段出海四级诊断」及「第一道门：世界观落地 → 第二道门：人设本土化 → 第三道门：桥段替换要点」方案。`,
+              userPrompt: `请针对国内迭代国外项目《${p.title}》（${p.total ?? 60}集）输出「桥段出海四级诊断」及「第一道门：世界观落地 → 第二道门：人设本土化 → 第三道门：桥段替换要点」方案。${stageCtx ? `\n\n${stageCtx}` : ''}`,
             });
+            if (!isLlmFixture() && (!llm.ok || !llm.text?.trim())) {
+              p.remote.cursor = Math.max(1, nextCursor - 1);
+              p.remote.progress.completed_steps = Math.max(0, (p.remote.progress.completed_steps || 1) - 1);
+              p.remote.status = 'failed';
+              message(p, 'director', '「三道门方案」生成未能完成，已保留当前阶段状态，未做伪造推进。请点击重试。');
+              const savedFail = await saveProject(p, user);
+              return Response.json(withCatalogs(savedFail));
+            }
             const content =
               llm.ok && llm.text
-                ? llm.text
+                ? sanitizeForClient(llm.text)
                 : '已完成桥段出海四级诊断与世界观、人设、替换要点三道门方案。';
             p.remote.outputs.gates = {
               title: '桥段出海四级诊断与三道门方案',
@@ -3585,6 +3766,8 @@ export async function POST(request: Request) {
               updatedAt: new Date().toISOString(),
               version: 1,
             };
+            hydrateCreativeWorkspaceStage(p, 'gates', content);
+            p.remote.status = 'waiting_confirm';
             p.remote.stage = { key: 'domestic_gates', title: '国内出海三道门（世界观 → 人设 → 替换要点）' };
             p.remote.card = {
               id: 'card-domestic-gates',
@@ -3598,17 +3781,26 @@ export async function POST(request: Request) {
             (p.kind === 'domestic' && nextCursor === 3) ||
             (p.kind === 'foreign' && nextCursor === 2)
           ) {
+            const stageCtx = buildCreativeStageContext(p);
             const llm = await callProjectStation({
               project: p,
               station: 'planner',
               account: acc,
               userPrompt: `请为短剧项目《${p.title}》（${KIND_LABELS[p.kind as Kind]}，全剧 ${p.total ?? 60} 集${
                 p.lockedEpisodes ? `，前 ${p.lockedEpisodes} 集已锁定` : ''
-              }）提供 2-3 套主线与对手升级方案（★首推排第一），并附上一份通俗易懂的「简化主线单」。`,
+              }）提供 2-3 套主线与对手升级方案（★首推排第一），并附上一份通俗易懂的「简化主线单」。${stageCtx ? `\n\n${stageCtx}` : ''}`,
             });
+            if (!isLlmFixture() && (!llm.ok || !llm.text?.trim())) {
+              p.remote.cursor = Math.max(1, nextCursor - 1);
+              p.remote.progress.completed_steps = Math.max(0, (p.remote.progress.completed_steps || 1) - 1);
+              p.remote.status = 'failed';
+              message(p, 'director', '「主线方案与简化主线单」生成未能完成，已保留当前阶段状态，未做伪造推进。请点击重试。');
+              const savedFail = await saveProject(p, user);
+              return Response.json(withCatalogs(savedFail));
+            }
             const content =
               llm.ok && llm.text
-                ? llm.text
+                ? sanitizeForClient(llm.text)
                 : '已生成主线与对手方案 A/B/C 及简化主线单。';
             p.remote.outputs.synopsis = {
               title: '主线方案与简化主线单',
@@ -3616,6 +3808,8 @@ export async function POST(request: Request) {
               updatedAt: new Date().toISOString(),
               version: 1,
             };
+            hydrateCreativeWorkspaceStage(p, 'mainline', content);
+            p.remote.status = 'waiting_confirm';
             p.remote.stage = { key: 'mainline_understood', title: '主线方案与简化主线单（看得懂关）' };
             p.remote.card = {
               id: 'card-mainline-' + nextCursor,
@@ -3630,30 +3824,43 @@ export async function POST(request: Request) {
             (p.kind === 'foreign' && nextCursor === 3) ||
             (p.kind === 'domestic' && nextCursor === 4)
           ) {
+            const stageCtx = buildCreativeStageContext(p);
+            const startEp = p.lockedEpisodes ? p.lockedEpisodes + 1 : 1;
+            const sampleEnd = Math.min(p.total ?? startEp + 2, startEp + 2);
             const llm = await callProjectStation({
               project: p,
               station: 'writer',
               account: acc,
-              userPrompt: `请为项目《${p.title}》（全剧 ${p.total ?? 60} 集${
-                p.lockedEpisodes ? `，前 ${p.lockedEpisodes} 集锁定，从第 ${p.lockedEpisodes + 1} 集续写` : ''
-              }）生成人物小传与首批 10 集分集细纲，并写出正文前 3 集样稿。`,
+              userPrompt: `请为项目《${p.title}》（${KIND_LABELS[p.kind as Kind]}，全剧 ${p.total ?? 60} 集${
+                p.lockedEpisodes ? `，前 ${p.lockedEpisodes} 集锁定一字不动，从第 ${startEp} 集续写` : ''
+              }）按以下结构输出：\n1. ### 核心人物小传\n2. ### 分集细纲（首批 10 集）\n3. 正文样稿（第 ${startEp}–${sampleEnd} 集，每集严格使用「## 第N集」作为标题，含场头、△动作描写与人物对白）。${stageCtx ? `\n\n${stageCtx}` : ''}`,
             });
+            if (!isLlmFixture() && (!llm.ok || !llm.text?.trim())) {
+              p.remote.cursor = Math.max(1, nextCursor - 1);
+              p.remote.progress.completed_steps = Math.max(0, (p.remote.progress.completed_steps || 1) - 1);
+              p.remote.status = 'failed';
+              message(p, 'director', '「人物小传、细纲与样稿」生成未能完成，已保留当前阶段状态，未做伪造推进。请点击重试。');
+              const savedFail = await saveProject(p, user);
+              return Response.json(withCatalogs(savedFail));
+            }
             const content =
               llm.ok && llm.text
-                ? llm.text
+                ? sanitizeForClient(llm.text)
                 : '已生成人物小传、分批细纲与前 3 集正文样稿。';
             p.remote.outputs.characters = {
               title: '核心人物小传与关系网',
-              content: content.slice(0, 800),
+              content: content.slice(0, 1200),
               updatedAt: new Date().toISOString(),
               version: 1,
             };
             p.remote.outputs.outline = {
-              title: '分集细纲与正文前 3 集',
+              title: '分集细纲与正文样稿',
               content,
               updatedAt: new Date().toISOString(),
               version: 1,
             };
+            hydrateCreativeWorkspaceStage(p, 'script_episodes', content);
+            p.remote.status = 'waiting_confirm';
             p.remote.stage = { key: 'script_episodes', title: '细纲与正文前 3 集确认' };
             p.remote.card = {
               id: 'card-script-' + nextCursor,
@@ -3669,17 +3876,27 @@ export async function POST(request: Request) {
             };
             message(p, 'director', `分集编剧已交回人物小传、细纲与前 3 集正文：\n\n${content}`);
           } else {
+            const stageCtx = buildCreativeStageContext(p);
+            const startEp = p.lockedEpisodes ? p.lockedEpisodes + 1 : 1;
             const llm = await callProjectStation({
               project: p,
               station: 'polisher',
               account: acc,
               userPrompt: `请对短剧《${p.title}》（${KIND_LABELS[p.kind as Kind]}，共 ${p.total ?? 60} 集${
-                p.lockedEpisodes ? `，前 ${p.lockedEpisodes} 集锁定一字不改` : ''
-              }）完成终审复核与${p.kind === 'domestic' ? '北美语感及美式幽默' : ''}精修总结，输出完整剧本交付正文摘要。`,
+                p.lockedEpisodes ? `，前 ${p.lockedEpisodes} 集锁定一字不改，仅对第 ${startEp} 集起精修与终审` : ''
+              }）完成终审复核与${p.kind === 'domestic' ? '北美语感及美式幽默' : '节奏与台词张力'}精修，先输出简明终审精修总结，随后按「## 第N集」格式给出精修后的关键示范集正文。${stageCtx ? `\n\n${stageCtx}` : ''}`,
             });
+            if (!isLlmFixture() && (!llm.ok || !llm.text?.trim())) {
+              p.remote.cursor = Math.max(1, nextCursor - 1);
+              p.remote.progress.completed_steps = Math.max(0, (p.remote.progress.completed_steps || 1) - 1);
+              p.remote.status = 'failed';
+              message(p, 'director', '「终审精修与交付」未能完成，已保留已有大纲、人物与分集稿，未做伪造交付。请点击重试。');
+              const savedFail = await saveProject(p, user);
+              return Response.json(withCatalogs(savedFail));
+            }
             const content =
               llm.ok && llm.text
-                ? llm.text
+                ? sanitizeForClient(llm.text)
                 : `《${p.title}》全剧已完成初审、返修、精修与终复核，正式剧本已封装就绪。`;
             p.remote.outputs.script = {
               title: '终审精修完整剧本正文',
@@ -3687,16 +3904,31 @@ export async function POST(request: Request) {
               updatedAt: new Date().toISOString(),
               version: 1,
             };
+            hydrateCreativeWorkspaceStage(p, 'delivery', content);
             p.remote.stage = { key: 'delivery', title: '成稿 Word 交付验收' };
             p.remote.status = 'delivered';
             p.remote.progress.completed_steps = p.remote.progress.total_steps;
             p.remote.card = null;
+            const docxFileAttachment = {
+              file: {
+                name: `${p.title}-完整剧本.docx`,
+                url: `/api/upload?id=${p.id}&export=docx`,
+                description: 'Word (.docx) 完整交付稿（含故事梗概、人物小传与分集正文）',
+              },
+            };
             message(
               p,
               'director',
-              `🎉 全剧已完成初审、返修、精修与终复核！\n\n${content}\n\n最终剧本已按「故事梗概 → 人物小传 → 正文」排列封装（${
+              `🎉 全剧已完成初审、返修、精修与终复核！\n\n${content}\n\n最终剧本已按「故事梗概 → 人物小传 → 正文」排列封装并同步写入左侧分集工作台（${
                 p.lockedEpisodes ? `前 ${p.lockedEpisodes} 集锁定稿逐字保护，` : ''
-              }点击下方卡片即可下载交付包）。`
+              }点击下方交付文件即可下载 Word）。`,
+              docxFileAttachment
+            );
+            message(
+              p,
+              'file',
+              `已为您生成《${p.title}》Word (.docx) 交付文件`,
+              docxFileAttachment
             );
           }
         }

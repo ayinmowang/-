@@ -1521,6 +1521,90 @@ export default function StudioWorkspace() {
                   </div>
                 )}
 
+                {/* 清晰创作流程进度卡：按当前项目类型匹配最顺手的 4 步，不强制锁死顺序 */}
+                {active.kind !== 'transcribe' && (() => {
+                  const hasWorld = (active.worldNodes?.length || 0) > 0;
+                  const hasOutline = (active.outlineNodes?.length || 0) > 0;
+                  const hasChars = (active.characterNodes?.length || 0) > 0;
+                  const writtenEpCount = (active.episodes || []).filter((e) => (e.body || '').trim().length > 0).length;
+                  const worldLabel =
+                    active.kind === 'domestic'
+                      ? '三道门 / 世界观'
+                      : active.kind === 'foreign'
+                        ? '改编定位 / 世界观'
+                        : '世界观规则';
+                  const worldPrompt =
+                    active.kind === 'domestic'
+                      ? '请输出国内迭代出海的三道门方案（世界观落地、人设本土化与核心桥段替换要点）。'
+                      : active.kind === 'foreign'
+                        ? '请结合原剧底稿梳理国外迭代的世界观舞台与核心冲突升级规则。'
+                        : '请为本原创短剧建立清晰的世界观舞台、核心破局引擎与代价规则。';
+                  const steps: Array<{ key: string; label: string; done: boolean; task: Exclude<DirectorTask, 'chat'>; prompt: string }> = [
+                    { key: 'world', label: `① ${worldLabel}`, done: hasWorld, task: 'world', prompt: worldPrompt },
+                    { key: 'outline', label: '② 主线大纲', done: hasOutline, task: 'outline', prompt: '请生成全剧主线方案、核心爽点节奏与分幕剧情大纲。' },
+                    { key: 'chars', label: '③ 人物小传', done: hasChars, task: 'characters', prompt: '请生成男女主与核心反派的人物小传、动机与关系网。' },
+                    { key: 'ep', label: writtenEpCount > 0 ? `④ 分集正文（已写${writtenEpCount}集）` : '④ 撰写分集正文', done: writtenEpCount > 0, task: 'episode', prompt: '请撰写当前分集的完整短剧剧本正文（标准场头、△动作与强钩子结尾）。' },
+                  ];
+                  const doneCount = steps.filter((s) => s.done).length;
+                  return (
+                    <div
+                      aria-label="创作流程进度"
+                      style={{
+                        padding: '10px 12px',
+                        borderRadius: 12,
+                        border: '1px solid #e6dfd3',
+                        background: 'var(--warm-surface, #faf7f2)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 8,
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12 }}>
+                        <span style={{ fontWeight: 700, color: '#8C3B2B' }}>
+                          {KIND_LABELS[active.kind]} · 创作进度 ({doneCount}/4)
+                        </span>
+                        {writtenEpCount > 0 && (
+                          <a
+                            href={`/api/upload?id=${active.id}&export=docx`}
+                            style={{ fontSize: 11, fontWeight: 700, color: '#8C3B2B', textDecoration: 'underline' }}
+                          >
+                            直接导出 Word
+                          </a>
+                        )}
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                        {steps.map((s) => (
+                          <button
+                            key={s.key}
+                            type="button"
+                            disabled={busy}
+                            onClick={() => triggerDirectorAction(s.task, s.prompt)}
+                            style={{
+                              padding: '6px 8px',
+                              borderRadius: 8,
+                              border: s.done ? '1px solid #b7d7c2' : '1px dashed #D49B54',
+                              background: s.done ? 'rgba(34,139,34,0.07)' : 'var(--warm-card, #fff)',
+                              color: s.done ? '#1e6b3b' : '#2C2420',
+                              fontSize: 11,
+                              fontWeight: 600,
+                              textAlign: 'left',
+                              cursor: busy ? 'not-allowed' : 'pointer',
+                              opacity: busy ? 0.55 : 1,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              gap: 4,
+                            }}
+                          >
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.label}</span>
+                            <span style={{ flexShrink: 0 }}>{s.done ? '✓' : '→'}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 {/* 5 个总编剧定向生成按钮（另起一行，保留暖色风格） */}
                 <div
                   aria-label="总编剧快捷生成"
@@ -1570,7 +1654,28 @@ export default function StudioWorkspace() {
                       whiteSpace: 'pre-wrap',
                     }}
                   >
-                    {m.text}
+                    <div>{m.text}</div>
+                    {m.file?.url && (
+                      <a
+                        href={m.file.url}
+                        style={{
+                          marginTop: 8,
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          padding: '6px 10px',
+                          borderRadius: 8,
+                          background: '#8C3B2B',
+                          color: '#fff',
+                          fontSize: 12,
+                          fontWeight: 700,
+                          textDecoration: 'none',
+                        }}
+                      >
+                        <Download size={13} />
+                        <span>{m.file.name || '下载完整剧本 (.docx)'}</span>
+                      </a>
+                    )}
                   </div>
                 ))}
 

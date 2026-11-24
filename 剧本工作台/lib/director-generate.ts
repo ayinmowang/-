@@ -523,27 +523,96 @@ export function applyDirectorAssetWrite(
   };
 }
 
-function buildSafeStationUserPrompt(p: StudioProjectLike, task: DirectorGenerateTask, userInput: string): string {
+function buildSafeStationUserPrompt(
+  p: StudioProjectLike,
+  task: DirectorGenerateTask,
+  userInput: string,
+  opts?: { episodeId?: string; episodeNumber?: number },
+): string {
   const lockedN = typeof p.lockedEpisodes === 'number' ? p.lockedEpisodes : 0;
   const modeNote = projectIsPlanMode(p) ? '当前为计划模式，仅输出创作规划与建议。' : '当前为自动执行模式，请直接输出完整可用的创作内容。';
   const taskGoal: Record<DirectorGenerateTask, string> = {
-    outline: '请生成完整剧情大纲，首行可使用 # 标题，正文分幕清晰。',
-    characters: '请生成核心角色小传，首行可使用 # 标题，正文包含性格、动机与关系。',
-    world: '请生成世界观与核心规则设定，首行可使用 # 标题。',
-    hook: '请生成本集结尾悬念挂卡段落，节奏紧凑、留有强钩子。',
-    episode: '请撰写完整的单集剧本正文，包含场景头、动作描写与人物对白。',
-    chat: '请结合当前项目需求给出总编剧创作建议。',
+    outline: '请生成完整剧情大纲，首行可使用 # 标题，正文分幕清晰，贴合短剧强冲突与付费卡点节奏。',
+    characters: '请生成核心角色小传，首行可使用 # 标题，正文包含身份定位、性格反差、动机与人物关系网。',
+    world: '请生成世界观与核心规则设定，首行可使用 # 标题，明确舞台阶层、核心冲突机制与本土化细节。',
+    hook: '请生成本集结尾悬念挂卡段落，节奏紧凑、与前文自然衔接并留有强反转钩子。',
+    episode: '请撰写完整的单集短剧剧本正文（标准场头、△动作描写与人物对白），黄金前3秒切入冲突，结尾留强悬念。',
+    chat: '请结合当前项目设定、大纲与已写集数给出具体可落地的总编剧创作建议。',
   };
+
+  const kindMap: Record<string, string> = {
+    foreign: '国外迭代（短剧爆款改编）',
+    domestic: '国内迭代（本土出海底盘改造）',
+    original: '原创短剧',
+    transcribe: '拆书 · 扒剧',
+  };
+  const titleStr = typeof p.title === 'string' && p.title.trim() ? p.title.trim() : '';
+  const kindStr = typeof p.kind === 'string' ? (kindMap[p.kind] || p.kind) : '';
+  const totalNum = typeof p.total === 'number' && Number.isFinite(p.total) ? p.total : null;
+  const projBrief = typeof p.brief === 'string' && p.brief.trim() ? p.brief.trim().slice(0, 1000) : '';
+  const projRules = typeof p.projectRules === 'string' && p.projectRules.trim() ? p.projectRules.trim().slice(0, 800) : '';
+
+  const summarizeNodes = (nodes: AssetNodeLike[] | undefined, cap: number): string => {
+    if (!Array.isArray(nodes) || nodes.length === 0) return '';
+    return nodes
+      .slice(0, 5)
+      .map((n) => `【${String(n.title || '设定').trim()}】${String(n.body || n.content || '').trim()}`)
+      .filter((s) => s.length > 4)
+      .join('\n')
+      .slice(0, cap);
+  };
+
+  const outlineDigest = summarizeNodes(p.outlineNodes, 1200);
+  const charDigest = summarizeNodes(p.characterNodes, 1000);
+  const worldDigest = summarizeNodes(p.worldNodes, 800);
+
+  let episodeContext = '';
+  if ((task === 'episode' || task === 'hook' || task === 'chat') && Array.isArray(p.episodes) && p.episodes.length > 0) {
+    const sorted = [...p.episodes].sort((a, b) => (a.episodeNumber || 0) - (b.episodeNumber || 0));
+    const targetEp =
+      (opts?.episodeId ? sorted.find((e) => e.id === opts.episodeId) : undefined) ||
+      (typeof opts?.episodeNumber === 'number' ? sorted.find((e) => e.episodeNumber === opts.episodeNumber) : undefined) ||
+      (p.currentEpisodeId ? sorted.find((e) => e.id === p.currentEpisodeId) : undefined);
+    const targetNum = opts?.episodeNumber ?? targetEp?.episodeNumber ?? null;
+    const prevEp =
+      targetNum !== null
+        ? sorted.filter((e) => e.episodeNumber < targetNum && (e.body || e.content)).slice(-1)[0]
+        : sorted.filter((e) => e.body || e.content).slice(-1)[0];
+
+    const parts: string[] = [];
+    if (targetNum !== null) parts.push(`目标集号：第 ${targetNum} 集`);
+    if (prevEp) {
+      const prevBody = String(prevEp.body || prevEp.content || '').trim();
+      if (prevBody) {
+        parts.push(`【上一集（第 ${prevEp.episodeNumber} 集）衔接摘要】\n${prevBody.slice(-900)}`);
+      }
+    }
+    if (task === 'hook' && targetEp) {
+      const curBody = String(targetEp.body || targetEp.content || '').trim();
+      if (curBody) {
+        parts.push(`【当前集已有正文末尾】\n${curBody.slice(-900)}`);
+      }
+    }
+    episodeContext = parts.join('\n');
+  }
+
   const brief = userInput.trim() ? userInput.trim().slice(0, 1200) : TASK_TITLES[task];
   return [
     `任务类型：${TASK_TITLES[task]}`,
+    titleStr ? `项目名称：《${titleStr}》${kindStr ? `（${kindStr}）` : ''}${totalNum ? ` · 全剧 ${totalNum} 集` : ''}` : '',
     modeNote,
     lockedN > 0 ? `约束：前 ${lockedN} 集已锁定，剧情需与之衔接且不得改动已锁定内容。` : '',
+    projBrief ? `【项目简介/改编要求】\n${projBrief}` : '',
+    projRules ? `【本剧创作规则】\n${projRules}` : '',
+    outlineDigest ? `【已有大纲】\n${outlineDigest}` : '',
+    charDigest ? `【已有人物设定】\n${charDigest}` : '',
+    worldDigest ? `【已有世界观设定】\n${worldDigest}` : '',
+    episodeContext,
     taskGoal[task],
     `需求摘要：${brief}`,
   ]
     .filter(Boolean)
-    .join('\n');
+    .join('\n\n');
 }
 
 function appendProjectMessage(p: StudioProjectLike, text: string, stageKey?: string, role = 'director'): void {
@@ -709,7 +778,7 @@ export async function runDirectorGenerate(args: RunDirectorGenerateArgs): Promis
       }
       parsed = parseFixtureText(task);
     } else {
-      const userPrompt = buildSafeStationUserPrompt(project, task, text);
+      const userPrompt = buildSafeStationUserPrompt(project, task, text, { episodeId, episodeNumber });
       const llmRes = await callLLM({
         station: 'director',
         userPrompt,
