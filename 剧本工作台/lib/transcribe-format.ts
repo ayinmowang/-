@@ -22,8 +22,13 @@ export const TRANSCRIBE_V72_OUTPUT_GUIDE = [
   '6. 场末与缩进：场末不加“黑场/暗场黑屏/淡出/快切”等常规转场说明；所有段落无首行缩进；确实看不清/听不清处按最小范围标注 `【听不清】`/`【文字不清】`/`【待人工補寫】`。',
 ].join('\n');
 
+import { convertTraditionalToSimplified } from './trad-to-simp';
+
+export { convertTraditionalToSimplified };
+
 export interface NormalizeV72Options {
   traditional?: boolean;
+  simplifyTraditional?: boolean;
 }
 
 export interface V72FormatCheckResult {
@@ -430,7 +435,11 @@ export function normalizeTranscribeEpisodeBodyV72(
     }
   }
 
-  return out.join('\n').trim();
+  const joined = out.join('\n').trim();
+  if (options.traditional === false && options.simplifyTraditional !== false) {
+    return convertTraditionalToSimplified(joined);
+  }
+  return joined;
 }
 
 export function normalizeTranscribeScriptMapV72(

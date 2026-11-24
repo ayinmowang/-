@@ -190,6 +190,25 @@ const legacyTrad = [
 const normalizedTrad = formatMod.normalizeTranscribeEpisodeBodyV72(legacyTrad, 1, { traditional: true });
 assert.equal(formatMod.inspectV72BodyFormat(normalizedTrad, 1).ok, true, 'normalized traditional must pass V7.2 check');
 assert.ok(normalizedTrad.includes('1-1 客廳 日 內\n人物：陳浩'), 'traditional keeps 內');
+
+// Traditional subtitle residue -> auto-simplified ONLY when traditional: false
+const mixedSubtitleSample = [
+  '## 第1集',
+  '',
+  '【正文】',
+  '1-1 醫院病房 日 內',
+  '人物：梅森、艾瑪',
+  '',
+  '△ 艾瑪打開手機，往醫院帳戶轉了一筆錢。',
+  '梅森：妳是高中時的艾瑪嗎？我們沒什麼交情，妳怎麼會來這裡看我？',
+  '艾瑪：等你康復了，再說也不遲。',
+].join('\n');
+const cleanedSimp = formatMod.normalizeTranscribeEpisodeBodyV72(mixedSubtitleSample, 1, { traditional: false });
+assert.ok(cleanedSimp.includes('1-1 医院病房 日 内'), 'simplified mode converts traditional scene location');
+assert.ok(cleanedSimp.includes('你是高中时的艾玛吗？我们没什么交情，你怎么会来这里看我？'), 'simplified mode cleans HK/TW subtitle residue');
+assert.ok(cleanedSimp.includes('等你康复了，再说也不迟。'), 'simplified mode cleans phrase residue');
+const keptTrad = formatMod.normalizeTranscribeEpisodeBodyV72(mixedSubtitleSample, 1, { traditional: true });
+assert.ok(keptTrad.includes('妳是高中時的艾瑪嗎'), 'traditional mode must NOT simplify traditional text');
 assert.ok(normalizedTrad.includes('【人物字幕：陳浩 男主】'));
 assert.ok(!normalizedTrad.includes('暗場黑屏'));
 

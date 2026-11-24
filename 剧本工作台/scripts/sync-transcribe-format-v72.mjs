@@ -81,7 +81,10 @@ export function syncTranscribeStoreToV72(store, options = {}) {
         continue;
       }
 
-      const nextBody = normalizeTranscribeEpisodeBodyV72(prevBody, epNum, { traditional: false });
+      const nextBody = normalizeTranscribeEpisodeBodyV72(prevBody, epNum, {
+        traditional: false,
+        simplifyTraditional: false,
+      });
       const beforeDlg = extractDialogueLinesForParity(prevBody);
       const afterDlg = extractDialogueLinesForParity(nextBody);
       if (JSON.stringify(beforeDlg) !== JSON.stringify(afterDlg)) {
