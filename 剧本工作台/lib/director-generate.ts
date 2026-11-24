@@ -417,6 +417,7 @@ export function applyDirectorAssetWrite(
     task: DirectorGenerateTask;
     title: string;
     body: string;
+    nodeId?: string;
     episodeId?: string;
     episodeNumber?: number;
   },
@@ -427,7 +428,7 @@ export function applyDirectorAssetWrite(
     return { ok: false, error: { code: 'PLAN_MODE_READ_ONLY', message: '计划模式下资产严格只读' } };
   }
 
-  const { task, title, body } = params;
+  const { task, title, body, nodeId } = params;
   if (task === 'chat') {
     return { ok: true, wrote: false };
   }
@@ -441,6 +442,26 @@ export function applyDirectorAssetWrite(
     }
     const list = p[key] as AssetNodeLike[];
     const trimmedBody = body.trim();
+    if (nodeId) {
+      const targetNode = list.find((n) => n.id === nodeId);
+      if (targetNode) {
+        if ((targetNode.body || '').trim() === trimmedBody) {
+          return {
+            ok: true,
+            wrote: false,
+            target: { task, kind: task, nodeId: targetNode.id, title: targetNode.title },
+          };
+        }
+        targetNode.body = trimmedBody;
+        targetNode.content = trimmedBody;
+        targetNode.updatedAt = nowIso;
+        return {
+          ok: true,
+          wrote: true,
+          target: { task, kind: task, nodeId: targetNode.id, title: targetNode.title },
+        };
+      }
+    }
     const existingSame = list.find((n) => (n.body || '').trim() === trimmedBody);
     if (existingSame) {
       return {
@@ -482,6 +503,20 @@ export function applyDirectorAssetWrite(
 
   const currentBody = typeof ep.body === 'string' ? ep.body : typeof ep.content === 'string' ? ep.content : '';
   const trimmedIncoming = body.trim();
+  const savePreEditSnapshot = (note: string) => {
+    if (!currentBody.trim()) return;
+    const prevSnaps = Array.isArray((ep as any).snapshots) ? (ep as any).snapshots : [];
+    (ep as any).snapshots = [
+      {
+        id: makeNodeId('snap'),
+        at: nowIso,
+        body: currentBody,
+        wordCount: currentBody.length,
+        note,
+      },
+      ...prevSnaps,
+    ].slice(0, 20);
+  };
 
   if (task === 'hook') {
     if (currentBody.trim().endsWith(trimmedIncoming)) {
@@ -491,6 +526,7 @@ export function applyDirectorAssetWrite(
         target: { task, kind: 'episode', episodeId: ep.id, episodeNumber: ep.episodeNumber, title: ep.title },
       };
     }
+    savePreEditSnapshot('AI 挂卡续写前快照');
     const nextBody = currentBody.trim() ? `${currentBody.replace(/\s+$/, '')}\n\n${trimmedIncoming}` : trimmedIncoming;
     ep.body = nextBody;
     ep.content = nextBody;
@@ -510,6 +546,7 @@ export function applyDirectorAssetWrite(
       target: { task, kind: 'episode', episodeId: ep.id, episodeNumber: ep.episodeNumber, title: ep.title },
     };
   }
+  savePreEditSnapshot('AI 改写前快照');
   ep.body = trimmedIncoming;
   ep.content = trimmedIncoming;
   ep.updatedAt = nowIso;
@@ -527,7 +564,7 @@ function buildSafeStationUserPrompt(
   p: StudioProjectLike,
   task: DirectorGenerateTask,
   userInput: string,
-  opts?: { episodeId?: string; episodeNumber?: number },
+  opts?: { episodeId?: string; episodeNumber?: number; nodeId?: string },
 ): string {
   const lockedN = typeof p.lockedEpisodes === 'number' ? p.lockedEpisodes : 0;
   const modeNote = projectIsPlanMode(p) ? '当前为计划模式，仅输出创作规划与建议。' : '当前为自动执行模式，请直接输出完整可用的创作内容。';
@@ -592,8 +629,33 @@ function buildSafeStationUserPrompt(
       if (curBody) {
         parts.push(`【当前集已有正文末尾】\n${curBody.slice(-900)}`);
       }
+    } else if ((task === 'episode' || task === 'chat') && targetEp) {
+      const curBody = String(targetEp.body || targetEp.content || '').trim();
+      if (curBody) {
+        parts.push(
+          task === 'episode'
+            ? `【当前第 ${targetEp.episodeNumber} 集已有正文（请按用户指令直接修改/改写，保留未要求删改的剧情线）】\n${curBody.slice(0, 2600)}`
+            : `【当前正在查看的第 ${targetEp.episodeNumber} 集正文】\n${curBody.slice(0, 1600)}`
+        );
+      }
     }
     episodeContext = parts.join('\n');
+  }
+
+  let targetAssetContext = '';
+  if (opts?.nodeId && (task === 'outline' || task === 'characters' || task === 'world' || task === 'chat')) {
+    const allNodes = [
+      ...(Array.isArray(p.outlineNodes) ? p.outlineNodes : []),
+      ...(Array.isArray(p.characterNodes) ? p.characterNodes : []),
+      ...(Array.isArray(p.worldNodes) ? p.worldNodes : []),
+    ];
+    const targetNode = allNodes.find((n) => n.id === opts.nodeId);
+    if (targetNode) {
+      const nodeBody = String(targetNode.body || targetNode.content || '').trim();
+      if (nodeBody) {
+        targetAssetContext = `【当前正在编辑的设定「${targetNode.title}」（请按用户指令在其基础上直接调整完善）】\n${nodeBody.slice(0, 2200)}`;
+      }
+    }
   }
 
   const brief = userInput.trim() ? userInput.trim().slice(0, 1200) : TASK_TITLES[task];
@@ -607,9 +669,10 @@ function buildSafeStationUserPrompt(
     outlineDigest ? `【已有大纲】\n${outlineDigest}` : '',
     charDigest ? `【已有人物设定】\n${charDigest}` : '',
     worldDigest ? `【已有世界观设定】\n${worldDigest}` : '',
+    targetAssetContext,
     episodeContext,
     taskGoal[task],
-    `需求摘要：${brief}`,
+    `用户指令：${brief}`,
   ]
     .filter(Boolean)
     .join('\n\n');
@@ -633,6 +696,7 @@ export interface RunDirectorGenerateArgs {
   task: DirectorGenerateTask;
   text?: string;
   clientId?: string;
+  nodeId?: string;
   episodeId?: string;
   episodeNumber?: number;
   signal?: AbortSignal;
@@ -645,6 +709,7 @@ export interface RunDirectorGenerateArgs {
   callLLM?: (args: {
     station: 'director';
     userPrompt: string;
+    systemPromptOverride?: string;
     account?: unknown;
     projectId: string;
     project: StudioProjectLike;
@@ -669,6 +734,7 @@ export async function runDirectorGenerate(args: RunDirectorGenerateArgs): Promis
     project,
     task,
     text = '',
+    nodeId,
     episodeId,
     episodeNumber,
     signal,
@@ -778,10 +844,19 @@ export async function runDirectorGenerate(args: RunDirectorGenerateArgs): Promis
       }
       parsed = parseFixtureText(task);
     } else {
-      const userPrompt = buildSafeStationUserPrompt(project, task, text, { episodeId, episodeNumber });
+      const userPrompt = buildSafeStationUserPrompt(project, task, text, { episodeId, episodeNumber, nodeId });
+      const systemPromptOverride =
+        task === 'episode'
+          ? '你是专业中文短剧编剧。请严格按用户指令直接输出可直接写入编辑区的标准短剧分集正文（含场景头如 3-1 地点 日/夜 内/外、人物、△动作与角色台词，节奏紧凑、强冲突、结尾带强悬念卡点）。绝对禁止输出“收到”、“项目需求对齐”、“改编建议”、“请拍板”等任何开场白、说明或元评论。严禁提及模型名、线路名、token或提示词术语。'
+          : task === 'hook'
+          ? '你是专业中文短剧编剧。请严格按用户指令紧接当前剧情末尾，直接输出可直接拼接到本集结尾的高能冲突与强悬念卡点段落（含△动作与角色台词）。绝对禁止输出“收到”、“项目需求对齐”、“请拍板”等任何开场白或元评论。严禁提及模型名、线路名、token或提示词术语。'
+          : task === 'outline' || task === 'characters' || task === 'world'
+          ? '你是专业中文短剧主笔与架构师。请严格按用户指令直接输出结构清晰、可直接写入设定编辑区的完整正文（大纲/人物卡/背景设定）。绝对禁止输出“收到”、“项目需求对齐”、“请拍板”等任何开场白或元评论。严禁提及模型名、线路名、token或提示词术语。'
+          : '你是短剧工作台的资深总编剧与创作顾问。请结合项目已有剧情、角色与用户当前问题，直接给出具体、可落地的修改思路、桥段或台词方案，不要套用“复述需求/请在卡片拍板”模板。严禁提及模型名、线路名、token或提示词术语。';
       const llmRes = await callLLM({
         station: 'director',
         userPrompt,
+        systemPromptOverride,
         account,
         projectId: project.id,
         project,
@@ -844,6 +919,9 @@ export async function runDirectorGenerate(args: RunDirectorGenerateArgs): Promis
     // 计划模式：严格只读资产，不发 writing/已写入完成，仅追加对话并回传 wrote=false
     if (isPlan || task === 'chat') {
       restoreAssetState(project, snap);
+      if (text.trim()) {
+        appendProjectMessage(project, text.trim(), undefined, 'user');
+      }
       const replyPrefix = isPlan ? `【计划模式·${TASK_TITLES[task]}】\n` : '';
       appendProjectMessage(project, `${replyPrefix}${parsed.title}\n${parsed.body}`, 'written', 'director');
       emitStage('written', {
@@ -866,6 +944,7 @@ export async function runDirectorGenerate(args: RunDirectorGenerateArgs): Promis
       task,
       title: parsed.title,
       body: parsed.body,
+      nodeId,
       episodeId,
       episodeNumber,
     });
@@ -894,11 +973,19 @@ export async function runDirectorGenerate(args: RunDirectorGenerateArgs): Promis
       };
     }
 
+    if (text.trim()) {
+      appendProjectMessage(project, text.trim(), undefined, 'user');
+    }
+    const targetDesc = writeRes.target?.title
+      ? `「${writeRes.target.title}」`
+      : `「${TASK_TITLES[task]}」`;
     appendProjectMessage(
       project,
       writeRes.wrote
-        ? `已完成「${TASK_TITLES[task]}」并自动写入工作台。`
-        : `「${TASK_TITLES[task]}」内容已存在，未重复写入。`,
+        ? `已按你的指令更新${targetDesc}并同步到编辑区${
+            task === 'episode' || task === 'hook' ? '（修改前版本已存入「历史版本」快照，可随时回滚）' : ''
+          }。`
+        : `${targetDesc}内容与原稿一致，未重复写入。`,
       'written',
       'director',
     );

@@ -168,6 +168,7 @@ export default function StudioWorkspace() {
   }
 
   const [directorStage, setDirectorStage] = useState<string>('');
+  const [aiCommandMode, setAiCommandMode] = useState<'smart' | 'edit' | 'chat'>('smart');
   const [serverElapsedBase, setServerElapsedBase] = useState<{ sec: number; at: number } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const clientIdRef = useRef<string>('');
@@ -202,6 +203,8 @@ export default function StudioWorkspace() {
     task: DirectorTask;
     text: string;
     clearInput?: boolean;
+    targetEpisodeNumber?: number;
+    targetNodeId?: string;
   }) {
     if (!active || busy) return;
     const cleanText = params.text.trim();
@@ -212,8 +215,23 @@ export default function StudioWorkspace() {
     const epIndex = currentEp
       ? Math.max(0, (active.episodes || []).findIndex((e) => e.id === currentEp.id))
       : -1;
+    const resolvedEpNum =
+      typeof params.targetEpisodeNumber === 'number' && Number.isInteger(params.targetEpisodeNumber)
+        ? params.targetEpisodeNumber
+        : typeof currentEp?.episodeNumber === 'number'
+          ? currentEp.episodeNumber
+          : epIndex >= 0
+            ? epIndex + 1
+            : 1;
+    const matchedTargetEp =
+      typeof params.targetEpisodeNumber === 'number'
+        ? (active.episodes || []).find((e) => e.episodeNumber === params.targetEpisodeNumber)
+        : currentEp;
+    const resolvedNodeId =
+      params.targetNodeId ||
+      (selectedAsset && selectedAsset.tree === params.task ? selectedAsset.node.id : undefined);
 
-    const intentKey = `${active.id}:${active.version}:${params.task}:${currentEp?.id || ''}:${cleanText}`;
+    const intentKey = `${active.id}:${active.version}:${params.task}:${matchedTargetEp?.id || ''}:${resolvedNodeId || ''}:${cleanText}`;
     if (!clientIdRef.current || lastIntentKeyRef.current !== intentKey) {
       clientIdRef.current = crypto.randomUUID();
       lastIntentKeyRef.current = intentKey;
@@ -242,14 +260,16 @@ export default function StudioWorkspace() {
       stream: true,
     };
 
-    if ((params.task === 'hook' || params.task === 'episode') && currentEp) {
-      payload.episodeId = currentEp.id;
-      payload.episodeNumber =
-        typeof (currentEp as any).number === 'number'
-          ? (currentEp as any).number
-          : epIndex >= 0
-          ? epIndex + 1
-          : 1;
+    if (params.task === 'hook' || params.task === 'episode' || params.task === 'chat') {
+      if (matchedTargetEp) {
+        payload.episodeId = matchedTargetEp.id;
+      }
+      if (params.task === 'hook' || params.task === 'episode' || matchedTargetEp) {
+        payload.episodeNumber = resolvedEpNum;
+      }
+    }
+    if (resolvedNodeId) {
+      payload.nodeId = resolvedNodeId;
     }
 
     let finished = false;
@@ -678,6 +698,17 @@ export default function StudioWorkspace() {
 
   async function runStudioTool(tool: string, extra: Record<string, any> = {}) {
     if (!active || busy) return;
+    const candidateText = String(extra.text ?? epBody ?? '').trim();
+    if (tool === 'ai_rate' && candidateText.length < 120) {
+      setToolOutput({
+        error: '当前正文不足 120 字，请至少先输入或选中 120 字以上的剧本正文后再执行 AI 率查询。',
+      });
+      return;
+    }
+    if (tool === 'format' && !candidateText) {
+      setError('当前编辑区暂无正文内容，无法一键排版。');
+      return;
+    }
     setBusy(true);
     setBusyText('正在执行增强工具分析，请稍候…');
     setError('');
@@ -768,15 +799,98 @@ export default function StudioWorkspace() {
     });
   }
 
+  function resolveSmartDirectorIntent(rawText: string): {
+    task: DirectorTask;
+    targetEpisodeNumber?: number;
+    targetNodeId?: string;
+  } {
+    const t = rawText.trim();
+    const epMention = t.match(/第\s*0*(\d{1,3})\s*集/);
+    const mentionedEpNum = epMention ? Number(epMention[1]) : undefined;
+
+    if (aiCommandMode === 'chat') {
+      return { task: 'chat' };
+    }
+    if (aiCommandMode === 'edit') {
+      if (selectedAsset) {
+        return { task: selectedAsset.tree, targetNodeId: selectedAsset.node.id };
+      }
+      return {
+        task: /(挂卡|结尾|尾钩|悬念|续写一段)/.test(t) ? 'hook' : 'episode',
+        ...(mentionedEpNum ? { targetEpisodeNumber: mentionedEpNum } : {}),
+      };
+    }
+
+    // Smart intent detection: route actionable Chinese edit instructions directly to the right asset
+    const isAskOnly = /(怎么看|有什么漏洞|分析一下|给建议|帮我看看|觉得怎么样|聊聊|为什么|梳理逻辑)[？?。！!]*$/.test(t);
+    if (isAskOnly) {
+      return { task: 'chat' };
+    }
+    const wantsEdit = /(改写|重写|修改|调整|优化|润色|改成|改得|加上|补充|扩写|精简|删掉|替换|生成|撰写|写一|写出|续写|加点|加强|拉满|改激烈|改紧凑)/.test(t);
+    if (/(挂卡|结尾钩子|尾钩|反转结尾|续写末尾)/.test(t)) {
+      return { task: 'hook', ...(mentionedEpNum ? { targetEpisodeNumber: mentionedEpNum } : {}) };
+    }
+    if (wantsEdit && /(角色|人物|人设|性格|男主|女主|反派)/.test(t) && !mentionedEpNum && !/(本集|这一集|当前集|台词|场景)/.test(t)) {
+      return {
+        task: 'characters',
+        ...(selectedAsset?.tree === 'characters' ? { targetNodeId: selectedAsset.node.id } : {}),
+      };
+    }
+    if (wantsEdit && /(大纲|主线|细纲|剧情线)/.test(t) && !mentionedEpNum) {
+      return {
+        task: 'outline',
+        ...(selectedAsset?.tree === 'outline' ? { targetNodeId: selectedAsset.node.id } : {}),
+      };
+    }
+    if (wantsEdit && /(世界观|背景设定|三道门|规则设定)/.test(t) && !mentionedEpNum) {
+      return {
+        task: 'world',
+        ...(selectedAsset?.tree === 'world' ? { targetNodeId: selectedAsset.node.id } : {}),
+      };
+    }
+    if (mentionedEpNum && wantsEdit) {
+      return { task: 'episode', targetEpisodeNumber: mentionedEpNum };
+    }
+    if (wantsEdit) {
+      if (selectedAsset) {
+        return { task: selectedAsset.tree, targetNodeId: selectedAsset.node.id };
+      }
+      return { task: 'episode' };
+    }
+    return { task: 'chat' };
+  }
+
   async function sendChat(overridePrompt?: string, overrideTask?: DirectorTask) {
     if (!active || busy) return;
     const text = (overridePrompt ?? chatText).trim();
     if (!text) return;
+    const resolved = overrideTask
+      ? {
+          task: overrideTask,
+          ...(selectedAsset && selectedAsset.tree === overrideTask ? { targetNodeId: selectedAsset.node.id } : {}),
+        }
+      : resolveSmartDirectorIntent(text);
     await runDirectorStream({
-      task: overrideTask ?? 'chat',
+      task: resolved.task,
       text,
       clearInput: !overridePrompt,
+      targetEpisodeNumber: resolved.targetEpisodeNumber,
+      targetNodeId: resolved.targetNodeId,
     });
+  }
+
+  function applyReplyToEditor(replyText: string) {
+    if (!active || (isCurrentLocked && !selectedAsset)) {
+      setError('当前集处于锁定保护状态，无法直接写入。请先切换到未锁定集或设定节点。');
+      return;
+    }
+    const clean = replyText
+      .replace(/^【计划模式·[^】]+】\n?/, '')
+      .replace(/^总编剧创作建议\n?/, '')
+      .trim();
+    if (!clean) return;
+    setEpBody(clean);
+    setToast('已应用到当前编辑区，核对后点击「保存本章」即可落盘');
   }
 
   function wrapSelection(prefix: string, suffix: string) {
@@ -1299,27 +1413,27 @@ export default function StudioWorkspace() {
 
         {/* CENTER COLUMN: 3-Row Toolbar + Editor */}
         <section style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--warm-bg, #f9f6f0)' }}>
-          {/* Row 1: Enhancement Capsules */}
-          <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--warm-border, #e6dfd3)', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-            <button type="button" onClick={() => { setToolModal('inspire'); setToolOutput(null); runStudioTool('inspire'); }} style={{ padding: '6px 12px', borderRadius: 999, border: 'none', background: toolModal === 'inspire' ? '#8C3B2B' : 'rgba(140,59,43,0.1)', color: toolModal === 'inspire' ? '#fff' : '#5A2B1D', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          {/* Row 1: Enhancement Capsules (single-line crisp toolbar) */}
+          <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--warm-border, #e6dfd3)', display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+            <button type="button" onClick={() => { setToolModal('inspire'); setToolOutput(null); runStudioTool('inspire'); }} style={{ padding: '5px 10px', borderRadius: 999, border: 'none', background: toolModal === 'inspire' ? '#8C3B2B' : 'rgba(140,59,43,0.1)', color: toolModal === 'inspire' ? '#fff' : '#5A2B1D', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', flexShrink: 0 }}>
               <Lightbulb size={13} /> 灵感
             </button>
-            <button type="button" disabled={busy || isCurrentLocked} onClick={() => runStudioTool('format')} style={{ padding: '6px 12px', borderRadius: 999, border: 'none', background: 'rgba(140,59,43,0.1)', color: '#5A2B1D', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <button type="button" disabled={busy || isCurrentLocked} onClick={() => runStudioTool('format')} style={{ padding: '5px 10px', borderRadius: 999, border: 'none', background: 'rgba(140,59,43,0.1)', color: '#5A2B1D', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', flexShrink: 0 }}>
               <Wand2 size={13} /> 一键排版
             </button>
-            <button type="button" onClick={() => { setToolModal('ai-rate'); setToolOutput(null); runStudioTool('ai_rate'); }} style={{ padding: '6px 12px', borderRadius: 999, border: 'none', background: toolModal === 'ai-rate' ? '#8C3B2B' : 'rgba(140,59,43,0.1)', color: toolModal === 'ai-rate' ? '#fff' : '#5A2B1D', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <button type="button" onClick={() => { setToolModal('ai-rate'); setToolOutput(null); runStudioTool('ai_rate'); }} style={{ padding: '5px 10px', borderRadius: 999, border: 'none', background: toolModal === 'ai-rate' ? '#8C3B2B' : 'rgba(140,59,43,0.1)', color: toolModal === 'ai-rate' ? '#fff' : '#5A2B1D', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', flexShrink: 0 }}>
               <ShieldCheck size={13} /> AI率查询
             </button>
-            <button type="button" onClick={() => { setToolModal('trending'); setToolOutput(null); runStudioTool('trending', { platform: trendingPlatform }); }} style={{ padding: '6px 12px', borderRadius: 999, border: 'none', background: toolModal === 'trending' ? '#8C3B2B' : 'rgba(140,59,43,0.1)', color: toolModal === 'trending' ? '#fff' : '#5A2B1D', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <button type="button" onClick={() => { setToolModal('trending'); setToolOutput(null); runStudioTool('trending', { platform: trendingPlatform }); }} style={{ padding: '5px 10px', borderRadius: 999, border: 'none', background: toolModal === 'trending' ? '#8C3B2B' : 'rgba(140,59,43,0.1)', color: toolModal === 'trending' ? '#fff' : '#5A2B1D', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', flexShrink: 0 }}>
               <Flame size={13} /> 扫榜
             </button>
-            <button type="button" onClick={() => { setToolModal('teardown'); setToolOutput(null); }} style={{ padding: '6px 12px', borderRadius: 999, border: 'none', background: toolModal === 'teardown' ? '#8C3B2B' : 'rgba(140,59,43,0.1)', color: toolModal === 'teardown' ? '#fff' : '#5A2B1D', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <button type="button" onClick={() => { setToolModal('teardown'); setToolOutput(null); }} style={{ padding: '5px 10px', borderRadius: 999, border: 'none', background: toolModal === 'teardown' ? '#8C3B2B' : 'rgba(140,59,43,0.1)', color: toolModal === 'teardown' ? '#fff' : '#5A2B1D', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', flexShrink: 0 }}>
               <BookOpen size={13} /> 拆书
             </button>
-            <button type="button" onClick={() => importFileRef.current?.click()} style={{ padding: '6px 12px', borderRadius: 999, border: 'none', background: 'rgba(140,59,43,0.1)', color: '#5A2B1D', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <button type="button" onClick={() => importFileRef.current?.click()} style={{ padding: '5px 10px', borderRadius: 999, border: 'none', background: 'rgba(140,59,43,0.1)', color: '#5A2B1D', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', flexShrink: 0 }}>
               <Upload size={13} /> 本地导入
             </button>
-            <a href={`/api/upload?id=${active.id}&export=docx`} style={{ padding: '6px 12px', borderRadius: 999, background: '#8C3B2B', color: '#fff', fontSize: 12, fontWeight: 700, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 'auto' }}>
+            <a href={`/api/upload?id=${active.id}&export=docx`} style={{ padding: '5px 11px', borderRadius: 999, background: '#8C3B2B', color: '#fff', fontSize: 12, fontWeight: 700, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 'auto', whiteSpace: 'nowrap', flexShrink: 0 }}>
               <Download size={13} /> 导出 Word
             </a>
             <input
@@ -1428,7 +1542,10 @@ export default function StudioWorkspace() {
             </button>
             {isCurrentLocked && !selectedAsset && (
               <span style={{ marginLeft: 'auto', color: '#b45309', fontSize: 12, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                <Lock size={12} /> 前 {active.lockedEpisodes} 集锁定稿（只读保护）
+                <Lock size={12} />{' '}
+                {active.lockedEpisodes
+                  ? `前 ${active.lockedEpisodes} 集锁定稿（只读保护）`
+                  : `第 ${currentEpisode?.episodeNumber ?? ''} 集已锁定（只读保护）`}
               </span>
             )}
           </div>
@@ -1655,6 +1772,31 @@ export default function StudioWorkspace() {
                     }}
                   >
                     <div>{m.text}</div>
+                    {m.role !== 'user' &&
+                      !m.file?.url &&
+                      m.text &&
+                      m.text.length >= 40 &&
+                      !(isCurrentLocked && !selectedAsset) &&
+                      !m.text.startsWith('已按你的指令更新') && (
+                        <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>
+                          <button
+                            type="button"
+                            onClick={() => applyReplyToEditor(m.text)}
+                            style={{
+                              padding: '4px 9px',
+                              borderRadius: 7,
+                              border: '1px solid #D49B54',
+                              background: 'var(--warm-card, #fff)',
+                              color: '#8C3B2B',
+                              fontSize: 11,
+                              fontWeight: 600,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            📥 应用到当前编辑区
+                          </button>
+                        </div>
+                      )}
                     {m.file?.url && (
                       <a
                         href={m.file.url}
@@ -1801,8 +1943,48 @@ export default function StudioWorkspace() {
             )}
           </div>
 
-          {/* Bottom 2-Row Composer (Desensitized Tiers + Thinking + Auto/Plan) */}
-          <div style={{ padding: 12, borderTop: '1px solid var(--warm-border, #e6dfd3)', background: 'var(--warm-surface, #faf7f2)' }}>
+          {/* Bottom Actionable AI Command Composer */}
+          <div style={{ padding: '10px 12px', borderTop: '1px solid var(--warm-border, #e6dfd3)', background: 'var(--warm-surface, #faf7f2)' }}>
+            {/* Current Target Context + 3-Mode Command Selector */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: isCurrentLocked && !selectedAsset ? '#b45309' : '#5A2B1D', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '55%' }}>
+                {selectedAsset
+                  ? `当前：${selectedAsset.tree === 'outline' ? '大纲' : selectedAsset.tree === 'characters' ? '角色' : '设定'} · ${selectedAsset.node.title}`
+                  : currentEpisode
+                    ? isCurrentLocked
+                      ? `🔒 第 ${currentEpisode.episodeNumber} 集（锁定只读）`
+                      : `当前：第 ${currentEpisode.episodeNumber} 集`
+                    : '当前：未选定分集'}
+              </span>
+              <div role="group" aria-label="指令执行模式" style={{ display: 'inline-flex', borderRadius: 999, border: '1px solid #d8cfc0', background: 'var(--warm-card, #fff)', overflow: 'hidden' }}>
+                {(
+                  [
+                    ['smart', '✨ 智能'],
+                    ['edit', '📝 改当前页'],
+                    ['chat', '💬 仅讨论'],
+                  ] as const
+                ).map(([modeKey, label]) => (
+                  <button
+                    key={modeKey}
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setAiCommandMode(modeKey)}
+                    style={{
+                      padding: '3px 8px',
+                      border: 'none',
+                      background: aiCommandMode === modeKey ? '#8C3B2B' : 'transparent',
+                      color: aiCommandMode === modeKey ? '#fff' : '#5A2B1D',
+                      fontSize: 11,
+                      fontWeight: 600,
+                      cursor: busy ? 'not-allowed' : 'pointer',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
             <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
               <textarea
                 rows={2}
@@ -1815,7 +1997,13 @@ export default function StudioWorkspace() {
                     sendChat();
                   }
                 }}
-                placeholder="输入指令或创作要求…"
+                placeholder={
+                  aiCommandMode === 'edit'
+                    ? '直接说怎么改当前内容（例：把开场冲突改激烈、台词改短更有火药味）…'
+                    : aiCommandMode === 'chat'
+                      ? '仅讨论诊断，不改写正文（例：帮我找第3集的逻辑漏洞）…'
+                      : '直接下指令调整任意内容（例：改写第3集冲突 / 给本集补反转挂卡 / 调整男主人设）…'
+                }
                 style={{ flex: 1, padding: '8px 10px', borderRadius: 10, border: '1px solid #d8cfc0', background: 'var(--warm-card, #fff)', fontSize: 13, resize: 'none' }}
               />
               {busy ? (
@@ -1964,28 +2152,48 @@ export default function StudioWorkspace() {
               <div>
                 {busy ? (
                   <p style={{ fontSize: 13 }}>正在检测当前集文本特征…</p>
-                ) : toolOutput ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                    <div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 700 }}>
-                        <span>人工自然度</span>
-                        <span>{toolOutput.humanRate ?? 78}%</span>
-                      </div>
-                      <div style={{ height: 10, borderRadius: 999, background: '#e6dfd3', overflow: 'hidden', marginTop: 4 }}>
-                        <div style={{ width: `${toolOutput.humanRate ?? 78}%`, height: '100%', background: '#16a34a' }} />
-                      </div>
-                    </div>
-                    <div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 700 }}>
-                        <span>疑似 AI 痕迹率</span>
-                        <span>{toolOutput.suspectRate ?? 22}%</span>
-                      </div>
-                      <div style={{ height: 10, borderRadius: 999, background: '#e6dfd3', overflow: 'hidden', marginTop: 4 }}>
-                        <div style={{ width: `${toolOutput.suspectRate ?? 22}%`, height: '100%', background: '#d97706' }} />
-                      </div>
-                    </div>
-                    <p style={{ fontSize: 13, opacity: 0.85, margin: 0 }}>{toolOutput.summary || toolOutput.result}</p>
+                ) : toolOutput?.error ? (
+                  <div style={{ padding: 12, borderRadius: 10, background: 'rgba(217,119,6,0.1)', color: '#92400e', fontSize: 13, lineHeight: 1.6 }}>
+                    {String(toolOutput.error)}
                   </div>
+                ) : toolOutput ? (
+                  (() => {
+                    const humanRate = Number(toolOutput.humanRate ?? toolOutput.result?.humanRate ?? 78);
+                    const aiRate = Number(toolOutput.aiRate ?? toolOutput.suspectRate ?? toolOutput.result?.aiRate ?? (100 - humanRate));
+                    const reasonText =
+                      typeof toolOutput.reason === 'string' && toolOutput.reason
+                        ? toolOutput.reason
+                        : typeof toolOutput.summary === 'string' && toolOutput.summary
+                        ? toolOutput.summary
+                        : typeof toolOutput.result?.reason === 'string' && toolOutput.result.reason
+                        ? toolOutput.result.reason
+                        : typeof toolOutput.result === 'string'
+                        ? toolOutput.result
+                        : '检测完成，可结合台词口语化与具体动作细节继续润色。';
+                    return (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                        <div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 700 }}>
+                            <span>人工自然度</span>
+                            <span>{humanRate}%</span>
+                          </div>
+                          <div style={{ height: 10, borderRadius: 999, background: '#e6dfd3', overflow: 'hidden', marginTop: 4 }}>
+                            <div style={{ width: `${Math.max(0, Math.min(100, humanRate))}%`, height: '100%', background: '#16a34a' }} />
+                          </div>
+                        </div>
+                        <div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 700 }}>
+                            <span>疑似 AI 痕迹率</span>
+                            <span>{aiRate}%</span>
+                          </div>
+                          <div style={{ height: 10, borderRadius: 999, background: '#e6dfd3', overflow: 'hidden', marginTop: 4 }}>
+                            <div style={{ width: `${Math.max(0, Math.min(100, aiRate))}%`, height: '100%', background: '#d97706' }} />
+                          </div>
+                        </div>
+                        <p style={{ fontSize: 13, opacity: 0.88, margin: 0, lineHeight: 1.65 }}>{reasonText}</p>
+                      </div>
+                    );
+                  })()
                 ) : (
                   <p style={{ fontSize: 13, opacity: 0.7 }}>正文至少 120 字后可获得更精准的检测结果。</p>
                 )}
@@ -1993,36 +2201,92 @@ export default function StudioWorkspace() {
             )}
 
             {toolModal === 'trending' && (
-              <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: 14 }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {TRENDING_PLATFORMS.map((pl) => (
-                    <button
-                      key={pl}
-                      type="button"
-                      onClick={() => {
-                        setTrendingPlatform(pl);
-                        runStudioTool('trending', { platform: pl });
-                      }}
-                      style={{
-                        textAlign: 'left',
-                        padding: '7px 10px',
-                        borderRadius: 8,
-                        border: 'none',
-                        background: trendingPlatform === pl ? 'rgba(140,59,43,0.12)' : 'transparent',
-                        color: trendingPlatform === pl ? '#8C3B2B' : 'inherit',
-                        fontWeight: trendingPlatform === pl ? 700 : 500,
-                        cursor: 'pointer',
-                        fontSize: 12,
-                      }}
-                    >
-                      {pl}
-                    </button>
-                  ))}
-                </div>
-                <div style={{ fontSize: 13, lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>
-                  {busy ? '正在拉取热点趋势…' : toolOutput?.result || (toolOutput?.items || []).map((x: any, i: number) => `${i + 1}. ${x.title || x}`).join('\n')}
-                </div>
-              </div>
+              (() => {
+                const rawPlatforms: any[] = Array.isArray(toolOutput?.platforms)
+                  ? toolOutput.platforms
+                  : Array.isArray(toolOutput?.result?.platforms)
+                  ? toolOutput.result.platforms
+                  : [];
+                const platformNames = rawPlatforms.length
+                  ? rawPlatforms.map((pl) => String(pl.name || pl.id || ''))
+                  : TRENDING_PLATFORMS;
+                const activePlatformObj =
+                  rawPlatforms.find((pl) => String(pl.name || '').includes(trendingPlatform) || String(pl.id || '') === trendingPlatform) ||
+                  rawPlatforms[0] ||
+                  null;
+                const activeItems: any[] = Array.isArray(activePlatformObj?.items)
+                  ? activePlatformObj.items
+                  : Array.isArray(toolOutput?.items)
+                  ? toolOutput.items
+                  : [];
+                return (
+                  <div style={{ display: 'grid', gridTemplateColumns: '132px 1fr', gap: 14 }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 360, overflowY: 'auto' }}>
+                      {platformNames.map((pl) => {
+                        const isSelected = activePlatformObj ? activePlatformObj.name === pl : trendingPlatform === pl;
+                        return (
+                          <button
+                            key={pl}
+                            type="button"
+                            onClick={() => {
+                              setTrendingPlatform(pl);
+                              if (!rawPlatforms.length) runStudioTool('trending', { platform: pl });
+                            }}
+                            style={{
+                              textAlign: 'left',
+                              padding: '7px 10px',
+                              borderRadius: 8,
+                              border: 'none',
+                              background: isSelected ? 'rgba(140,59,43,0.12)' : 'transparent',
+                              color: isSelected ? '#8C3B2B' : 'inherit',
+                              fontWeight: isSelected ? 700 : 500,
+                              cursor: 'pointer',
+                              fontSize: 12,
+                            }}
+                          >
+                            {pl}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div style={{ fontSize: 13, lineHeight: 1.65, maxHeight: 360, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {busy ? (
+                        <p style={{ margin: 0, opacity: 0.7 }}>正在拉取热点趋势…</p>
+                      ) : activePlatformObj ? (
+                        <>
+                          {Array.isArray(activePlatformObj.hotTags) && activePlatformObj.hotTags.length > 0 && (
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 4 }}>
+                              {activePlatformObj.hotTags.map((tag: string) => (
+                                <span key={tag} style={{ fontSize: 11, padding: '2px 8px', borderRadius: 999, background: 'rgba(140,59,43,0.1)', color: '#8C3B2B', fontWeight: 600 }}>
+                                  #{tag}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          {activeItems.map((item: any, idx: number) => (
+                            <div key={idx} style={{ padding: '9px 11px', borderRadius: 10, border: '1px solid #e6dfd3', background: 'var(--warm-surface, #faf7f2)' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                                <strong style={{ fontSize: 13 }}>
+                                  {item.rank ?? idx + 1}. {typeof item === 'string' ? item : String(item.title || '')}
+                                </strong>
+                                {item.heat && <span style={{ fontSize: 11, color: '#b45309', fontWeight: 700, whiteSpace: 'nowrap' }}>🔥 {item.heat}</span>}
+                              </div>
+                              {(item.angle || item.hook || item.desc) && (
+                                <div style={{ fontSize: 12, opacity: 0.78, marginTop: 4 }}>{String(item.angle || item.hook || item.desc)}</div>
+                              )}
+                            </div>
+                          ))}
+                          <div style={{ fontSize: 11, opacity: 0.55 }}>注：以上为短剧热门题材结构化参考榜，可直接参考切入点与情绪钩子。</div>
+                        </>
+                      ) : typeof toolOutput?.result === 'string' ? (
+                        <div style={{ whiteSpace: 'pre-wrap' }}>{toolOutput.result}</div>
+                      ) : (
+                        <p style={{ margin: 0, opacity: 0.65 }}>暂无榜单数据</p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()
             )}
 
             {toolModal === 'teardown' && (
@@ -2048,7 +2312,7 @@ export default function StudioWorkspace() {
                 >
                   {busy ? '分析中…' : '开始拆书分析'}
                 </button>
-                {toolOutput?.result && (
+                {typeof toolOutput?.result === 'string' && toolOutput.result && (
                   <div style={{ padding: 12, borderRadius: 10, background: 'var(--warm-surface, #faf7f2)', whiteSpace: 'pre-wrap', fontSize: 13 }}>
                     {toolOutput.result}
                   </div>
@@ -2059,36 +2323,48 @@ export default function StudioWorkspace() {
             {toolModal === 'history' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {(currentEpisode?.snapshots || []).length === 0 ? (
-                  <p style={{ fontSize: 13, opacity: 0.65 }}>暂无历史版本快照，点击「保存本章」后会自动留存版本。</p>
+                  <p style={{ fontSize: 13, opacity: 0.65 }}>暂无历史版本快照，点击「保存本章」或用右侧 AI 改写前会自动留存版本。</p>
                 ) : (
-                  (currentEpisode?.snapshots || []).map((snap) => (
-                    <div key={snap.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 10, borderRadius: 10, border: '1px solid #e6dfd3' }}>
-                      <span style={{ fontSize: 12 }}>
-                        <Clock size={12} style={{ verticalAlign: 'middle', marginRight: 4 }} />
-                        {new Date(snap.at).toLocaleString('zh-CN')} · {snap.body.length} 字
-                      </span>
-                      <button
-                        type="button"
-                        disabled={isCurrentLocked}
-                        onClick={async () => {
-                          const updated = await studioApi('/api/studio', {
-                            operation: 'restore_episode_snapshot',
-                            id: active.id,
-                            version: active.version,
-                            episodeId: currentEpisode?.id,
-                            snapshotId: snap.id,
-                          });
-                          syncProject(updated, true);
-                          setEpBody(snap.body);
-                          setToolModal('');
-                          setToast('已恢复到该历史版本');
-                        }}
-                        style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#8C3B2B', color: '#fff', fontSize: 12, cursor: 'pointer' }}
-                      >
-                        恢复此版
-                      </button>
-                    </div>
-                  ))
+                  (currentEpisode?.snapshots || []).map((snap) => {
+                    const ts = snap.at || (snap as any).createdAt;
+                    const note = typeof (snap as any).note === 'string' ? (snap as any).note : '';
+                    return (
+                      <div key={snap.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, padding: 10, borderRadius: 10, border: '1px solid #e6dfd3' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                          <span style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                            <Clock size={12} />
+                            <span>{ts ? new Date(ts).toLocaleString('zh-CN') : '历史快照'} · {(snap.body || '').length} 字</span>
+                            {note && (
+                              <span style={{ fontSize: 11, padding: '1px 7px', borderRadius: 999, background: 'rgba(140,59,43,0.1)', color: '#8C3B2B', fontWeight: 600 }}>
+                                {note}
+                              </span>
+                            )}
+                          </span>
+                          <span style={{ fontSize: 11, opacity: 0.65 }}>{String(snap.body || '').replace(/\s+/g, ' ').slice(0, 68)}…</span>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={isCurrentLocked}
+                          onClick={async () => {
+                            const updated = await studioApi('/api/studio', {
+                              operation: 'restore_episode_snapshot',
+                              id: active.id,
+                              version: active.version,
+                              episodeId: currentEpisode?.id,
+                              snapshotId: snap.id,
+                            });
+                            syncProject(updated, true);
+                            setEpBody(snap.body);
+                            setToolModal('');
+                            setToast('已恢复到该历史版本');
+                          }}
+                          style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#8C3B2B', color: '#fff', fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0 }}
+                        >
+                          恢复此版
+                        </button>
+                      </div>
+                    );
+                  })
                 )}
               </div>
             )}
