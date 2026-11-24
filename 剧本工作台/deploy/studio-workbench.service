@@ -1,0 +1,18 @@
+[Unit]
+Description=Story Studio Workbench (Next.js 16.4.6 single-worker server)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/studio-workbench-3/current/剧本工作台
+EnvironmentFile=/opt/studio-workbench-3/shared/.env
+Environment=PATH=/opt/studio-workbench-3/.runtime/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Single Node.js >=20.9.0 worker required so in-memory store, project locks, and async job registry stay consistent
+ExecStart=/opt/studio-workbench-3/.runtime/node/bin/npm start -- -H 127.0.0.1 -p 3199
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

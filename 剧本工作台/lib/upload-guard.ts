@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { resolveFfmpegBinary } from './video-compress';
 
 /**
  * 磁盘安全预留空间（512 MiB），防止大文件上传写满宿主盘。
@@ -15,35 +16,15 @@ function isTruthyEnv(val: string | undefined): boolean {
   return v === '1' || v === 'true' || v === 'yes';
 }
 
-function hasFfmpegBinary(): boolean {
-  const pathEnv = process.env.PATH || '';
-  const dirs = pathEnv.split(path.delimiter).filter(Boolean);
-  const isWin = process.platform === 'win32';
-  const names = isWin ? ['ffmpeg.exe', 'ffmpeg.cmd', 'ffmpeg.bat', 'ffmpeg'] : ['ffmpeg'];
-  for (const dir of dirs) {
-    for (const name of names) {
-      const candidate = path.join(dir, name);
-      try {
-        fs.accessSync(candidate, isWin ? fs.constants.F_OK : fs.constants.X_OK);
-        const st = fs.statSync(candidate);
-        if (st.isFile()) return true;
-      } catch {
-        // continue
-      }
-    }
-  }
-  return false;
-}
-
 /**
- * 判断环境是否禁用了 ffmpeg 或当前进程 PATH 中不可见 ffmpeg 可执行文件。
+ * 判断环境是否禁用了 ffmpeg 或当前环境（env / ffmpeg-static / PATH）不可见 ffmpeg 可执行文件。
  * 仅反映二进制可用性配置，不代表已完成服务端自动抽帧。
  */
 export function isFfmpegDisabled(): boolean {
   if (isTruthyEnv(process.env.STUDIO_FFMPEG_DISABLED)) {
     return true;
   }
-  return !hasFfmpegBinary();
+  return !resolveFfmpegBinary().available;
 }
 
 function getConfiguredBaseUploadBytes(

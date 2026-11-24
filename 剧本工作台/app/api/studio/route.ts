@@ -1,9 +1,11 @@
+import fs from 'node:fs';
 import zlib from 'node:zlib';
 import {
   bindings,
   owner,
   getProject,
   saveProject,
+  saveProjectProgress,
   message,
   backend,
   connected,
@@ -29,9 +31,19 @@ import {
   copyBucketObject,
   deleteBucketObject,
   resolveAttachmentBucketKey,
+  resolveSafeBucketPath,
   type MultimodalAttachmentInput,
 } from '../../../lib/server';
 import { isFfmpegDisabled } from '../../../lib/upload-guard';
+import { isStrictNativeGeminiEnabled } from '../../../lib/strict-native-station';
+import { prepareCompressedVideoForLLM } from '../../../lib/video-compress';
+import {
+  PROCESS_BOOT_AT_MS,
+  cancelTranscribeJob,
+  getTranscribeJobState,
+  isTranscribeJobRunning,
+  startTranscribeJob,
+} from '../../../lib/transcribe-jobs';
 import { extractManuscriptTextFromBuffer } from '../../../lib/manuscript-extract';
 import type { EpisodeSourceChunk } from '../../../lib/transcribe-parse';
 import {
@@ -359,17 +371,29 @@ async function extractProjectAttachmentsForLLM(
   const textSnippets: string[] = [];
   const mediaAttachments: MultimodalAttachmentInput[] = [];
   const bucket = bindings().BUCKET;
+  const strictNative = isStrictNativeGeminiEnabled();
+  const fixtureMode = isLlmFixture();
+  const ffmpegAvailable = !isFfmpegDisabled();
 
-  for (const att of project.attachments || []) {
+  // Process video attachments before setting/keyframe JPEGs so mediaAttachments.length >= 6 never evicts MP4s
+  const allAtts = Array.isArray(project.attachments) ? project.attachments : [];
+  const orderedAtts = [
+    ...allAtts.filter((a) => /\.(mp4|mov|webm|mkv|avi)$/i.test(String(a?.name || ''))),
+    ...allAtts.filter((a) => !/\.(mp4|mov|webm|mkv|avi)$/i.test(String(a?.name || ''))),
+  ];
+
+  for (const att of orderedAtts) {
     try {
       const bucketKey =
         (await resolveAttachmentBucketKey(user, project, att.id)) || `${user}/${project.id}/${att.id}`;
       const lowerName = String(att.name || '').toLowerCase();
       const declaredSize = Number(att.size || 0);
 
-      // Video attachments: check size BEFORE loading full buffer to avoid OOM on >30MB videos
+      // Video attachments: bypass compression strictly when STUDIO_STRICT_NATIVE_GEMINI=1 or fixture mode;
+      // in normal mode with ffmpeg available, compress transient LLM copy first (even >30 MB).
       if (/\.(mp4|mov|webm|mkv|avi)$/i.test(lowerName)) {
-        if (declaredSize > MULTIMODAL_VIDEO_CAP_BYTES) {
+        const canCompressPreLlm = !strictNative && !fixtureMode && ffmpegAvailable && includeVideoMultimodal;
+        if (declaredSize > MULTIMODAL_VIDEO_CAP_BYTES && !canCompressPreLlm) {
           const meta = await inspectBucketMediaFile(bucketKey, att.name);
           textSnippets.push(
             `${formatVideoMetadataSummary(meta)}${att.episode ? `（对应第 ${att.episode} 集）` : ''}`
@@ -377,6 +401,61 @@ async function extractProjectAttachmentsForLLM(
           continue;
         }
         if (!includeVideoMultimodal || declaredSize < 4096 || mediaAttachments.length >= 6) {
+          continue;
+        }
+
+        if (canCompressPreLlm) {
+          let safeDiskPath: string | null = null;
+          try {
+            safeDiskPath = resolveSafeBucketPath(bucketKey);
+          } catch {
+            safeDiskPath = null;
+          }
+          if (safeDiskPath && fs.existsSync(/*turbopackIgnore: true*/ safeDiskPath)) {
+            const prep = await prepareCompressedVideoForLLM({
+              bucketPath: safeDiskPath,
+              cacheKey: `${bucketKey}:${att.id}`,
+              mode: project.transcribeMode === 'detailed' ? 'detailed' : 'fast',
+            });
+            if (prep.outputBytes >= 4096 && prep.outputBytes <= MULTIMODAL_VIDEO_CAP_BYTES) {
+              const compBuf = await fs.promises.readFile(prep.filePath);
+              if (compBuf.length >= 4096 && compBuf.length <= MULTIMODAL_VIDEO_CAP_BYTES) {
+                const mimeType = prep.compressed
+                  ? 'video/mp4'
+                  : lowerName.endsWith('.mov')
+                  ? 'video/quicktime'
+                  : lowerName.endsWith('.webm')
+                  ? 'video/webm'
+                  : 'video/mp4';
+                mediaAttachments.push({
+                  name: att.name,
+                  mimeType,
+                  base64: compBuf.toString('base64'),
+                });
+                continue;
+              }
+            }
+            if (declaredSize > MULTIMODAL_VIDEO_CAP_BYTES) {
+              const meta = await inspectBucketMediaFile(bucketKey, att.name);
+              textSnippets.push(
+                `${formatVideoMetadataSummary(meta)}${att.episode ? `（对应第 ${att.episode} 集）` : ''}`
+              );
+              continue;
+            }
+          } else if (declaredSize > MULTIMODAL_VIDEO_CAP_BYTES) {
+            const meta = await inspectBucketMediaFile(bucketKey, att.name);
+            textSnippets.push(
+              `${formatVideoMetadataSummary(meta)}${att.episode ? `（对应第 ${att.episode} 集）` : ''}`
+            );
+            continue;
+          }
+        }
+
+        if (declaredSize > MULTIMODAL_VIDEO_CAP_BYTES) {
+          const meta = await inspectBucketMediaFile(bucketKey, att.name);
+          textSnippets.push(
+            `${formatVideoMetadataSummary(meta)}${att.episode ? `（对应第 ${att.episode} 集）` : ''}`
+          );
           continue;
         }
         const obj = await bucket.get(bucketKey);
@@ -485,7 +564,9 @@ async function callProjectStation(params: {
   account: StudioAccount;
   extraKeyframes?: MultimodalAttachmentInput[];
   skipAttachmentSnippets?: boolean;
-}): Promise<{ ok: boolean; text: string | null; error?: string }> {
+  excludeTargets?: Set<string>;
+  signal?: AbortSignal;
+}): Promise<{ ok: boolean; text: string | null; error?: string; nonRetryable?: boolean; timedOutTargets?: string[] }> {
   if (isLlmFixture()) {
     return {
       ok: true,
@@ -551,6 +632,8 @@ async function callProjectStation(params: {
     ...(tierCfg.model?.trim() ? { modelOverride: tierCfg.model.trim() } : {}),
     ...(typeof tierCfg.temperature === 'number' ? { temperatureOverride: tierCfg.temperature } : {}),
     ...(typeof tierCfg.maxTokens === 'number' ? { maxTokensOverride: tierCfg.maxTokens } : {}),
+    ...(params.excludeTargets ? { excludeTargets: params.excludeTargets } : {}),
+    ...(params.signal ? { signal: params.signal } : {}),
     ...(mediaAttachments.length > 0 ? { mediaAttachments } : {}),
     ...(params.project.kind === 'transcribe' && params.station === 'vision'
       ? {
@@ -1342,9 +1425,11 @@ export async function GET(request: Request) {
     const themePreference = activeAcc?.themePreference === 'dark' ? 'dark' : 'light';
 
     if (id) {
-      const p = ensureWorkspaceDefaults(await getProject(id, user));
+      let p = ensureWorkspaceDefaults(await getProject(id, user));
       if (p.remoteId && connected()) {
         p.remote = sanitizeForClient(await (await backend('/api/projects/' + p.remoteId)).json());
+      } else {
+        p = ensureWorkspaceDefaults(await reconcileOrphanedTranscribeJob(p, user, true));
       }
       return Response.json(
         sanitizeForClient({
@@ -1363,6 +1448,14 @@ export async function GET(request: Request) {
       .DB.prepare('SELECT data,version FROM studio_projects WHERE owner=? ORDER BY updated_at DESC')
       .bind(user)
       .all();
+    const reconciledProjects: any[] = [];
+    for (const r of results as any[]) {
+      let proj = ensureWorkspaceDefaults({ ...JSON.parse(r.data), version: r.version });
+      if (!connected() && isOrphanedTranscribeRunningProject(proj, user)) {
+        proj = ensureWorkspaceDefaults(await reconcileOrphanedTranscribeJob(proj, user, true));
+      }
+      reconciledProjects.push(proj);
+    }
     return Response.json(
       sanitizeForClient({
         connected: connected(),
@@ -1375,7 +1468,7 @@ export async function GET(request: Request) {
         themePreference,
         promptCatalog,
         tierCatalog,
-        projects: results.map((r: any) => ensureWorkspaceDefaults({ ...JSON.parse(r.data), version: r.version })),
+        projects: reconciledProjects,
       })
     );
   } catch (e) {
@@ -1385,6 +1478,51 @@ export async function GET(request: Request) {
 
 // In-process lock only. It is not atomic across workers; the persisted running status is the cross-request guard.
 const transcribeActionLocks = new Set<string>();
+
+function isOrphanedTranscribeRunningProject(p: any, user: string): boolean {
+  if (
+    !p ||
+    p.kind !== 'transcribe' ||
+    p.remote?.status !== 'running' ||
+    !p.remote?.transcribeJob ||
+    isTranscribeJobRunning(user, p.id) ||
+    transcribeActionLocks.has(`${user}:${p.id}`)
+  ) {
+    return false;
+  }
+  const startedAtMs = Date.parse(String(p.remote.transcribeJob.startedAt || ''));
+  return Number.isFinite(startedAtMs) && startedAtMs < PROCESS_BOOT_AT_MS;
+}
+
+function applyOrphanedTranscribeReconcile(target: any): boolean {
+  if (!target?.remote) return false;
+  target.remote.status = 'failed';
+  target.remote.stage = { key: 'transcribe_incomplete', title: '服务重启中断 · 可断点续跑' };
+  target.remote.card = null;
+  if (target.remote.transcribeJob) {
+    target.remote.transcribeJob.inFlightEpisodes = [];
+    target.remote.transcribeJob.updatedAt = new Date().toISOString();
+  }
+  message(target, 'director', '检测到服务重启导致上次后台扒剧中断，已完成集数已保存断点，请点击继续断点续跑。');
+  return true;
+}
+
+async function reconcileOrphanedTranscribeJob(p: any, user: string, persist = true): Promise<any> {
+  if (!isOrphanedTranscribeRunningProject(p, user)) {
+    return p;
+  }
+  if (!persist) {
+    applyOrphanedTranscribeReconcile(p);
+    return p;
+  }
+  return saveProjectProgress(p.id, user, (latest) => {
+    if (!isOrphanedTranscribeRunningProject(latest, user)) {
+      return latest;
+    }
+    applyOrphanedTranscribeReconcile(latest);
+    return latest;
+  });
+}
 
 export async function POST(request: Request) {
   const tfCtx: { key?: string; user?: string; pid?: string; actionId?: string; startedAt?: number; cid?: string; base?: any } = {};
@@ -1524,7 +1662,12 @@ export async function POST(request: Request) {
     }
 
     const p: any = ensureWorkspaceDefaults(await getProject(body.id, user));
-    if (body.version !== p.version) throw new Error('CONFLICT');
+    const isActiveTranscribePause =
+      body.operation === 'action' &&
+      p.kind === 'transcribe' &&
+      body.action?.action === 'pause' &&
+      (p.remote?.status === 'running' || isTranscribeJobRunning(user, p.id));
+    if (!isActiveTranscribePause && body.version !== p.version) throw new Error('CONFLICT');
     if (!Array.isArray(p.processedActionIds)) p.processedActionIds = [];
     if (!Array.isArray(p.processedClientIds)) p.processedClientIds = [];
 
@@ -2684,6 +2827,9 @@ export async function POST(request: Request) {
       p.executionMode = execControls.executionMode;
 
       const actionPayload = body.action || {};
+      if (!connected() && p.remote?.mode === 'test_channel' && actionPayload.action !== 'pause') {
+        await reconcileOrphanedTranscribeJob(p, user, false);
+      }
       const transcribeWasRunning = p.remote?.status === 'running';
       if (actionPayload.action_id && p.processedActionIds.includes(actionPayload.action_id)) {
         return Response.json(withCatalogs(p));
@@ -2710,6 +2856,31 @@ export async function POST(request: Request) {
         );
       } else if (p.remote?.mode === 'test_channel') {
         if (actionPayload.action === 'pause') {
+          if (p.kind === 'transcribe') {
+            cancelTranscribeJob(user, p.id);
+            const savedPaused = await saveProjectProgress(p.id, user, (latest) => {
+              if (!Array.isArray(latest.processedActionIds)) latest.processedActionIds = [];
+              if (actionPayload.action_id && !latest.processedActionIds.includes(actionPayload.action_id)) {
+                latest.processedActionIds.push(actionPayload.action_id);
+              }
+              latest.preferredTierId = execControls.preferredTierId;
+              latest.thinkingLevel = execControls.thinkingLevel;
+              latest.executionMode = execControls.executionMode;
+              if (!latest.remote) latest.remote = {} as any;
+              latest.remote.status = 'paused';
+              latest.remote.stage = { key: 'transcribe_paused', title: '扒剧已暂停 · 断点已保存' };
+              latest.remote.card = null;
+              const liveJob = getTranscribeJobState(user, p.id);
+              if (liveJob) {
+                liveJob.inFlightEpisodes = [];
+                liveJob.updatedAt = new Date().toISOString();
+                latest.remote.transcribeJob = sanitizeForClient(liveJob);
+              }
+              message(latest, 'director', '已收到暂停请求，已停止派发下一步任务，当前已完成产物已保存。');
+              return latest;
+            });
+            return Response.json(withCatalogs(savedPaused));
+          }
           p.remote.status = 'paused';
           message(p, 'director', '已收到暂停请求，已停止派发下一步任务，当前已完成产物已保存。');
         } else if (actionPayload.action === 'resume' || actionPayload.action === 'retry') {
@@ -2817,7 +2988,24 @@ export async function POST(request: Request) {
                   epSeen.add(va.episode);
                 }
               }
-              const over30Videos = videoAtts.filter((va: any) => Number(va.size || 0) > MULTIMODAL_VIDEO_CAP_BYTES);
+              const canAutoCompressOver30 =
+                !isFfmpegDisabled() && !isStrictNativeGeminiEnabled() && !isLlmFixture();
+              const over30VideosRaw = videoAtts.filter(
+                (va: any) => Number(va.size || 0) > MULTIMODAL_VIDEO_CAP_BYTES
+              );
+              const over30Videos: any[] = [];
+              for (const va of over30VideosRaw) {
+                if (!canAutoCompressOver30) {
+                  over30Videos.push(va);
+                  continue;
+                }
+                const bucketKey =
+                  (await resolveAttachmentBucketKey(user, p, va.id)) || `${user}/${p.id}/${va.id}`;
+                const meta = await inspectBucketMediaFile(bucketKey, va.name);
+                if (!meta.isPlayableContainer) {
+                  over30Videos.push(va);
+                }
+              }
               if (
                 over30Videos.length > 0 &&
                 textOrSubAtts.length === 0 &&
@@ -2858,7 +3046,7 @@ export async function POST(request: Request) {
             // Clean run (or anomaly confirmed): execute vision directly and deliver .docx without Step 3 empty card
             {
               const lockKey = `${user}:${p.id}`;
-              if (transcribeWasRunning || transcribeActionLocks.has(lockKey)) {
+              if (transcribeWasRunning || transcribeActionLocks.has(lockKey) || isTranscribeJobRunning(user, p.id)) {
                 return Response.json(
                   { error: '该扒剧任务正在处理中，请稍候刷新查看结果，请勿重复点击。', code: 'TRANSCRIBE_ALREADY_RUNNING' },
                   { status: 409 }
@@ -2887,6 +3075,129 @@ export async function POST(request: Request) {
                 );
               }
             }
+
+            const shouldRunAsyncTranscribe =
+              !isStrictNativeGeminiEnabled() &&
+              !isLlmFixture() &&
+              videoAtts.length > 0 &&
+              (body.async === true || actionPayload.async === true || videoAtts.length > 1);
+
+            if (shouldRunAsyncTranscribe) {
+              const nonVideoContextAtts = (Array.isArray(p.attachments) ? p.attachments : []).filter(
+                (a: any) => !/\.(mp4|mov|webm|mkv|avi)$/i.test(String(a?.name || ''))
+              );
+              const ffmpegMissingForLarge =
+                isFfmpegDisabled() &&
+                videoAtts.some((va: any) => Number(va.size || 0) > 8 * 1024 * 1024);
+              const ffmpegWarning = ffmpegMissingForLarge
+                ? '服务端未启用 ffmpeg，>8 MB 原片将直传分析，建议在服务端安装 ffmpeg 以启用自动压缩提速并避免网关超时'
+                : undefined;
+
+              const jobStatus = startTranscribeJob({
+                user,
+                projectId: p.id,
+                transcribeMode: p.transcribeMode === 'detailed' ? 'detailed' : 'fast',
+                videoAtts,
+                nonVideoContextAtts,
+                nextCursor,
+                isFixture: isLlmFixture(),
+                ffmpegWarning,
+                runEpisodeVision: async (_va, epNum, epScopedAtts, excludeTargets, signal) => {
+                  const epLabel = `第 ${epNum} 集《${_va.name}》`;
+                  const epPrompt = `${describeTranscribePromptSource(epScopedAtts).lead}（${epLabel}，模式：${
+                    p.transcribeMode === 'detailed'
+                      ? '详细模式（逐格拆解画面动作与台词）'
+                      : '快速模式（整集还原场次、动作与台词）'
+                  }）。本次仅提供第 ${epNum} 集原始素材，请严格只还原第 ${epNum} 集，不要编造或混入其它集内容；若英文原声与硬字幕不一致请以英文人声为准。\n\n${TRANSCRIBE_V72_OUTPUT_GUIDE}`;
+                  return callProjectStation({
+                    project: { ...p, attachments: epScopedAtts },
+                    station: 'vision',
+                    account: acc,
+                    extraKeyframes,
+                    excludeTargets,
+                    signal,
+                    userPrompt: epPrompt,
+                  });
+                },
+                deliverSuccessProject: (latestProj, combinedRaw, chunks) => {
+                  const expectedEps = uniqueValidSourceEpisodes(latestProj.attachments);
+                  const epMap = new Map<number, string>();
+                  for (const chunk of chunks) {
+                    const sanitizedChunk = sanitizeForClient(chunk.text || '');
+                    const parsed = parseTranscribeDeliveryBodies(sanitizedChunk, [chunk.episode]);
+                    for (const [k, v] of parsed) epMap.set(k, v);
+                  }
+                  const check = inspectTranscribeBodiesDelivery(expectedEps, epMap);
+                  if (!check.ok) {
+                    return { ok: false, reason: check.reason || '分集正文未达到交付标准' };
+                  }
+                  populateTranscribeWorkspace(latestProj, combinedRaw, chunks);
+                  if (Array.isArray(latestProj.episodes) && latestProj.episodes.length > 0) {
+                    const normalizedBodies = new Map<number, string>();
+                    for (const ep of latestProj.episodes) {
+                      const epNum = Number(ep?.episodeNumber);
+                      if (!Number.isInteger(epNum) || epNum < 1 || typeof ep.body !== 'string') continue;
+                      const normBody = normalizeTranscribeEpisodeBodyV72(ep.body, epNum, { traditional: false });
+                      if (normBody) {
+                        ep.body = normBody;
+                        ep.title = `第${epNum}集`;
+                        normalizedBodies.set(epNum, normBody);
+                      }
+                    }
+                    if (normalizedBodies.size > 0 && latestProj.remote?.outputs?.script) {
+                      latestProj.remote.outputs.script.content = assembleTranscribeV72Script(normalizedBodies);
+                    }
+                  }
+                  if (latestProj.remote) {
+                    latestProj.remote.stage = { key: 'delivery', title: '扒剧完成 · Word (.docx) 已就绪' };
+                    latestProj.remote.status = 'delivered';
+                    latestProj.remote.progress.completed_steps = latestProj.remote.progress.total_steps;
+                    latestProj.remote.card = null;
+                  }
+                  const epCount = Array.isArray(latestProj.episodes) ? latestProj.episodes.length : 1;
+                  if (latestProj.total === null && epCount > 0) {
+                    latestProj.total = epCount;
+                  }
+                  const modeLabel = latestProj.transcribeMode === 'detailed' ? '详细模式' : '快速模式';
+                  const deliveryCopy = buildTranscribeDeliveryCopy({
+                    episodeCount: epCount,
+                    modeLabel,
+                    synopsisContent: latestProj.remote?.outputs?.synopsis?.content || '',
+                    isFixture: false,
+                  });
+                  message(latestProj, 'director', deliveryCopy.directorText, {
+                    file: {
+                      name: `${latestProj.title}-完整剧本.docx`,
+                      url: `/api/upload?id=${latestProj.id}&export=docx`,
+                      description: 'Word (.docx) 完整交付稿',
+                    },
+                  });
+                  message(latestProj, 'file', `已为您生成《${latestProj.title}》Word (.docx) 交付文件`, {
+                    file: {
+                      name: `${latestProj.title}-完整剧本.docx`,
+                      url: `/api/upload?id=${latestProj.id}&export=docx`,
+                      description: deliveryCopy.fileDescription,
+                    },
+                  });
+                  return { ok: true };
+                },
+                onFailureMessage: (latestProj, reason) => {
+                  const safeReason = sanitizeForClient(reason || '分集正文未达到交付标准');
+                  message(
+                    latestProj,
+                    'director',
+                    `本轮扒剧正文未通过完整度验收（${safeReason}），已拦截交付并保留原有有效正文，未做覆盖。已完成集数已保存断点，请点击重试继续断点续跑。`
+                  );
+                },
+              });
+
+              const asyncRespProj = tfCtx.base ? JSON.parse(JSON.stringify(tfCtx.base)) : JSON.parse(JSON.stringify(p));
+              if (asyncRespProj.remote) {
+                asyncRespProj.remote.transcribeJob = jobStatus;
+              }
+              return Response.json(withCatalogs(asyncRespProj));
+            }
+
             let combinedRawOutput = '';
             let perSourceChunks: EpisodeSourceChunk[] | undefined;
             const shouldRunPerVideo = videoAtts.length > 3 || (!isLlmFixture() && videoAtts.length > 1);
@@ -2895,10 +3206,10 @@ export async function POST(request: Request) {
               const nonVideoContextAtts = (Array.isArray(p.attachments) ? p.attachments : []).filter(
                 (a: any) => !/\.(mp4|mov|webm|mkv|avi)$/i.test(String(a?.name || ''))
               );
-              const rawConcurrency = Number(process.env.STUDIO_TRANSCRIBE_CONCURRENCY || 3);
+              const rawConcurrency = Number(process.env.STUDIO_TRANSCRIBE_CONCURRENCY || 4);
               const concurrency = Number.isInteger(rawConcurrency)
                 ? Math.max(1, Math.min(6, rawConcurrency))
-                : 3;
+                : 4;
               let completedVideos = 0;
               perSourceChunks = await runWithConcurrency(sortedVideos, concurrency, async (va: any) => {
                 const epNum = Number(va.episode) || 1;
@@ -2913,7 +3224,8 @@ export async function POST(request: Request) {
                     : '快速模式（整集还原场次、动作与台词）'
                 }）。本次仅提供第 ${epNum} 集原始素材，请严格只还原第 ${epNum} 集，不要编造或混入其它集内容。\n\n${TRANSCRIBE_V72_OUTPUT_GUIDE}`;
 
-                const maxAttempts = isLlmFixture() ? 1 : 3;
+                const maxAttempts = isLlmFixture() ? 1 : 2;
+                const excludeTargets = new Set<string>();
                 let finalText = '';
                 const epStart = Date.now();
                 for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -2922,8 +3234,12 @@ export async function POST(request: Request) {
                     station: 'vision',
                     account: acc,
                     extraKeyframes,
+                    excludeTargets,
                     userPrompt: epPrompt,
                   });
+                  if (Array.isArray(r.timedOutTargets)) {
+                    for (const tk of r.timedOutTargets) excludeTargets.add(tk);
+                  }
                   if (isLlmFixture()) {
                     finalText =
                       r.ok && r.text
@@ -2944,7 +3260,7 @@ export async function POST(request: Request) {
                     }
                   }
                   finalText = repaired;
-                  if (epValid) {
+                  if (epValid || r.nonRetryable) {
                     break;
                   }
                   console.warn(
@@ -2960,7 +3276,7 @@ export async function POST(request: Request) {
                     })
                   );
                   if (attempt < maxAttempts) {
-                    await new Promise((resolve) => setTimeout(resolve, attempt * 2000));
+                    await new Promise((resolve) => setTimeout(resolve, attempt * 1500));
                   }
                 }
                 completedVideos += 1;

@@ -21,7 +21,7 @@ const PIN = {
   rawBytes: 9815,
   rawChars: 3743,
 };
-const ROUTE_SHA = 'ee586f32486ddd473701c5e8bec60174f6310c1135968da9932af4649b2c309d';
+const ROUTE_SHA = 'db543c1c9b1fb1e763e116c78472700bfebc1c3a66ea91691011141dadadeaf7';
 const LOADER = `
 import fs from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';

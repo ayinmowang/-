@@ -193,6 +193,24 @@ export interface StageOutput {
   version: number;
 }
 
+export interface TranscribeEpisodeProgress {
+  status: 'pending' | 'compressing' | 'running' | 'done' | 'failed';
+  elapsedMs?: number;
+  error?: string;
+}
+
+export interface TranscribeJobStatus {
+  jobId: string;
+  startedAt: string;
+  updatedAt: string;
+  totalEpisodes: number;
+  completedEpisodes: number[];
+  failedEpisodes: number[];
+  inFlightEpisodes: number[];
+  episodeProgress: Record<number, TranscribeEpisodeProgress>;
+  ffmpegWarning?: string;
+}
+
 export interface RemoteState {
   id: string;
   version: number;
@@ -218,6 +236,7 @@ export interface RemoteState {
   messages: StudioMessage[];
   stopsReleased?: boolean;
   transcribeMode?: 'fast' | 'detailed' | null;
+  transcribeJob?: TranscribeJobStatus;
   budget?: {
     cap: number;
     used: number;

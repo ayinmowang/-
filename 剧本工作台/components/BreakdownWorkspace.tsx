@@ -202,6 +202,39 @@ export default function BreakdownWorkspace() {
     refreshList();
   }, []);
 
+  useEffect(() => {
+    if (!active?.id || active?.remote?.status !== 'running') return;
+    let cancelled = false;
+    const targetId = active.id;
+    const timer = setInterval(async () => {
+      try {
+        const latest = await studioApi(`/api/studio?id=${encodeURIComponent(targetId)}`);
+        if (cancelled) return;
+        if (typeof latest.ffmpegAvailable === 'boolean') {
+          setFfmpegAvailable(latest.ffmpegAvailable);
+        }
+        syncActiveProject(latest);
+        if (latest.remote?.status && latest.remote.status !== 'running') {
+          clearInterval(timer);
+          const feedback = resolveTranscribeStartFeedback(latest);
+          if (feedback.success) {
+            setToast(feedback.toast);
+            setError('');
+          } else {
+            setToast('');
+            setError(feedback.error);
+          }
+        }
+      } catch {
+        // Transient poll error; retry on next interval
+      }
+    }, 2500);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [active?.id, active?.remote?.status]);
+
   function syncActiveProject(p: Project) {
     setActive(p);
     setProjects((prev) => [p, ...prev.filter((x) => x.id !== p.id)]);
@@ -259,7 +292,10 @@ export default function BreakdownWorkspace() {
         const isVideo =
           (typeof f.type === 'string' && f.type.startsWith('video/')) ||
           /\.(mp4|mov|mkv|webm|avi|m4v)$/i.test(f.name);
-        const needCanvasFallback = isVideo && (f.size > MULTIMODAL_VIDEO_CAP_BYTES || ffmpegAvailable === false);
+        const needCanvasFallback = isVideo && f.size > MULTIMODAL_VIDEO_CAP_BYTES && ffmpegAvailable === false;
+        if (isVideo && ffmpegAvailable === false && f.size > 8 * 1024 * 1024 && f.size <= MULTIMODAL_VIDEO_CAP_BYTES) {
+          setToast('服务端未启用 ffmpeg，>8 MB 原片将直传分析，建议在服务端安装 ffmpeg 以启用自动压缩提速并避免网关超时');
+        }
 
         if (needCanvasFallback) {
           const limitNotes = describeFallbackLimits({
@@ -453,6 +489,7 @@ export default function BreakdownWorkspace() {
         operation: 'action',
         id: cur.id,
         version: cur.version,
+        async: true,
         action: {
           version: cur.remote?.version || 1,
           action_id: crypto.randomUUID(),
@@ -461,13 +498,18 @@ export default function BreakdownWorkspace() {
         },
       });
       syncActiveProject(cur);
-      const feedback = resolveTranscribeStartFeedback(cur);
-      if (feedback.success) {
-        setToast(feedback.toast);
+      if (cur.remote?.status === 'running') {
         setError('');
+        setToast('已启动后台分集扒剧，正在实时处理并持久化每集进度…');
       } else {
-        setToast('');
-        setError(feedback.error);
+        const feedback = resolveTranscribeStartFeedback(cur);
+        if (feedback.success) {
+          setToast(feedback.toast);
+          setError('');
+        } else {
+          setToast('');
+          setError(feedback.error);
+        }
       }
     } catch (e: any) {
       setError(e.message || '扒剧执行未完成，请稍后重试');
@@ -568,6 +610,13 @@ export default function BreakdownWorkspace() {
     : null;
   const isDelivered = Boolean(deliveryState?.ready);
   const isTranscribeRunning = active?.remote?.status === 'running';
+  const transcribeJob = active?.remote?.transcribeJob;
+  const hasLargeVideoWithoutFfmpeg = Boolean(
+    ffmpegAvailable === false &&
+      (active?.attachments || []).some(
+        (a) => /\.(mp4|mov|mkv|webm|avi|m4v)$/i.test(String(a.name || '')) && Number(a.size || 0) > 8 * 1024 * 1024,
+      ),
+  );
   const hasMissingEp = Boolean(
     getSourceMaterialAttachments(active?.attachments).some((a) => !isSourceAttachmentMapped(a)),
   );
@@ -1437,6 +1486,23 @@ export default function BreakdownWorkspace() {
                   <div>{deliveryState.reason}</div>
                 </div>
               )}
+              {hasLargeVideoWithoutFfmpeg && (
+                <div
+                  role="status"
+                  style={{
+                    padding: '10px 12px',
+                    borderRadius: 10,
+                    background: '#fffbeb',
+                    border: '1px solid #fde68a',
+                    color: '#92400e',
+                    marginBottom: 14,
+                    fontSize: 12.5,
+                    lineHeight: 1.5,
+                  }}
+                >
+                  服务端未启用 ffmpeg，&gt;8 MB 原片将直传分析，建议在服务端安装 ffmpeg 以启用自动压缩提速并避免网关超时。
+                </div>
+              )}
               {error && (
                 <div style={{ padding: 10, borderRadius: 10, background: '#fee2e2', color: '#991b1b', marginBottom: 14, fontSize: 13 }}>
                   {error}
@@ -1548,16 +1614,77 @@ export default function BreakdownWorkspace() {
                     gap: 6,
                     padding: '10px 16px',
                     borderRadius: 10,
-                    background: !selectedMode || hasMissingEp ? '#cbd5e1' : '#8C3B2B',
+                    background: !selectedMode || hasMissingEp || isTranscribeRunning ? '#cbd5e1' : '#8C3B2B',
                     color: '#fff',
                     border: 'none',
                     fontWeight: 700,
-                    cursor: !selectedMode || hasMissingEp ? 'not-allowed' : 'pointer',
+                    cursor: !selectedMode || hasMissingEp || isTranscribeRunning ? 'not-allowed' : 'pointer',
                     fontSize: 13,
                   }}
                 >
-                  <Zap size={14} /> 开始扒剧并直出 Word <ArrowRight size={14} />
+                  <Zap size={14} />{' '}
+                  {isTranscribeRunning
+                    ? '后台分集处理中…'
+                    : active.remote?.status === 'failed' &&
+                        transcribeJob &&
+                        transcribeJob.completedEpisodes.length > 0 &&
+                        transcribeJob.completedEpisodes.length < transcribeJob.totalEpisodes
+                      ? `继续断点续跑（已完成 ${transcribeJob.completedEpisodes.length}/${transcribeJob.totalEpisodes} 集）`
+                      : '开始扒剧并直出 Word'}{' '}
+                  <ArrowRight size={14} />
                 </button>
+              </div>
+            )}
+
+            {/* Live Async Batch Progress Card */}
+            {transcribeJob && (isTranscribeRunning || active.remote?.status === 'failed') && (
+              <div
+                role="status"
+                style={{
+                  padding: 12,
+                  borderRadius: 12,
+                  background: isTranscribeRunning ? 'rgba(212,155,84,0.12)' : '#fef2f2',
+                  border: isTranscribeRunning ? '1px solid #D49B54' : '1px solid #fecaca',
+                  fontSize: 12,
+                  lineHeight: 1.55,
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 700, color: isTranscribeRunning ? '#8C3B2B' : '#991b1b' }}>
+                  <span>
+                    {isTranscribeRunning ? '正在后台分集扒剧' : '批处理断点已保存'}
+                  </span>
+                  <span>
+                    已完成 {transcribeJob.completedEpisodes.length} / {transcribeJob.totalEpisodes} 集
+                  </span>
+                </div>
+                <div style={{ height: 6, borderRadius: 999, background: 'rgba(0,0,0,0.08)', marginTop: 8, overflow: 'hidden' }}>
+                  <div
+                    style={{
+                      height: '100%',
+                      width: `${Math.min(
+                        100,
+                        Math.round(
+                          (transcribeJob.completedEpisodes.length / Math.max(1, transcribeJob.totalEpisodes)) * 100,
+                        ),
+                      )}%`,
+                      background: isTranscribeRunning ? '#8C3B2B' : '#dc2626',
+                      transition: 'width 200ms ease',
+                    }}
+                  />
+                </div>
+                {transcribeJob.inFlightEpisodes.length > 0 && (
+                  <div style={{ marginTop: 6, opacity: 0.85 }}>
+                    正在处理：第 {transcribeJob.inFlightEpisodes.join('、')} 集
+                  </div>
+                )}
+                {transcribeJob.failedEpisodes.length > 0 && (
+                  <div style={{ marginTop: 4, color: '#991b1b' }}>
+                    未通过：第 {transcribeJob.failedEpisodes.join('、')} 集（可点击上方继续断点续跑）
+                  </div>
+                )}
+                {transcribeJob.ffmpegWarning && (
+                  <div style={{ marginTop: 4, color: '#92400e' }}>{transcribeJob.ffmpegWarning}</div>
+                )}
               </div>
             )}
 

@@ -1,4 +1,5 @@
 import { isStrictNativeGeminiEnabled, runStrictNativeStation } from './strict-native-station';
+import { parseGeminiSse } from './gemini-native-sse';
 import { TRANSCRIBE_V72_VISION_SYSTEM_PROMPT } from './transcribe-format';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -629,14 +630,22 @@ function loadPersistentStore(): PersistentStoreData {
   return initial;
 }
 
+let persistentFlushSeq = 0;
+
 export function flushPersistentStore() {
   const store = loadPersistentStore();
+  const seq = ++persistentFlushSeq;
+  const tmpFile = `${STORE_FILE}.tmp.${process.pid}.${seq}`;
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
-    fs.writeFileSync(STORE_FILE, JSON.stringify(store, null, 2), 'utf-8');
+    fs.writeFileSync(tmpFile, JSON.stringify(store, null, 2), 'utf-8');
+    fs.renameSync(tmpFile, STORE_FILE);
   } catch (err) {
+    try {
+      if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
+    } catch {}
     console.error('[studio-store] Failed to flush persistent store:', err);
   }
 }
@@ -1835,10 +1844,24 @@ export function getDefaultLlmTimeoutMs(): number {
 async function fetchAndReadWithTimeout(
   url: string,
   init: RequestInit,
-  timeoutMs: number
+  timeoutMs: number,
+  externalSignal?: AbortSignal
 ): Promise<{ ok: boolean; status: number; text: string; contentType: string }> {
+  if (externalSignal?.aborted) {
+    throw new Error('REQUEST_ABORTED');
+  }
   const controller = new AbortController();
+  let timedOut = false;
+  let externalAborted = false;
+  const onExternalAbort = () => {
+    externalAborted = true;
+    controller.abort(externalSignal?.reason || new Error('REQUEST_ABORTED'));
+  };
+  if (externalSignal) {
+    externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+  }
   const timer = setTimeout(() => {
+    timedOut = true;
     controller.abort(new Error(`LLM_TIMEOUT_${timeoutMs}MS`));
   }, timeoutMs);
   try {
@@ -1853,7 +1876,10 @@ async function fetchAndReadWithTimeout(
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          if (controller.signal.aborted) {
+          if (externalAborted || externalSignal?.aborted) {
+            throw new Error('REQUEST_ABORTED');
+          }
+          if (timedOut || controller.signal.aborted) {
             throw new Error(`LLM_TIMEOUT_${timeoutMs}MS`);
           }
           if (value && value.byteLength > 0) {
@@ -1868,17 +1894,26 @@ async function fetchAndReadWithTimeout(
     } else {
       text = await res.text();
     }
-    if (controller.signal.aborted) {
+    if (externalAborted || externalSignal?.aborted) {
+      throw new Error('REQUEST_ABORTED');
+    }
+    if (timedOut || controller.signal.aborted) {
       throw new Error(`LLM_TIMEOUT_${timeoutMs}MS`);
     }
     return { ok: res.ok, status: res.status, text, contentType };
   } catch (err: any) {
-    if (controller.signal.aborted) {
+    if (externalAborted || externalSignal?.aborted) {
+      throw new Error('REQUEST_ABORTED');
+    }
+    if (timedOut || controller.signal.aborted) {
       throw new Error(`LLM_TIMEOUT_${timeoutMs}MS`);
     }
     throw err;
   } finally {
     clearTimeout(timer);
+    if (externalSignal) {
+      externalSignal.removeEventListener('abort', onExternalAbort);
+    }
   }
 }
 
@@ -2108,6 +2143,24 @@ export interface MultimodalAttachmentInput {
   base64: string;
 }
 
+export function isAllowedRelayModel(rawModel: string): boolean {
+  const raw = String(rawModel || '')
+    .split(/[\n,，、;；]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)[0] || '';
+  if (!raw) return false;
+  const normalized = normalizeRelayModelName(raw);
+  return /^(gemini-4(\.0)?-)?(carbon|argon|neon)$/i.test(normalized);
+}
+
+function isNonRetryableAuthOrQuotaMsg(msg: string): boolean {
+  return /\bHTTP\s+(?:401|403)\b/i.test(msg) || /insufficient_user_quota/i.test(msg);
+}
+
+function isTimeoutOr524Msg(msg: string): boolean {
+  return /\bHTTP\s+524\b/i.test(msg) || /LLM_TIMEOUT_/i.test(msg);
+}
+
 export async function executeProviderChat(params: {
   provider: ApiProviderConfig;
   apiKey: string;
@@ -2120,6 +2173,9 @@ export async function executeProviderChat(params: {
   thinkingLevel?: ThinkingLevel;
   reasoningEffort?: 'low' | 'medium' | 'high';
   timeoutMs?: number;
+  excludeTargetKeys?: Set<string>;
+  attemptedTargetKeysOut?: string[];
+  signal?: AbortSignal;
 }): Promise<{ reply: string; totalTokens: number; resolvedModel?: string }> {
   const candidateUrls = [
     params.provider.baseUrl,
@@ -2148,6 +2204,11 @@ export async function executeProviderChat(params: {
 
   let lastError: any = null;
   for (const baseUrl of candidateUrls) {
+    const targetKey = `${params.provider.id}::${baseUrl}::${normalizedRequested}`;
+    if (params.excludeTargetKeys?.has(targetKey)) {
+      continue;
+    }
+    params.attemptedTargetKeysOut?.push(targetKey);
     try {
       const isGeminiNativeUrl =
         baseUrl.includes('generativelanguage.googleapis.com') && !baseUrl.endsWith('/openai');
@@ -2179,7 +2240,8 @@ export async function executeProviderChat(params: {
                 generationConfig,
               }),
             },
-            timeoutMs
+            timeoutMs,
+            params.signal
           );
           if (resp.ok) {
             const data: any = resp.text ? JSON.parse(resp.text) : {};
@@ -2213,6 +2275,129 @@ export async function executeProviderChat(params: {
         const useVideoStream =
           canSendMultimodal &&
           params.mediaAttachments!.some((m) => String(m.mimeType || '').toLowerCase().startsWith('video/'));
+
+        // Switch Gemini multimodal video relay calls to /v1beta/...:streamGenerateContent?alt=sse
+        // (saves ~49s vs /v1/chat/completions), with automatic fallback to /v1/chat/completions on 404/405.
+        if (isCustomRelay && useVideoStream && process.env.STUDIO_GEMINI_V1BETA !== '0') {
+          const relayRoot = baseUrl.replace(/\/(?:v1|v1beta)$/i, '');
+          const v1betaUrl = `${relayRoot}/v1beta/models/${encodeURIComponent(currentModel)}:streamGenerateContent?alt=sse`;
+          const nativeParts: any[] = [];
+          for (const m of params.mediaAttachments || []) {
+            const cleanB64 = String(m.base64 || '').replace(/\s+/g, '');
+            if (cleanB64) {
+              nativeParts.push({
+                inline_data: {
+                  mime_type: m.mimeType,
+                  data: cleanB64,
+                },
+              });
+            }
+          }
+          nativeParts.push({ text: params.userPrompt });
+          const rawBudget = mapThinkingLevelToGeminiBudget(params.thinkingLevel);
+          let activeBudget: number | undefined =
+            params.thinkingLevel === undefined || params.thinkingLevel === 'off' ? 0 : rawBudget;
+
+          let v1betaResp: { ok: boolean; status: number; text: string; contentType: string } = {
+            ok: false,
+            status: 500,
+            text: '',
+            contentType: '',
+          };
+          for (let betaTry = 0; betaTry < 2; betaTry++) {
+            const nativeBody: Record<string, any> = {
+              contents: [{ role: 'user', parts: nativeParts }],
+              ...(params.sysPrompt ? { systemInstruction: { parts: [{ text: params.sysPrompt }] } } : {}),
+              generationConfig: {
+                temperature: params.temperature,
+                maxOutputTokens: params.maxTokens,
+                ...(activeBudget !== undefined ? { thinkingConfig: { thinkingBudget: activeBudget } } : {}),
+              },
+            };
+
+            v1betaResp = await fetchAndReadWithTimeout(
+              v1betaUrl,
+              {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'x-goog-api-key': params.apiKey,
+                  Authorization: `Bearer ${params.apiKey}`,
+                  Accept: 'text/event-stream, application/json',
+                },
+                body: JSON.stringify(nativeBody),
+              },
+              timeoutMs,
+              params.signal
+            );
+            if (v1betaResp.ok) break;
+            if (
+              activeBudget !== undefined &&
+              isReasoningParamRejectedError(v1betaResp.status, v1betaResp.text || '')
+            ) {
+              activeBudget = undefined;
+              continue;
+            }
+            break;
+          }
+
+          if (v1betaResp.ok) {
+            const trimmedBody = v1betaResp.text.trim();
+            if (trimmedBody.startsWith('{') && !/^data:/m.test(trimmedBody)) {
+              const maybeJson = JSON.parse(trimmedBody);
+              if (Array.isArray(maybeJson?.choices)) {
+                const parsedOpenAi = parseOpenAIChatCompletionResponse(v1betaResp.text, v1betaResp.contentType);
+                if (parsedOpenAi.reply.trim()) {
+                  const totalTokens = Number(
+                    parsedOpenAi.totalTokens ||
+                      Math.ceil((params.sysPrompt.length + params.userPrompt.length + parsedOpenAi.reply.length) / 3)
+                  );
+                  return { reply: parsedOpenAi.reply, totalTokens, resolvedModel: currentModel };
+                }
+              } else if (Array.isArray(maybeJson?.candidates)) {
+                const reply =
+                  maybeJson.candidates[0]?.content?.parts
+                    ?.filter((pt: any) => pt && pt.thought !== true && typeof pt.text === 'string')
+                    .map((pt: any) => pt.text)
+                    .join('') || '';
+                if (reply.trim()) {
+                  const totalTokens = Number(
+                    maybeJson.usageMetadata?.totalTokenCount ||
+                      Math.ceil((params.sysPrompt.length + params.userPrompt.length + reply.length) / 3)
+                  );
+                  return { reply, totalTokens, resolvedModel: currentModel };
+                }
+              }
+            }
+            const parsedSse = parseGeminiSse(v1betaResp.text);
+            if (parsedSse.ok && parsedSse.text.trim()) {
+              const totalTokens = Number(
+                parsedSse.usage?.totalTokenCount ||
+                  Math.ceil((params.sysPrompt.length + params.userPrompt.length + parsedSse.text.length) / 3)
+              );
+              return { reply: parsedSse.text, totalTokens, resolvedModel: currentModel };
+            }
+            throw new Error(`HTTP 200: V1BETA_${parsedSse.error || 'EMPTY_RESPONSE'}`);
+          }
+
+          const betaErrText = v1betaResp.text || `HTTP ${v1betaResp.status}`;
+          const betaErrFormatted = `HTTP ${v1betaResp.status}: ${betaErrText.slice(0, 140)}`;
+          const betaErrFull = `HTTP ${v1betaResp.status}: ${betaErrText}`;
+          if (isNonRetryableAuthOrQuotaMsg(betaErrFull) || isTimeoutOr524Msg(betaErrFull)) {
+            throw new Error(betaErrFormatted);
+          }
+          const isBetaModelNotFound =
+            betaErrText.includes('model_not_found') || betaErrText.includes('No available channel for model');
+          const shouldFallbackToChatCompletions =
+            (v1betaResp.status === 404 || v1betaResp.status === 405) && !isBetaModelNotFound;
+
+          if (!shouldFallbackToChatCompletions) {
+            if (mIdx === modelsToTry.length - 1) {
+              throw new Error(betaErrFormatted);
+            }
+            continue;
+          }
+        }
 
         const userContent: any = canSendMultimodal
           ? [
@@ -2259,10 +2444,12 @@ export async function executeProviderChat(params: {
                 ],
               }),
             },
-            timeoutMs
+            timeoutMs,
+            params.signal
           );
 
           if (resp.ok) break;
+          if (resp.status === 401 || resp.status === 403 || resp.status === 524) break;
           if (allowToolChoice && isToolChoiceRejectedError(resp.status, resp.text)) {
             allowToolChoice = false;
             continue;
@@ -2308,7 +2495,8 @@ export async function executeProviderChat(params: {
                     ],
                   }),
                 },
-                timeoutMs
+                timeoutMs,
+                params.signal
               );
               if (retryResp.ok) {
                 reply = parseOpenAIChatCompletionResponse(retryResp.text, retryResp.contentType).reply;
@@ -2325,6 +2513,11 @@ export async function executeProviderChat(params: {
         }
 
         const errText = resp.text || `HTTP ${resp.status}`;
+        const errFull = `HTTP ${resp.status}: ${errText}`;
+        if (isNonRetryableAuthOrQuotaMsg(errFull) || isTimeoutOr524Msg(errFull)) {
+          throw new Error(`HTTP ${resp.status}: ${errText.slice(0, 140)}`);
+        }
+
         const isModelNotFound =
           errText.includes('model_not_found') || errText.includes('No available channel for model');
 
@@ -2363,8 +2556,12 @@ export async function executeProviderChat(params: {
           throw new Error(`HTTP ${resp.status}: ${errText.slice(0, 140)}`);
         }
       }
-    } catch (err) {
+    } catch (err: any) {
       lastError = err;
+      const errMsg = String(err?.message || '');
+      if (params.signal?.aborted || errMsg === 'REQUEST_ABORTED' || isNonRetryableAuthOrQuotaMsg(errMsg)) {
+        throw err;
+      }
     }
   }
   throw lastError || new Error('REQUEST_FAILED');
@@ -2393,7 +2590,9 @@ export async function callStationLLM(params: {
   maxTokensOverride?: number;
   tierId?: string;
   tierName?: string;
-}): Promise<{ ok: boolean; text: string | null; error?: string }> {
+  excludeTargets?: Set<string>;
+  signal?: AbortSignal;
+}): Promise<{ ok: boolean; text: string | null; error?: string; nonRetryable?: boolean; timedOutTargets?: string[] }> {
   const store = loadPersistentStore();
   const route = store.systemConfig.routes[params.station];
   const acc = params.account || store.accounts[0];
@@ -2553,8 +2752,40 @@ export async function callStationLLM(params: {
     }
   }
   if (trimmedModelOverride && candidateTargets.length > 0) {
-    for (const target of candidateTargets) {
-      target.model = trimmedModelOverride;
+    const primaryProviderId = candidateTargets[0]?.provider.id;
+    for (let i = candidateTargets.length - 1; i >= 0; i--) {
+      const target = candidateTargets[i];
+      if (!target.isFallback) {
+        target.model = trimmedModelOverride;
+      } else if (!isAllowedRelayModel(target.model)) {
+        // Never clobber valid whitelisted fallbackModels (e.g. gemini-4-argon).
+        // For legacy non-allowed fallback models (e.g. gemini-2.5-pro / gpt-4o),
+        // adapt only if targeting a distinct backup provider with an allowed override; otherwise skip cleanly.
+        if (isAllowedRelayModel(trimmedModelOverride) && target.provider.id !== primaryProviderId) {
+          target.model = trimmedModelOverride;
+        } else {
+          candidateTargets.splice(i, 1);
+        }
+      }
+    }
+  } else if (candidateTargets.length > 1) {
+    for (let i = candidateTargets.length - 1; i >= 0; i--) {
+      const target = candidateTargets[i];
+      if (target.isFallback && !isAllowedRelayModel(target.model)) {
+        candidateTargets.splice(i, 1);
+      }
+    }
+  }
+  {
+    const seenTargets = new Set<string>();
+    for (let i = 0; i < candidateTargets.length; ) {
+      const key = `${candidateTargets[i].provider.id}::${normalizeRelayModelName(candidateTargets[i].model)}`;
+      if (seenTargets.has(key)) {
+        candidateTargets.splice(i, 1);
+      } else {
+        seenTargets.add(key);
+        i += 1;
+      }
     }
   }
 
@@ -2623,7 +2854,12 @@ export async function callStationLLM(params: {
       ? Math.floor(params.maxTokensOverride)
       : route?.maxTokens ?? 2048;
 
+  const timedOutTargets: string[] = [];
+
   for (const target of candidateTargets) {
+    if (params.signal?.aborted) {
+      return { ok: false, text: null, error: 'CANCELLED', nonRetryable: true };
+    }
     const validKeys = target.provider.apiKeys.map((k) => k.trim()).filter(Boolean);
     if (!validKeys.length) continue;
 
@@ -2639,8 +2875,12 @@ export async function callStationLLM(params: {
     );
 
     for (let kOffset = 0; kOffset < orderedKeys.length; kOffset++) {
+      if (params.signal?.aborted) {
+        return { ok: false, text: null, error: 'CANCELLED', nonRetryable: true };
+      }
       const apiKey = orderedKeys[kOffset];
       const t0 = Date.now();
+      const attemptedTargetKeysOut: string[] = [];
       try {
         const { reply, totalTokens, resolvedModel } = await executeProviderChat({
           provider: target.provider,
@@ -2654,6 +2894,9 @@ export async function callStationLLM(params: {
           thinkingLevel: params.thinkingLevel,
           reasoningEffort: params.reasoningEffort,
           timeoutMs: params.timeoutMs,
+          excludeTargetKeys: params.excludeTargets,
+          attemptedTargetKeysOut,
+          signal: params.signal,
         });
 
         const latencyMs = Date.now() - t0;
@@ -2714,6 +2957,14 @@ export async function callStationLLM(params: {
       } catch (err: any) {
         const latencyMs = Date.now() - t0;
         const errMsg = String(err?.message || 'Unknown error');
+        if (params.signal?.aborted || errMsg === 'REQUEST_ABORTED') {
+          return {
+            ok: false,
+            text: null,
+            error: 'CANCELLED',
+            nonRetryable: true,
+          };
+        }
         const isGroupModelMismatch =
           errMsg.includes('model_not_found') || errMsg.includes('No available channel for model');
 
@@ -2722,6 +2973,14 @@ export async function callStationLLM(params: {
           recordKeyFamilyAffinity(target.provider.id, apiKey, requestedFamily, false);
           if (kOffset < orderedKeys.length - 1) {
             continue;
+          }
+        }
+
+        const isNonRetryable = isNonRetryableAuthOrQuotaMsg(errMsg);
+        const isTimedOut = isTimeoutOr524Msg(errMsg);
+        if (isTimedOut) {
+          for (const tk of attemptedTargetKeysOut) {
+            if (!timedOutTargets.includes(tk)) timedOutTargets.push(tk);
           }
         }
 
@@ -2749,12 +3008,26 @@ export async function callStationLLM(params: {
           ...(params.tierName ? { tierName: params.tierName } : {}),
         });
         flushPersistentStore();
+        if (isNonRetryable) {
+          return {
+            ok: false,
+            text: null,
+            error: 'BACKEND_REQUEST_FAILED',
+            nonRetryable: true,
+            ...(timedOutTargets.length > 0 ? { timedOutTargets } : {}),
+          };
+        }
         break;
       }
     }
   }
 
-  return { ok: false, text: null, error: 'BACKEND_REQUEST_FAILED' };
+  return {
+    ok: false,
+    text: null,
+    error: 'BACKEND_REQUEST_FAILED',
+    ...(timedOutTargets.length > 0 ? { timedOutTargets } : {}),
+  };
 }
 
 /**
@@ -3091,7 +3364,35 @@ export async function getProject(id: string, user: string): Promise<Project> {
   return parsed;
 }
 
-export async function saveProject(p: Project, user: string): Promise<Project> {
+function getProjectLockMap(): Map<string, Promise<void>> {
+  const g = globalThis as any;
+  if (!(g.__STUDIO_PROJECT_LOCKS__ instanceof Map)) {
+    g.__STUDIO_PROJECT_LOCKS__ = new Map<string, Promise<void>>();
+  }
+  return g.__STUDIO_PROJECT_LOCKS__;
+}
+
+export async function withProjectLock<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
+  const locks = getProjectLockMap();
+  const prev = locks.get(projectId) || Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const chained = prev.then(() => gate, () => gate);
+  locks.set(projectId, chained);
+  await prev.catch(() => {});
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (locks.get(projectId) === chained) {
+      locks.delete(projectId);
+    }
+  }
+}
+
+async function saveProjectUnlocked(p: Project, user: string): Promise<Project> {
   const now = new Date().toISOString();
   p.updatedAt = now;
   p.owner = p.owner || user;
@@ -3102,6 +3403,22 @@ export async function saveProject(p: Project, user: string): Promise<Project> {
     .bind(JSON.stringify(clean), clean.version, now, clean.id, user)
     .run();
   return clean;
+}
+
+export async function saveProject(p: Project, user: string): Promise<Project> {
+  return withProjectLock(p.id, () => saveProjectUnlocked(p, user));
+}
+
+export async function saveProjectProgress(
+  projectId: string,
+  user: string,
+  mutator: (latest: Project) => Project | void
+): Promise<Project> {
+  return withProjectLock(projectId, async () => {
+    const latest = await getProject(projectId, user);
+    const updated = mutator(latest) || latest;
+    return saveProjectUnlocked(updated, user);
+  });
 }
 
 export function message(
