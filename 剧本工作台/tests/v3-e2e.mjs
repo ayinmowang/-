@@ -588,10 +588,11 @@ async function main() {
         '/purchase',
         '/orders',
         '/profile',
-        '/admin',
       ]) {
         assert.equal(shellSrc.includes(route), true, `WarmShell.tsx missing navigation route ${route}`);
       }
+      assert.equal(shellSrc.includes('/admin'), false, 'WarmShell.tsx must not expose /admin route in main-site nav');
+      assert.equal(shellSrc.includes('管理后台'), false, 'WarmShell.tsx must not expose 管理后台 label in main-site nav');
       for (const label of ['我的订阅', '充值 / 会员', '我的订单']) {
         assert.equal(shellSrc.includes(label), true, `WarmShell.tsx missing navigation label ${label}`);
       }

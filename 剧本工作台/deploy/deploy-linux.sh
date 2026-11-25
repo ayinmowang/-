@@ -87,6 +87,7 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
   node tests/step5-production-arch.mjs
   node tests/step6-creative-workflows.mjs
   node tests/step7-commerce-admin-e2e.mjs
+  node tests/step8-hardening-and-ai-command.mjs
   npm run build
 else
   echo "  [dry-run] 计划运行核心离线测试与 npm run build"
@@ -117,6 +118,28 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
     fi
     echo "  OK: GET ${route} -> HTTP 200"
   done
+
+  MAIN_ADMIN_PAGE_CODE="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: cryptoayin.cn' "http://127.0.0.1:${PORT}/admin")"
+  if [[ "$MAIN_ADMIN_PAGE_CODE" != "404" ]]; then
+    echo "ERROR: 主站 Host 隔离校验失败 cryptoayin.cn/admin -> HTTP ${MAIN_ADMIN_PAGE_CODE} (期望 404)" >&2
+    exit 1
+  fi
+  echo "  OK: Host: cryptoayin.cn GET /admin -> HTTP 404"
+
+  MAIN_ADMIN_API_CODE="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: cryptoayin.cn' "http://127.0.0.1:${PORT}/api/admin")"
+  if [[ "$MAIN_ADMIN_API_CODE" != "404" ]]; then
+    echo "ERROR: 主站 Host 隔离校验失败 cryptoayin.cn/api/admin -> HTTP ${MAIN_ADMIN_API_CODE} (期望 404)" >&2
+    exit 1
+  fi
+  echo "  OK: Host: cryptoayin.cn GET /api/admin -> HTTP 404"
+
+  SUB_ADMIN_ROOT_CODE="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: admin.cryptoayin.cn' "http://127.0.0.1:${PORT}/")"
+  if [[ "$SUB_ADMIN_ROOT_CODE" != "200" ]]; then
+    echo "ERROR: 独立后台 Host 校验失败 admin.cryptoayin.cn/ -> HTTP ${SUB_ADMIN_ROOT_CODE} (期望 200)" >&2
+    exit 1
+  fi
+  echo "  OK: Host: admin.cryptoayin.cn GET / -> HTTP 200"
+
   echo "DEPLOY_SUCCESS: 剧本工作台已上线并健康运行在 127.0.0.1:${PORT}"
 else
   echo "DRY_RUN_OK: 预检通过。"

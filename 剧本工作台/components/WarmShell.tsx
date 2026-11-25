@@ -22,7 +22,6 @@ import {
   Receipt,
   RefreshCw,
   Repeat,
-  Shield,
   Sun,
   User,
   X,
@@ -37,8 +36,7 @@ export type WarmNavKey =
   | 'purchase'
   | 'orders'
   | 'redeem'
-  | 'profile'
-  | 'admin';
+  | 'profile';
 export interface WarmNotificationItem {
   id: string;
   title: string;
@@ -67,7 +65,6 @@ const NAV_ITEMS: Array<{
   label: string;
   href: string;
   icon: typeof PenTool;
-  adminOnly?: boolean;
 }> = [
   { key: 'studio', label: '创作台', href: '/studio', icon: PenTool },
   { key: 'breakdown', label: '拆书 · 扒剧', href: '/breakdown', icon: Clapperboard },
@@ -77,7 +74,6 @@ const NAV_ITEMS: Array<{
   { key: 'orders', label: '我的订单', href: '/orders', icon: Receipt },
   { key: 'redeem', label: '兑换 / 邀请码', href: '/redeem', icon: Gift },
   { key: 'profile', label: '个人资料', href: '/profile', icon: User },
-  { key: 'admin', label: '管理后台', href: '/admin', icon: Shield, adminOnly: true },
 ];
 
 function roleLabel(role?: string): string {
@@ -326,10 +322,6 @@ export default function WarmShell({
     }
   };
 
-  const visibleNavItems = NAV_ITEMS.filter(
-    (item) => !item.adminOnly || activeAccount?.role === 'admin'
-  );
-
   const mergedNotifications: WarmNotificationItem[] =
     notifications.length > 0
       ? notifications
@@ -380,7 +372,7 @@ export default function WarmShell({
         </div>
 
         <nav className="warm-nav" aria-label="一级板块导航">
-          {visibleNavItems.map((item) => {
+          {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
             const isActive = activeNav === item.key;
             return (

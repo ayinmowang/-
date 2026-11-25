@@ -14,6 +14,7 @@ import {
   getStore,
   hashPassword,
   invalidateProviderModelCache,
+  maskSecret,
   normalizeCreationTiers,
   replaceSkillPlugin,
   resolveAccountFromRequest,
@@ -30,6 +31,75 @@ import type {
   StationRoleKey,
   StudioAccount,
 } from '../../../lib/types';
+
+function maskProviderKey(raw: string): string {
+  const k = String(raw || '').trim();
+  if (!k) return '';
+  if (k.length <= 4) return '****';
+  if (k.length <= 12) return `****${k.slice(-Math.min(4, Math.max(2, k.length - 4)))}`;
+  return `${k.slice(0, 6)}****${k.slice(-4)}`;
+}
+
+function maskBackendToken(raw: string): string {
+  const t = String(raw || '').trim();
+  if (!t) return '';
+  return t.length <= 4 ? '****' : `****${t.slice(-4)}`;
+}
+
+function isMaskedPlaceholder(
+  val: string,
+  knownSecrets: string[] = [],
+  maskFn: (s: string) => string = maskProviderKey,
+): boolean {
+  const s = String(val || '').trim();
+  if (!s) return false;
+  if (/^[•*]{4,}$/.test(s)) return true;
+  if (knownSecrets.some((sec) => maskFn(sec) === s || maskSecret(sec) === s)) return true;
+  if (s.includes('****') || s.includes('••••')) return true;
+  return false;
+}
+
+function collectKnownSecrets(store: ReturnType<typeof getStore>): string[] {
+  const secrets: string[] = [];
+  for (const prov of store.systemConfig.providers || []) {
+    for (const k of prov.apiKeys || []) {
+      const trimmed = String(k || '').trim();
+      if (trimmed.length >= 4) secrets.push(trimmed);
+    }
+  }
+  const bt = String(store.systemConfig.backendToken || '').trim();
+  if (bt.length >= 4) secrets.push(bt);
+  return Array.from(new Set(secrets)).sort((a, b) => b.length - a.length);
+}
+
+function redactErrorSecrets(
+  msg: string | undefined,
+  knownSecrets: string[] = [],
+): string | undefined {
+  if (!msg) return msg;
+  let out = msg
+    .replace(/([?&](?:key|api_key|token)=)[^&\s]+/gi, '$1****')
+    .replace(/\bBearer\s+\S+/gi, 'Bearer ****')
+    .replace(/\bsk-[A-Za-z0-9_-]{4,}\b/g, 'sk-****')
+    .replace(/\bAIza[A-Za-z0-9_-]{4,}\b/g, 'AIza****')
+    .replace(/\bxai-[A-Za-z0-9_-]{4,}\b/g, 'xai-****');
+  const uniqueSorted = Array.from(
+    new Set(knownSecrets.map((s) => String(s || '').trim()).filter((s) => s.length >= 4)),
+  ).sort((a, b) => b.length - a.length);
+  for (const sec of uniqueSorted) {
+    if (out.includes(sec)) {
+      out = out.split(sec).join('****');
+    }
+  }
+  return out;
+}
+
+function parseProviderKeyList(input: unknown): string[] {
+  return (Array.isArray(input) ? input.join('\n') : String(input || ''))
+    .split(/[\n,，;；]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
 
 function requireAdminAccount(request: Request): StudioAccount {
   const acc = resolveAccountFromRequest(request);
@@ -81,6 +151,24 @@ function buildAdminSnapshot(adminAcc: StudioAccount) {
     projectCount: projectCountByOwner[acc.username] || 0,
   }));
   const commerce = listAllCommerceForAdmin();
+  const knownSecrets = collectKnownSecrets(store);
+
+  const sanitizedProviders = (store.systemConfig.providers || []).map((prov) => {
+    const validKeys = (prov.apiKeys || []).map((k) => String(k || '').trim()).filter(Boolean);
+    const { apiKeys: _omitApiKeys, ...provRest } = prov;
+    return {
+      ...provRest,
+      apiKeysMasked: validKeys.map(maskProviderKey),
+      apiKeyCount: validKeys.length,
+      hasApiKeys: validKeys.length > 0,
+      ...(prov.lastErrorMsg !== undefined
+        ? { lastErrorMsg: redactErrorSecrets(prov.lastErrorMsg, knownSecrets) }
+        : {}),
+    };
+  });
+
+  const rawBackendToken = String(store.systemConfig.backendToken || '').trim();
+  const { backendToken: _omitBackendToken, ...sysConfigRest } = store.systemConfig;
 
   return {
     authorized: true,
@@ -88,12 +176,18 @@ function buildAdminSnapshot(adminAcc: StudioAccount) {
     accounts: accountsWithStats,
     invites: store.invites,
     systemConfig: {
-      ...store.systemConfig,
+      ...sysConfigRest,
+      providers: sanitizedProviders,
+      backendTokenMasked: maskBackendToken(rawBackendToken),
+      hasBackendToken: rawBackendToken.length > 0,
       skillPlugins: Array.isArray(store.systemConfig.skillPlugins) ? store.systemConfig.skillPlugins : [],
       creationTiers: normalizeCreationTiers(store.systemConfig.creationTiers),
     },
     projectsSummary,
-    auditLogs: store.auditLogs.slice(0, 100),
+    auditLogs: store.auditLogs.slice(0, 100).map((log) => ({
+      ...log,
+      ...(log.error !== undefined ? { error: redactErrorSecrets(log.error, knownSecrets) } : {}),
+    })),
     plans: commerce.plans,
     orders: commerce.orders,
     subscriptions: commerce.subscriptions,
@@ -224,9 +318,13 @@ export async function POST(request: Request) {
       const acc = store.accounts.find((a) => a.id === body.id);
       if (!acc) throw new Error('NOT_FOUND');
 
-      if (body.displayName !== undefined) acc.displayName = String(body.displayName).trim().slice(0, 50);
-      if (body.password !== undefined && String(body.password).trim()) {
-        acc.password = hashPassword(String(body.password).trim());
+      if (body.displayName !== undefined && body.displayName !== null) {
+        acc.displayName = String(body.displayName).trim().slice(0, 50);
+      }
+      const nextPassword =
+        body.password !== undefined && body.password !== null ? String(body.password).trim() : '';
+      if (nextPassword && !/^[•*]{4,}$/.test(nextPassword)) {
+        acc.password = hashPassword(nextPassword);
       }
       if (body.role && ['admin', 'creator', 'reviewer'].includes(body.role)) {
         acc.role = body.role;
@@ -238,14 +336,14 @@ export async function POST(request: Request) {
         }
         acc.status = body.status;
       }
-      if (body.budgetCapUsd !== undefined) {
+      if (body.budgetCapUsd !== undefined && body.budgetCapUsd !== null && Number.isFinite(Number(body.budgetCapUsd))) {
         acc.budgetCapUsd = Math.max(0, Number(body.budgetCapUsd));
       }
       if (body.resetUsage === true) {
         acc.budgetUsedUsd = 0;
         acc.tokensUsed = 0;
       }
-      if (body.note !== undefined) {
+      if (body.note !== undefined && body.note !== null) {
         acc.note = String(body.note);
       }
       if (Array.isArray(body.allowedFlows) && body.allowedFlows.length > 0) {
@@ -327,17 +425,80 @@ export async function POST(request: Request) {
       const name = String(pData.name || '').trim();
       if (!name || !baseUrl) throw new Error('INVALID_INPUT');
 
-      const rawKeys = (Array.isArray(pData.apiKeys) ? pData.apiKeys.join('\n') : String(pData.apiKeys || ''))
-        .split(/[\n,，;；]+/)
-        .map((s: string) => s.trim())
-        .filter(Boolean);
+      const existingIdx = store.systemConfig.providers.findIndex((p) => p.id === pData.id);
+      const existingProvider = existingIdx >= 0 ? store.systemConfig.providers[existingIdx] : undefined;
+      const existingKeys = existingProvider
+        ? (existingProvider.apiKeys || []).map((k) => String(k || '').trim()).filter(Boolean)
+        : [];
+
+      const clearApiKeys = parseOptionalBoolean(body.clearApiKeys ?? pData.clearApiKeys) === true;
+      const removeKeyIndicesRaw = body.removeKeyIndices ?? pData.removeKeyIndices;
+      const hasRemoveIndices = Array.isArray(removeKeyIndicesRaw);
+      const newApiKeysRaw = body.newApiKeys !== undefined ? body.newApiKeys : pData.newApiKeys;
+      const hasNewApiKeys = newApiKeysRaw !== undefined && newApiKeysRaw !== null;
+      const replaceApiKeys = parseOptionalBoolean(body.replaceApiKeys ?? pData.replaceApiKeys) === true;
+
+      let resolvedKeys: string[];
+      if (clearApiKeys) {
+        resolvedKeys = [];
+      } else if (hasNewApiKeys || hasRemoveIndices) {
+        const removeSet = new Set<number>(
+          hasRemoveIndices
+            ? removeKeyIndicesRaw.map((idx: unknown) => Number(idx)).filter((idx: number) => Number.isInteger(idx))
+            : [],
+        );
+        const base = existingKeys.filter((_, idx) => !removeSet.has(idx));
+        const parsedNew = hasNewApiKeys
+          ? parseProviderKeyList(newApiKeysRaw).filter((k) => !isMaskedPlaceholder(k, existingKeys, maskProviderKey))
+          : [];
+        resolvedKeys = replaceApiKeys ? parsedNew : Array.from(new Set([...base, ...parsedNew]));
+      } else if (pData.apiKeys !== undefined && pData.apiKeys !== null) {
+        const entries = parseProviderKeyList(pData.apiKeys);
+        if (entries.length === 0) {
+          resolvedKeys = [];
+        } else if (entries.every((e) => /^[•*]{4,}$/.test(e))) {
+          resolvedKeys = [...existingKeys];
+        } else {
+          const usedExistingIndices = new Set<number>();
+          const nextKeys: string[] = [];
+          for (let i = 0; i < entries.length; i++) {
+            const entry = entries[i];
+            if (isMaskedPlaceholder(entry, existingKeys, maskProviderKey)) {
+              let matchedIdx = existingKeys.findIndex(
+                (sec, idx) =>
+                  !usedExistingIndices.has(idx) &&
+                  (maskProviderKey(sec) === entry || maskSecret(sec) === entry),
+              );
+              if (matchedIdx < 0 && /^[•*]{4,}$/.test(entry) && i < existingKeys.length && !usedExistingIndices.has(i)) {
+                matchedIdx = i;
+              }
+              if (matchedIdx >= 0) {
+                usedExistingIndices.add(matchedIdx);
+                nextKeys.push(existingKeys[matchedIdx]);
+              }
+            } else {
+              nextKeys.push(entry);
+            }
+          }
+          if (
+            nextKeys.length === 0 &&
+            existingKeys.length > 0 &&
+            entries.every((e) => isMaskedPlaceholder(e, existingKeys, maskProviderKey))
+          ) {
+            resolvedKeys = [...existingKeys];
+          } else {
+            resolvedKeys = Array.from(new Set(nextKeys));
+          }
+        }
+      } else {
+        resolvedKeys = [...existingKeys];
+      }
 
       const rawModels = (Array.isArray(pData.models) ? pData.models.join(',') : String(pData.models || ''))
         .split(/[\n,，、;；]+/)
         .map((s: string) => s.trim())
         .filter(Boolean);
 
-      const existingIdx = store.systemConfig.providers.findIndex((p) => p.id === pData.id);
       const updatedProvider: ApiProviderConfig = {
         id: pData.id || 'prov-' + Date.now(),
         name,
@@ -345,14 +506,15 @@ export async function POST(request: Request) {
         baseUrl: baseUrl.replace(/\/+$/, ''),
         backupBaseUrl1: String(pData.backupBaseUrl1 || '').trim().replace(/\/+$/, ''),
         backupBaseUrl2: String(pData.backupBaseUrl2 || '').trim().replace(/\/+$/, ''),
-        apiKeys: rawKeys,
+        apiKeys: resolvedKeys,
         models: rawModels.length ? rawModels : ['gpt-4o', 'gemini-2.5-pro'],
         enabled: pData.enabled !== false,
         priority: Number(pData.priority || store.systemConfig.providers.length + 1),
         note: String(pData.note || ''),
-        lastTestStatus: existingIdx >= 0 ? store.systemConfig.providers[existingIdx].lastTestStatus : 'untested',
-        lastLatencyMs: existingIdx >= 0 ? store.systemConfig.providers[existingIdx].lastLatencyMs : undefined,
-        lastTestedAt: existingIdx >= 0 ? store.systemConfig.providers[existingIdx].lastTestedAt : undefined,
+        lastTestStatus: existingProvider ? existingProvider.lastTestStatus : 'untested',
+        lastLatencyMs: existingProvider ? existingProvider.lastLatencyMs : undefined,
+        lastTestedAt: existingProvider ? existingProvider.lastTestedAt : undefined,
+        ...(existingProvider?.lastErrorMsg !== undefined ? { lastErrorMsg: existingProvider.lastErrorMsg } : {}),
       };
 
       if (existingIdx >= 0) {
@@ -410,6 +572,7 @@ export async function POST(request: Request) {
       }
 
       const testModel = body.model || prov.models[0] || 'gemini-2.5-flash';
+      const knownSecrets = collectKnownSecrets(store);
       const t0 = Date.now();
       try {
         const { reply, resolvedModel } = await executeProviderChat({
@@ -437,22 +600,24 @@ export async function POST(request: Request) {
             ok: true,
             latencyMs,
             model: actualModel,
-            reply: String(reply).slice(0, 120),
+            reply: redactErrorSecrets(String(reply), knownSecrets)?.slice(0, 120) || '',
           },
         });
       } catch (err: any) {
         const latencyMs = Date.now() - t0;
+        const safeErrorMsg =
+          redactErrorSecrets(String(err?.message || '连接失败'), knownSecrets)?.slice(0, 160) || '连接失败';
         prov.lastTestStatus = 'error';
         prov.lastLatencyMs = latencyMs;
         prov.lastTestedAt = new Date().toISOString();
-        prov.lastErrorMsg = String(err?.message || '连接失败').slice(0, 160);
+        prov.lastErrorMsg = safeErrorMsg;
         flushPersistentStore();
         return Response.json({
           ...buildAdminSnapshot(adminAcc),
           testResult: {
             ok: false,
             latencyMs,
-            error: prov.lastErrorMsg,
+            error: safeErrorMsg,
           },
         });
       }
@@ -617,13 +782,14 @@ export async function POST(request: Request) {
         userPrompt: samplePrompt,
         account: adminAcc,
       });
+      const knownSecrets = collectKnownSecrets(store);
       return Response.json({
         ...buildAdminSnapshot(adminAcc),
         stationTestResult: {
           station,
           ok: result.ok,
-          reply: result.text,
-          error: result.error,
+          reply: redactErrorSecrets(result.text, knownSecrets),
+          error: redactErrorSecrets(result.error, knownSecrets),
         },
       });
     }
@@ -633,19 +799,36 @@ export async function POST(request: Request) {
       if (body.mode && ['direct_llm', 'custom_backend', 'hybrid'].includes(body.mode)) {
         store.systemConfig.mode = body.mode;
       }
-      if (body.backendUrl !== undefined) {
+      if (body.backendUrl !== undefined && body.backendUrl !== null) {
         store.systemConfig.backendUrl = String(body.backendUrl).trim();
       }
-      if (body.backendToken !== undefined) {
-        store.systemConfig.backendToken = String(body.backendToken).trim();
+      const currentBackendToken = String(store.systemConfig.backendToken || '').trim();
+      if (parseOptionalBoolean(body.clearBackendToken) === true) {
+        store.systemConfig.backendToken = '';
+      } else if (body.newBackendToken !== undefined && body.newBackendToken !== null) {
+        const nextTok = String(body.newBackendToken).trim();
+        if (nextTok && !isMaskedPlaceholder(nextTok, currentBackendToken ? [currentBackendToken] : [], maskBackendToken)) {
+          store.systemConfig.backendToken = nextTok;
+        }
+      } else if (body.backendToken !== undefined && body.backendToken !== null) {
+        const nextTok = String(body.backendToken).trim();
+        if (nextTok === '') {
+          store.systemConfig.backendToken = '';
+        } else if (!isMaskedPlaceholder(nextTok, currentBackendToken ? [currentBackendToken] : [], maskBackendToken)) {
+          store.systemConfig.backendToken = nextTok;
+        }
       }
-      if (body.requireAuthOnFrontend !== undefined) {
+      if (body.requireAuthOnFrontend !== undefined && body.requireAuthOnFrontend !== null) {
         store.systemConfig.requireAuthOnFrontend = Boolean(body.requireAuthOnFrontend);
       }
-      if (body.allowInviteRegistration !== undefined) {
+      if (body.allowInviteRegistration !== undefined && body.allowInviteRegistration !== null) {
         store.systemConfig.allowInviteRegistration = Boolean(body.allowInviteRegistration);
       }
-      if (body.globalBudgetCapUsd !== undefined) {
+      if (
+        body.globalBudgetCapUsd !== undefined &&
+        body.globalBudgetCapUsd !== null &&
+        Number.isFinite(Number(body.globalBudgetCapUsd))
+      ) {
         store.systemConfig.globalBudgetCapUsd = Math.max(0, Number(body.globalBudgetCapUsd));
       }
       flushPersistentStore();
