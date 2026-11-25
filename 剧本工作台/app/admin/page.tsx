@@ -1,6 +1,24 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
+import {
+  Activity,
+  ClipboardCheck,
+  Cpu,
+  CreditCard,
+  ExternalLink,
+  LogOut,
+  Menu,
+  Moon,
+  Puzzle,
+  RefreshCw,
+  Server,
+  ShieldCheck,
+  Sliders,
+  Sun,
+  Users,
+  X,
+} from 'lucide-react';
 import type {
   AccountRole,
   AdminSystemConfig,
@@ -15,14 +33,65 @@ import type {
   StudioAccount,
 } from '../../lib/types';
 
+type AdminTabKey = 'accounts' | 'providers' | 'routes' | 'skills' | 'monitor' | 'tiers' | 'plans' | 'orders';
+
 interface AccountWithStats extends StudioAccount {
   projectCount?: number;
+  passwordHashed?: boolean;
 }
 
+function getProviderKeyCount(p: ApiProviderConfig | any): number {
+  if (typeof p?.apiKeyCount === 'number') return p.apiKeyCount;
+  if (Array.isArray(p?.apiKeysMasked)) return p.apiKeysMasked.length;
+  if (Array.isArray(p?.apiKeys)) return p.apiKeys?.length ?? 0;
+  return 0;
+}
+
+function getProviderMaskedKeys(p: ApiProviderConfig | any): string[] {
+  if (Array.isArray(p?.apiKeysMasked)) return p.apiKeysMasked;
+  if (Array.isArray(p?.apiKeys)) return p.apiKeys;
+  return [];
+}
+
+const ADMIN_MODULE_META: Record<AdminTabKey, { title: string; subtitle: string }> = {
+  accounts: {
+    title: '团队账号与邀请码分发',
+    subtitle: '管理成员权限、额度上限与专属登录 Key / 邀请码，支持密码哈希加密与一键分发',
+  },
+  monitor: {
+    title: '项目监控、安全策略与审计日志',
+    subtitle: '全局运行模式、前台登录强检策略、全站项目一览与 API 调用审计追踪',
+  },
+  providers: {
+    title: 'API 渠道池与多 Key 容灾',
+    subtitle: '配置主备中转地址、多 Key 轮询与模型探测，密钥全程脱敏存储与回显',
+  },
+  routes: {
+    title: '六大 AI 编剧工位模型路由',
+    subtitle: '为总编剧、分析、扒剧视觉、策划、分集撰写与终审精修分配独立主备模型与提示词',
+  },
+  skills: {
+    title: '提示词插件库 (Skills)',
+    subtitle: '按四大创作流程与主/副槽位热插拔管理 .md/.txt 规则插件，支持默认项与内置兜底',
+  },
+  tiers: {
+    title: '创作档位配置',
+    subtitle: '管理标准/高速/深度档位名称、消耗倍率与白名单模型映射',
+  },
+  plans: {
+    title: '套餐与价格额度',
+    subtitle: '配置月度/年度订阅与单次加油包价格、到账额度与上下架状态',
+  },
+  orders: {
+    title: '订单审核与入账',
+    subtitle: '核验待审充值/订阅订单并一键确认入账，自动累加账号可用额度',
+  },
+};
+
 const ROLE_LABELS: Record<AccountRole, { label: string; color: string }> = {
-  admin: { label: '🛡️ 管理员 (Admin)', color: '#ff9f0a' },
-  creator: { label: '✒️ 编剧创作者 (Creator)', color: '#0a84ff' },
-  reviewer: { label: '🔍 审稿验收人 (Reviewer)', color: '#30d158' },
+  admin: { label: '🛡️ 管理员 (Admin)', color: 'var(--status-amber)' },
+  creator: { label: '✒️ 编剧创作者 (Creator)', color: 'var(--accent-cinnabar)' },
+  reviewer: { label: '🔍 审稿验收人 (Reviewer)', color: 'var(--status-green)' },
 };
 
 const STATION_ORDER: StationRoleKey[] = ['director', 'analyst', 'vision', 'planner', 'writer', 'polisher'];
@@ -102,9 +171,39 @@ export default function AdminConsolePage() {
   const [loading, setLoading] = useState(true);
   const [authorized, setAuthorized] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [activeTab, setActiveTab] = useState<
-    'accounts' | 'providers' | 'routes' | 'skills' | 'monitor' | 'tiers' | 'plans' | 'orders'
-  >('accounts');
+  const [activeTab, setActiveTab] = useState<AdminTabKey>('accounts');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [theme, setTheme] = useState<'light' | 'dark'>('light');
+  const [mainSiteUrl, setMainSiteUrl] = useState('https://cryptoayin.cn');
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('studio_theme');
+      const next: 'light' | 'dark' = saved === 'dark' ? 'dark' : 'light';
+      setTheme(next);
+      document.documentElement.setAttribute('data-theme', next);
+      document.documentElement.classList.toggle('dark', next === 'dark');
+    } catch {}
+    try {
+      const host = window.location.host;
+      const hostname = window.location.hostname;
+      if (hostname === 'localhost' || hostname === '127.0.0.1') {
+        setMainSiteUrl('/');
+      } else if (hostname.startsWith('admin.')) {
+        setMainSiteUrl(`${window.location.protocol}//${host.slice(6)}`);
+      }
+    } catch {}
+  }, []);
+
+  function toggleTheme() {
+    const next: 'light' | 'dark' = theme === 'dark' ? 'light' : 'dark';
+    setTheme(next);
+    try {
+      document.documentElement.setAttribute('data-theme', next);
+      document.documentElement.classList.toggle('dark', next === 'dark');
+      localStorage.setItem('studio_theme', next);
+    } catch {}
+  }
   const [plansList, setPlansList] = useState<any[]>([]);
   const [ordersList, setOrdersList] = useState<any[]>([]);
   const [subscriptionsList, setSubscriptionsList] = useState<any[]>([]);
@@ -559,8 +658,14 @@ export default function AdminConsolePage() {
     showToast(`📋 已复制：${label}`);
   }
 
+  function resolveForegroundOrigin() {
+    if (mainSiteUrl.startsWith('http')) return mainSiteUrl;
+    if (typeof window !== 'undefined') return window.location.origin;
+    return 'https://cryptoayin.cn';
+  }
+
   function copyAccountCard(acc: AccountWithStats) {
-    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    const origin = resolveForegroundOrigin();
     const cardText = [
       `【剧本工作台 · 团队成员登录凭证】`,
       `入口网址：${origin}/`,
@@ -574,7 +679,7 @@ export default function AdminConsolePage() {
   }
 
   function copyInviteCard(inv: InviteKeyRecord) {
-    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    const origin = resolveForegroundOrigin();
     const cardText = [
       `【剧本工作台 · 专属邀请码/Key】`,
       `入口网址：${origin}/`,
@@ -662,8 +767,8 @@ export default function AdminConsolePage() {
 
   if (loading) {
     return (
-      <main style={styles.shell}>
-        <div style={{ maxWidth: 520, margin: '120px auto', textAlign: 'center', color: '#939db0' }}>
+      <main className="admin-login-shell">
+        <div style={{ maxWidth: 480, margin: '140px auto', textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
           正在验证管理员权限并加载后台配置…
         </div>
       </main>
@@ -672,37 +777,80 @@ export default function AdminConsolePage() {
 
   if (!authorized) {
     return (
-      <main style={styles.shell}>
-        <div style={{ maxWidth: 480, margin: '70px auto' }}>
-          <section style={styles.card}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-              <div style={styles.badgeIcon}>🛡️</div>
+      <main className="admin-login-shell">
+        <header className="admin-topbar" style={{ padding: '14px 24px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 11 }}>
+            <span className="admin-brand-mark">管</span>
+            <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.25 }}>
+              <strong style={{ fontFamily: 'var(--font-serif)', fontSize: 16 }}>剧本工作台 · 运营管理后台</strong>
+              <small style={{ fontSize: 11, color: 'var(--text-muted)' }}>独立运营控制台 · 暖纸墨韵设计体系</small>
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <button
+              type="button"
+              onClick={toggleTheme}
+              style={styles.secondaryBtn}
+              aria-label={theme === 'dark' ? '切换浅色主题' : '切换暗色主题'}
+            >
+              {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+              <span>{theme === 'dark' ? '暖纸浅色' : '暗色书房'}</span>
+            </button>
+            <a href={mainSiteUrl} target={mainSiteUrl.startsWith('http') ? '_blank' : undefined} rel="noreferrer" style={styles.secondaryBtn}>
+              <span>创作者前台</span>
+              <ExternalLink size={14} />
+            </a>
+          </div>
+        </header>
+
+        <div style={{ flex: 1, display: 'grid', placeItems: 'center', padding: '32px 16px' }}>
+          <section style={{ ...styles.card, width: '100%', maxWidth: 460, boxShadow: 'var(--shadow-md)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18 }}>
+              <div className="admin-brand-mark">
+                <ShieldCheck size={20} />
+              </div>
               <div>
-                <h1 style={{ margin: 0, fontSize: 19 }}>剧本工作台 · 管理后台登录 (/admin)</h1>
-                <small style={{ color: '#939db0', fontSize: 12 }}>
-                  多账号分发 · 多渠道 API 池 · 六大编剧工位路由中心
+                <h1 style={{ margin: 0, fontSize: 19, fontFamily: 'var(--font-serif)' }}>管理员身份验证</h1>
+                <small style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+                  独立后台入口 · 多账号分发 · 渠道池与工位路由中心
                 </small>
               </div>
             </div>
 
-            <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-              <button
-                type="button"
-                onClick={() => setLoginMode('key')}
-                style={loginMode === 'key' ? styles.tabActive : styles.tabBtn}
-              >
-                🔑 管理员专属 Key 登录
-              </button>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, padding: 4, borderRadius: 12, background: 'var(--bg-surface-warm)', border: '1px solid var(--border-warm)', marginBottom: 18 }}>
               <button
                 type="button"
                 onClick={() => setLoginMode('password')}
-                style={loginMode === 'password' ? styles.tabActive : styles.tabBtn}
+                style={{
+                  padding: '8px 12px',
+                  borderRadius: 9,
+                  fontSize: 13,
+                  fontWeight: loginMode === 'password' ? 700 : 500,
+                  background: loginMode === 'password' ? 'var(--bg-surface)' : 'transparent',
+                  color: loginMode === 'password' ? 'var(--accent-cinnabar)' : 'var(--text-secondary)',
+                  boxShadow: loginMode === 'password' ? 'var(--shadow-sm)' : 'none',
+                }}
               >
-                👤 管理员账号密码登录
+                👤 账号密码登录
+              </button>
+              <button
+                type="button"
+                onClick={() => setLoginMode('key')}
+                style={{
+                  padding: '8px 12px',
+                  borderRadius: 9,
+                  fontSize: 13,
+                  fontWeight: loginMode === 'key' ? 700 : 500,
+                  background: loginMode === 'key' ? 'var(--bg-surface)' : 'transparent',
+                  color: loginMode === 'key' ? 'var(--accent-cinnabar)' : 'var(--text-secondary)',
+                  boxShadow: loginMode === 'key' ? 'var(--shadow-sm)' : 'none',
+                }}
+              >
+                🔑 专属 Key 登录
               </button>
             </div>
 
-            {errorMsg && <div style={styles.errorBox}>⚠ {errorMsg}</div>}
+            {errorMsg && <div style={{ ...styles.errorBox, marginBottom: 14 }}>⚠ {errorMsg}</div>}
 
             <form onSubmit={handleAdminLogin} style={{ display: 'grid', gap: 14 }}>
               {loginMode === 'key' ? (
@@ -739,17 +887,15 @@ export default function AdminConsolePage() {
                 </>
               )}
 
-              <div style={{ display: 'flex', gap: 10, marginTop: 6 }}>
-                <button type="submit" disabled={busy} style={styles.primaryBtn}>
-                  {busy ? '正在验证…' : '🛡️ 立即进入管理后台'}
-                </button>
-              </div>
+              <button type="submit" disabled={busy} style={{ ...styles.primaryBtn, width: '100%', padding: '11px 18px', marginTop: 4 }}>
+                {busy ? '正在验证身份…' : '立即进入管理后台'}
+              </button>
             </form>
 
-            <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid rgba(255,255,255,0.08)', display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#939db0' }}>
-              <span>请使用管理员专属 Key 或管理员账号密码登录</span>
-              <a href="/" style={{ color: '#7cc0ff', textDecoration: 'none' }}>
-                返回创作者前台 (/) ↗
+            <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid var(--border-warm)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12, color: 'var(--text-muted)', flexWrap: 'wrap', gap: 8 }}>
+              <span>仅限管理员角色登录访问</span>
+              <a href={mainSiteUrl} target={mainSiteUrl.startsWith('http') ? '_blank' : undefined} rel="noreferrer" style={{ color: 'var(--accent-cinnabar)', fontWeight: 600 }}>
+                前往创作者前台 ↗
               </a>
             </div>
           </section>
@@ -758,34 +904,176 @@ export default function AdminConsolePage() {
     );
   }
 
-  const activeProvidersCount = systemConfig?.providers.filter((p) => p.enabled && p.apiKeys.length > 0).length || 0;
+  const activeProvidersCount = systemConfig?.providers.filter((p) => p.enabled && getProviderKeyCount(p) > 0).length || 0;
   const totalBudgetUsed = accounts.reduce((acc, item) => acc + (item.budgetUsedUsd || 0), 0);
   const allSkillPlugins = systemConfig?.skillPlugins || [];
   const enabledSkillCount = allSkillPlugins.filter((p) => p.enabled).length;
+  const pendingOrdersCount = ordersList.filter((o) => o.status === 'pending').length;
+
+  const navGroups: Array<{
+    group: string;
+    items: Array<{
+      key: AdminTabKey;
+      label: string;
+      badge: string;
+      alert?: boolean;
+      icon: typeof Users;
+    }>;
+  }> = [
+    {
+      group: '团队与运营',
+      items: [
+        { key: 'accounts', label: '团队账号与邀请码', badge: `${accounts.length}`, icon: Users },
+        { key: 'monitor', label: '项目监控与审计日志', badge: `${auditLogs.length}`, icon: Activity },
+      ],
+    },
+    {
+      group: '模型与创作引擎',
+      items: [
+        { key: 'providers', label: 'API 渠道池', badge: `${activeProvidersCount}/${systemConfig?.providers.length || 0}`, icon: Server },
+        { key: 'routes', label: '六大 AI 编剧工位', badge: '6', icon: Cpu },
+        { key: 'skills', label: '提示词插件 (Skills)', badge: `${allSkillPlugins.length}`, icon: Puzzle },
+        { key: 'tiers', label: '创作档位配置', badge: `${systemConfig?.creationTiers?.length || 0}`, icon: Sliders },
+      ],
+    },
+    {
+      group: '商业化管理',
+      items: [
+        { key: 'plans', label: '套餐与价格额度', badge: `${plansList.length}`, icon: CreditCard },
+        { key: 'orders', label: '订单审核入账', badge: pendingOrdersCount > 0 ? `${pendingOrdersCount} 待审` : `${ordersList.length}`, alert: pendingOrdersCount > 0, icon: ClipboardCheck },
+      ],
+    },
+  ];
+
+  const activeMeta = ADMIN_MODULE_META[activeTab];
 
   return (
-    <main style={styles.shell}>
-      <div style={{ maxWidth: 1240, margin: '0 auto', display: 'grid', gap: 20 }}>
-        {/* Top Header */}
-        <header style={styles.topbar}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-            <div style={styles.badgeIcon}>🛡️</div>
-            <div>
-              <h1 style={{ margin: 0, fontSize: 18 }}>
-                剧本工作台 · 多账号与 API 路由管理后台 (/admin)
+    <div className="admin-shell">
+      {/* Mobile drawer backdrop */}
+      <div
+        className={`admin-backdrop${sidebarOpen ? ' admin-backdrop-open' : ''}`}
+        onClick={() => setSidebarOpen(false)}
+        aria-hidden="true"
+      />
+
+      {/* Left Grouped Sidebar Navigation */}
+      <aside className={`admin-sidebar${sidebarOpen ? ' admin-sidebar-open' : ''}`} data-testid="admin-sidebar" aria-label="后台模块导航">
+        <div className="admin-brand">
+          <div className="admin-brand-mark">管</div>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontFamily: 'var(--font-serif)', fontWeight: 700, fontSize: 15, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              剧本工作台 · 后台
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>独立运营控制台</div>
+          </div>
+          <button
+            type="button"
+            className="admin-close-btn"
+            onClick={() => setSidebarOpen(false)}
+            aria-label="关闭侧栏"
+          >
+            <X size={15} />
+          </button>
+        </div>
+
+        <nav className="admin-nav-groups" aria-label="后台一级分组导航">
+          {navGroups.map((g) => (
+            <div key={g.group}>
+              <div className="admin-nav-group-label">{g.group}</div>
+              <div className="admin-nav-list">
+                {g.items.map((item) => {
+                  const Icon = item.icon;
+                  const isActive = activeTab === item.key;
+                  return (
+                    <button
+                      key={item.key}
+                      type="button"
+                      data-admin-module={item.key}
+                      data-testid={`admin-nav-${item.key}`}
+                      className={`admin-nav-btn${isActive ? ' admin-nav-btn-active' : ''}`}
+                      onClick={() => {
+                        setActiveTab(item.key);
+                        setSidebarOpen(false);
+                      }}
+                    >
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                        <Icon size={15} style={{ flexShrink: 0 }} />
+                        <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.label}</span>
+                      </span>
+                      <span className={`admin-nav-badge${item.alert && !isActive ? ' admin-nav-badge-alert' : ''}`}>
+                        {item.badge}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </nav>
+
+        <div className="admin-sidebar-footer">
+          <div style={{ padding: '8px 10px', borderRadius: 10, background: 'var(--bg-surface)', border: '1px solid var(--border-warm)', fontSize: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--status-green)', fontWeight: 600 }}>
+              <span>●</span>
+              <span style={{ color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {adminProfile?.displayName || '管理员'}
+              </span>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>前台已 100% 脱敏隔离</div>
+          </div>
+          <a
+            href={mainSiteUrl}
+            target={mainSiteUrl.startsWith('http') ? '_blank' : undefined}
+            rel="noreferrer"
+            style={{ ...styles.secondaryBtn, width: '100%', justifyContent: 'space-between', textDecoration: 'none' }}
+          >
+            <span>前往创作者前台</span>
+            <ExternalLink size={13} />
+          </a>
+        </div>
+      </aside>
+
+      {/* Main Content Area */}
+      <div className="admin-main-wrap">
+        <header className="admin-topbar">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+            <button
+              type="button"
+              className="admin-menu-btn"
+              onClick={() => setSidebarOpen((v) => !v)}
+              aria-label="打开导航菜单"
+            >
+              <Menu size={18} />
+            </button>
+            <div style={{ minWidth: 0 }}>
+              <h1 style={{ margin: 0, fontSize: 18, fontFamily: 'var(--font-serif)', color: 'var(--text-primary)' }}>
+                {activeMeta.title}
               </h1>
-              <small style={{ color: '#939db0', fontSize: 12 }}>
-                服务端持久化存储 · 支持管理员分发专属邀请码/Key + 账号密码双登录 · 前台 100% 脱敏隔离
-              </small>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                {activeMeta.subtitle}
+              </div>
             </div>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: 12, color: '#30d158', background: 'rgba(48,209,88,0.12)', padding: '6px 12px', borderRadius: 999 }}>
-              ● 当前管理员：{adminProfile?.displayName || '管理员'}
-            </span>
-            <a href="/" style={{ ...styles.secondaryBtn, textDecoration: 'none' }}>
-              前往创作者前台 (/) ↗
-            </a>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              style={styles.secondaryBtn}
+              onClick={() => fetchAdminSnapshot()}
+              disabled={busy}
+            >
+              <RefreshCw size={14} />
+              <span>刷新</span>
+            </button>
+            <button
+              type="button"
+              style={styles.secondaryBtn}
+              onClick={toggleTheme}
+              aria-label={theme === 'dark' ? '切换浅色主题' : '切换暗色主题'}
+            >
+              {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
+              <span>{theme === 'dark' ? '暖纸浅色' : '暗色书房'}</span>
+            </button>
             <button
               type="button"
               style={styles.secondaryBtn}
@@ -798,116 +1086,51 @@ export default function AdminConsolePage() {
                 setAuthorized(false);
               }}
             >
-              退出后台
+              <LogOut size={14} />
+              <span>退出后台</span>
             </button>
           </div>
         </header>
 
-        {/* KPI Row */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 14 }}>
-          <div style={styles.kpiCard}>
-            <span style={{ fontSize: 12, color: '#939db0' }}>团队账号 & 可用邀请码</span>
-            <strong style={{ fontSize: 22, display: 'block', margin: '6px 0 2px' }}>
-              {accounts.filter((a) => a.status === 'active').length} 个账号 /{' '}
-              {invites.filter((i) => i.status === 'active').length} 枚邀请码
-            </strong>
-            <small style={{ color: '#30d158', fontSize: 11 }}>✓ 支持专属 Key + 账号密码双登录</small>
+        <main className="admin-content">
+          {/* KPI Summary Strip */}
+          <div className="admin-kpi-grid">
+            <div style={styles.kpiCard}>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>团队账号与邀请码</span>
+              <strong style={{ fontSize: 21, display: 'block', margin: '6px 0 3px', fontFamily: 'var(--font-serif)' }}>
+                {accounts.filter((a) => a.status === 'active').length} 账号 · {invites.filter((i) => i.status === 'active').length} 邀请码
+              </strong>
+              <small style={{ color: 'var(--status-green)', fontSize: 11.5 }}>✓ 支持专属 Key + scrypt 密码双登录</small>
+            </div>
+            <div style={styles.kpiCard}>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>API 渠道池状态</span>
+              <strong style={{ fontSize: 21, display: 'block', margin: '6px 0 3px', fontFamily: 'var(--font-serif)' }}>
+                {activeProvidersCount} / {systemConfig?.providers.length || 0} 条已配密钥
+              </strong>
+              <small style={{ color: activeProvidersCount > 0 ? 'var(--status-green)' : 'var(--status-amber)', fontSize: 11.5 }}>
+                {activeProvidersCount > 0 ? '✓ 多 Key 轮询与主备自动切换已就绪' : '○ 填入任一渠道 API Key 即可激活'}
+              </small>
+            </div>
+            <div style={styles.kpiCard}>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>全站项目与累计用费</span>
+              <strong style={{ fontSize: 21, display: 'block', margin: '6px 0 3px', fontFamily: 'var(--font-serif)' }}>
+                {projectsSummary.length} 个项目 · ${totalBudgetUsed.toFixed(2)}
+              </strong>
+              <small style={{ color: 'var(--text-secondary)', fontSize: 11.5 }}>✓ 六大工位独立路由 · 前台 0 泄露</small>
+            </div>
+            <div style={styles.kpiCard}>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>插件与待审订单</span>
+              <strong style={{ fontSize: 21, display: 'block', margin: '6px 0 3px', fontFamily: 'var(--font-serif)' }}>
+                {enabledSkillCount} 插件 · {pendingOrdersCount} 待审
+              </strong>
+              <small style={{ color: pendingOrdersCount > 0 ? 'var(--status-red)' : 'var(--accent-cinnabar)', fontSize: 11.5 }}>
+                {pendingOrdersCount > 0 ? '● 有待审核入账订单，请及时处理' : '✓ 订单与提示词槽位运行正常'}
+              </small>
+            </div>
           </div>
-          <div style={styles.kpiCard}>
-            <span style={{ fontSize: 12, color: '#939db0' }}>API 渠道池状态</span>
-            <strong style={{ fontSize: 22, display: 'block', margin: '6px 0 2px' }}>
-              {activeProvidersCount} / {systemConfig?.providers.length || 0} 条已配密钥
-            </strong>
-            <small style={{ color: activeProvidersCount > 0 ? '#30d158' : '#ff9f0a', fontSize: 11 }}>
-              {activeProvidersCount > 0 ? '✓ 支持多 Key 轮询与主备自动切换' : '○ 填入任一渠道 API Key 即可激活动态生成'}
-            </small>
-          </div>
-          <div style={styles.kpiCard}>
-            <span style={{ fontSize: 12, color: '#939db0' }}>六大 AI 编剧工位路由</span>
-            <strong style={{ fontSize: 22, display: 'block', margin: '6px 0 2px' }}>
-              6 / 6 工位已绑定
-            </strong>
-            <small style={{ color: '#7cc0ff', fontSize: 11 }}>✓ 总编剧/分析/扒剧/策划/分集/精修独立配置</small>
-          </div>
-          <div style={styles.kpiCard}>
-            <span style={{ fontSize: 12, color: '#939db0' }}>全站项目 & 累计用费账本</span>
-            <strong style={{ fontSize: 22, display: 'block', margin: '6px 0 2px' }}>
-              {projectsSummary.length} 个项目 · ${totalBudgetUsed.toFixed(2)}
-            </strong>
-            <small style={{ color: '#30d158', fontSize: 11 }}>✓ 前台严格隐藏模型名/Token/Prompt</small>
-          </div>
-          <div style={styles.kpiCard}>
-            <span style={{ fontSize: 12, color: '#939db0' }}>提示词插件库 (Skills)</span>
-            <strong style={{ fontSize: 22, display: 'block', margin: '6px 0 2px' }}>
-              {enabledSkillCount} / {allSkillPlugins.length} 份已启用
-            </strong>
-            <small style={{ color: '#7cc0ff', fontSize: 11 }}>
-              ✓ 4 流程槽位管理 · 停用/未选自动回退内置规则
-            </small>
-          </div>
-        </div>
 
-        {/* Navigation Tabs */}
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
-          <button
-            type="button"
-            onClick={() => setActiveTab('accounts')}
-            style={activeTab === 'accounts' ? styles.tabActive : styles.tabBtn}
-          >
-            👥 1. 团队多账号 & 专属邀请码/Key 分发 ({accounts.length})
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('providers')}
-            style={activeTab === 'providers' ? styles.tabActive : styles.tabBtn}
-          >
-            🔌 2. API 渠道池 & 多 Key 轮询配置 ({systemConfig?.providers.length || 0})
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('routes')}
-            style={activeTab === 'routes' ? styles.tabActive : styles.tabBtn}
-          >
-            🎭 3. 六大 AI 编剧工位模型路由与 Prompt (6)
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('monitor')}
-            style={activeTab === 'monitor' ? styles.tabActive : styles.tabBtn}
-          >
-            📊 4. 全站项目监控、安全策略 & API 审计日志 ({auditLogs.length})
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('skills')}
-            style={activeTab === 'skills' ? styles.tabActive : styles.tabBtn}
-          >
-            🧩 5. 提示词插件 (Skills) ({allSkillPlugins.length})
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('tiers')}
-            style={activeTab === 'tiers' ? styles.tabActive : styles.tabBtn}
-          >
-            🎛️ 6. 创作档位配置 ({systemConfig?.creationTiers?.length || 0})
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('plans')}
-            style={activeTab === 'plans' ? styles.tabActive : styles.tabBtn}
-          >
-            💎 7. 套餐与价格额度 ({plansList.length})
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('orders')}
-            style={activeTab === 'orders' ? styles.tabActive : styles.tabBtn}
-          >
-            🧾 8. 订单审核入账 ({ordersList.filter((o) => o.status === 'pending').length} 待审 / {ordersList.length})
-          </button>
-        </div>
-        {toast && <div style={styles.toastBox}>{toast}</div>}
-        {errorMsg && <div style={styles.errorBox}>⚠ {errorMsg}</div>}
+          {toast && <div style={styles.toastBox}>{toast}</div>}
+          {errorMsg && <div style={styles.errorBox}>⚠ {errorMsg}</div>}
 
         {/* TAB 1: Multi-Account & Exclusive Invite Keys */}
         {activeTab === 'accounts' && (
@@ -919,7 +1142,7 @@ export default function AdminConsolePage() {
                   <h2 style={{ margin: '0 0 4px', fontSize: 17 }}>
                     🔑 方式 A：生成专属邀请码 / Key 分发给团队成员
                   </h2>
-                  <p style={{ margin: 0, color: '#939db0', fontSize: 13 }}>
+                  <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: 13 }}>
                     管理员在此一键生成专属邀请码/Key。成员拿到后，既可以在前台直接输入该 Key 一键登录，也可以用该邀请码注册并绑定自己的账号密码。
                   </p>
                 </div>
@@ -929,9 +1152,9 @@ export default function AdminConsolePage() {
                 onSubmit={handleGenerateInvites}
                 style={{
                   display: 'grid',
-                  gridTemplateColumns: 'repeat(6, minmax(0, 1fr))',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))',
                   gap: 12,
-                  background: '#1b202c',
+                  background: 'var(--bg-surface-warm)',
                   padding: 16,
                   borderRadius: 14,
                   marginBottom: 16,
@@ -1030,13 +1253,13 @@ export default function AdminConsolePage() {
                           <span style={{ color: ROLE_LABELS[inv.role]?.color || '#fff', fontWeight: 600 }}>
                             {ROLE_LABELS[inv.role]?.label || inv.role}
                           </span>
-                          <div style={{ fontSize: 11, color: '#939db0' }}>额度：${inv.budgetCapUsd.toFixed(2)}</div>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>额度：${inv.budgetCapUsd.toFixed(2)}</div>
                         </td>
                         <td style={styles.td}>
                           {inv.usedCount} / {inv.maxUses} 人
                         </td>
                         <td style={styles.td}>
-                          {inv.boundUsernames?.length ? inv.boundUsernames.join(', ') : <span style={{ color: '#6e7687' }}>待成员使用</span>}
+                          {inv.boundUsernames?.length ? inv.boundUsernames.join(', ') : <span style={{ color: 'var(--text-muted)' }}>待成员使用</span>}
                         </td>
                         <td style={styles.td}>{inv.note || '-'}</td>
                         <td style={styles.td}>
@@ -1047,16 +1270,16 @@ export default function AdminConsolePage() {
                               fontSize: 11,
                               background:
                                 inv.status === 'active'
-                                  ? 'rgba(48,209,88,0.15)'
+                                  ? 'var(--status-green-bg)'
                                   : inv.status === 'exhausted'
-                                  ? 'rgba(255,159,10,0.15)'
-                                  : 'rgba(255,69,58,0.15)',
+                                  ? 'var(--status-amber-bg)'
+                                  : 'var(--status-red-bg)',
                               color:
                                 inv.status === 'active'
-                                  ? '#30d158'
+                                  ? 'var(--status-green)'
                                   : inv.status === 'exhausted'
-                                  ? '#ff9f0a'
-                                  : '#ff453a',
+                                  ? 'var(--status-amber)'
+                                  : 'var(--status-red)',
                             }}
                           >
                             {inv.status === 'active' ? '● 可用' : inv.status === 'exhausted' ? '已领完' : '已吊销'}
@@ -1107,7 +1330,7 @@ export default function AdminConsolePage() {
                 <h2 style={{ margin: '0 0 4px', fontSize: 17 }}>
                   👥 方式 B：直接管理团队账号（账号密码 + 专属 Key 双凭证）
                 </h2>
-                <p style={{ margin: 0, color: '#939db0', fontSize: 13 }}>
+                <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: 13 }}>
                   每个账号同时拥有「账号+密码」和「专属 Key」，成员用任意一种方式均可登录，项目与台账按账号自动隔离。
                 </p>
               </div>
@@ -1116,9 +1339,9 @@ export default function AdminConsolePage() {
                 onSubmit={handleCreateAccount}
                 style={{
                   display: 'grid',
-                  gridTemplateColumns: 'repeat(6, minmax(0, 1fr))',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))',
                   gap: 12,
-                  background: '#1b202c',
+                  background: 'var(--bg-surface-warm)',
                   padding: 16,
                   borderRadius: 14,
                   marginBottom: 16,
@@ -1209,8 +1432,8 @@ export default function AdminConsolePage() {
                       <tr key={acc.id}>
                         <td style={styles.td}>
                           <strong>{acc.displayName}</strong>
-                          <div style={{ fontSize: 12, color: '#7cc0ff' }}>@{acc.username}</div>
-                          {acc.note && <div style={{ fontSize: 11, color: '#939db0' }}>{acc.note}</div>}
+                          <div style={{ fontSize: 12, color: 'var(--accent-cinnabar)' }}>@{acc.username}</div>
+                          {acc.note && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{acc.note}</div>}
                         </td>
                         <td style={styles.td}>
                           <select
@@ -1263,8 +1486,8 @@ export default function AdminConsolePage() {
                                   fontSize: 11,
                                   padding: '2px 8px',
                                   borderRadius: 999,
-                                  background: (acc as any).passwordHashed ? 'rgba(48,209,88,0.14)' : 'rgba(255,159,10,0.14)',
-                                  color: (acc as any).passwordHashed ? '#30d158' : '#ff9f0a',
+                                  background: (acc as any).passwordHashed ? 'var(--status-green-bg)' : 'var(--status-amber-bg)',
+                                  color: (acc as any).passwordHashed ? 'var(--status-green)' : 'var(--status-amber)',
                                   whiteSpace: 'nowrap',
                                 }}
                               >
@@ -1302,7 +1525,7 @@ export default function AdminConsolePage() {
                           <div style={{ fontSize: 12 }}>
                             <strong>${acc.budgetUsedUsd.toFixed(2)}</strong> / ${acc.budgetCapUsd.toFixed(2)}
                           </div>
-                          <div style={{ fontSize: 11, color: '#939db0' }}>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                             {(acc.tokensUsed || 0).toLocaleString()} tokens
                           </div>
                           <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
@@ -1345,8 +1568,8 @@ export default function AdminConsolePage() {
                               padding: '3px 8px',
                               borderRadius: 999,
                               fontSize: 11,
-                              background: acc.status === 'active' ? 'rgba(48,209,88,0.15)' : 'rgba(255,69,58,0.15)',
-                              color: acc.status === 'active' ? '#30d158' : '#ff453a',
+                              background: acc.status === 'active' ? 'var(--status-green-bg)' : 'var(--status-red-bg)',
+                              color: acc.status === 'active' ? 'var(--status-green)' : 'var(--status-red)',
                             }}
                           >
                             {acc.status === 'active' ? '● 正常' : '已停用'}
@@ -1407,7 +1630,7 @@ export default function AdminConsolePage() {
                   <h2 style={{ margin: '0 0 4px', fontSize: 17 }}>
                     🔌 API 中转接口池配置（1 个主接口 + 2 个备用接口 · 全工位使用 GPT / Gemini）
                   </h2>
-                  <p style={{ margin: 0, color: '#939db0', fontSize: 13 }}>
+                  <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: 13 }}>
                     全部采用 API 中转接口（已全面弃用 Claude，由 Gemini 与 GPT 承担全流程工位）。支持配置 **1 个主中转接口地址 + 2 个备用中转接口地址**，主接口异常时自动切入备用接口 1 → 备用接口 2。
                   </p>
                 </div>
@@ -1429,8 +1652,8 @@ export default function AdminConsolePage() {
                   <div
                     key={prov.id}
                     style={{
-                      background: '#1b202c',
-                      border: '1px solid rgba(255,255,255,0.09)',
+                      background: 'var(--bg-surface-warm)',
+                      border: '1px solid var(--border-warm)',
                       borderRadius: 16,
                       padding: 18,
                     }}
@@ -1452,16 +1675,16 @@ export default function AdminConsolePage() {
                             borderRadius: 999,
                             background:
                               prov.lastTestStatus === 'ok'
-                                ? 'rgba(48,209,88,0.16)'
+                                ? 'var(--status-green-bg)'
                                 : prov.lastTestStatus === 'error'
-                                ? 'rgba(255,69,58,0.16)'
-                                : 'rgba(255,255,255,0.07)',
+                                ? 'var(--status-red-bg)'
+                                : 'var(--border-warm)',
                             color:
                               prov.lastTestStatus === 'ok'
-                                ? '#30d158'
+                                ? 'var(--status-green)'
                                 : prov.lastTestStatus === 'error'
-                                ? '#ff453a'
-                                : '#939db0',
+                                ? 'var(--status-red)'
+                                : 'var(--text-muted)',
                           }}
                         >
                           {prov.lastTestStatus === 'ok'
@@ -1564,7 +1787,7 @@ export default function AdminConsolePage() {
                       </div>
                     </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12 }}>
                       <label style={styles.label}>
                         中转渠道名称
                         <input
@@ -1583,7 +1806,7 @@ export default function AdminConsolePage() {
                       </label>
                     </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12, marginTop: 12 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginTop: 12 }}>
                       <label style={styles.label}>
                         1. 主中转接口地址 (Primary Base URL · 必填)
                         <input
@@ -1613,18 +1836,16 @@ export default function AdminConsolePage() {
                       </label>
                     </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12, marginTop: 12 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12, marginTop: 12 }}>
                       <label style={styles.label}>
-                        中转 API Key 列表（支持填入多个 Key，每行一个，服务端自动轮询容灾）
+                        中转 API Key 列表（已脱敏展示；每行一个，留空不变或输入新 Key 替换/追加，服务端自动轮询容灾）
                         <textarea
                           rows={3}
                           style={{ ...styles.input, fontFamily: 'monospace' }}
                           value={
                             keyDrafts[prov.id] !== undefined
                               ? keyDrafts[prov.id]
-                              : Array.isArray(prov.apiKeys)
-                              ? prov.apiKeys.join('\n')
-                              : ''
+                              : getProviderMaskedKeys(prov).join('\n')
                           }
                           onChange={(e) => {
                             const raw = e.target.value;
@@ -1636,7 +1857,7 @@ export default function AdminConsolePage() {
                                 .filter(Boolean),
                             });
                           }}
-                          placeholder="sk-xxxxxxxxxxxx&#10;sk-yyyyyyyyyyyy (可选多个中转Key自动轮询)"
+                          placeholder="每行填入一个中转站密钥（支持多个 Key 自动轮询容灾）"
                         />
                       </label>
                       <label style={styles.label}>
@@ -1672,16 +1893,16 @@ export default function AdminConsolePage() {
                         marginTop: 14,
                         padding: 14,
                         borderRadius: 12,
-                        background: 'rgba(10, 132, 255, 0.07)',
-                        border: '1px solid rgba(10, 132, 255, 0.25)',
+                        background: 'var(--bg-surface-warm)',
+                        border: '1px solid var(--border-accent-soft)',
                       }}
                     >
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
-                          <strong style={{ fontSize: 13, color: '#7cc0ff' }}>
+                          <strong style={{ fontSize: 13, color: 'var(--accent-cinnabar)' }}>
                             步骤 1 · 先勾选你要从中转站拉取的大模型系列：
                           </strong>
-                          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#f3f5f8', cursor: 'pointer' }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--text-primary)', cursor: 'pointer' }}>
                             <input
                               type="checkbox"
                               checked={selectedFamilies[prov.id]?.gemini ?? true}
@@ -1697,7 +1918,7 @@ export default function AdminConsolePage() {
                             />
                             ✨ Gemini 大模型系列
                           </label>
-                          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#f3f5f8', cursor: 'pointer' }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--text-primary)', cursor: 'pointer' }}>
                             <input
                               type="checkbox"
                               checked={selectedFamilies[prov.id]?.gpt ?? true}
@@ -1790,12 +2011,12 @@ export default function AdminConsolePage() {
 
                         return (
                           <div style={{ marginTop: 12, display: 'grid', gap: 10 }}>
-                            <div style={{ fontSize: 12, color: '#939db0' }}>
+                            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                               步骤 2 · 点击下方模型胶囊即可<strong>勾选启用 / 取消</strong>（蓝色高亮代表已加入你的可用模型池）：
                             </div>
                             {geminiList.length > 0 && (
                               <div>
-                                <div style={{ fontSize: 12, fontWeight: 600, color: '#30d158', marginBottom: 6 }}>
+                                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--status-green)', marginBottom: 6 }}>
                                   ✨ Gemini 系列模型（共 {geminiList.length} 个）：
                                 </div>
                                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
@@ -1813,12 +2034,12 @@ export default function AdminConsolePage() {
                                           fontFamily: 'monospace',
                                           cursor: 'pointer',
                                           border: active
-                                            ? '1px solid #30d158'
-                                            : '1px solid rgba(255,255,255,0.12)',
+                                            ? '1px solid var(--status-green)'
+                                            : '1px solid var(--border-warm)',
                                           background: active
                                             ? 'rgba(48, 209, 88, 0.2)'
-                                            : 'rgba(255,255,255,0.04)',
-                                          color: active ? '#30d158' : '#939db0',
+                                            : 'var(--border-warm)',
+                                          color: active ? 'var(--status-green)' : 'var(--text-muted)',
                                         }}
                                       >
                                         {active ? '✓ ' : '＋ '}
@@ -1832,7 +2053,7 @@ export default function AdminConsolePage() {
 
                             {gptList.length > 0 && (
                               <div>
-                                <div style={{ fontSize: 12, fontWeight: 600, color: '#7cc0ff', marginBottom: 6 }}>
+                                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--accent-cinnabar)', marginBottom: 6 }}>
                                   🤖 GPT 系列模型（共 {gptList.length} 个）：
                                 </div>
                                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
@@ -1850,12 +2071,12 @@ export default function AdminConsolePage() {
                                           fontFamily: 'monospace',
                                           cursor: 'pointer',
                                           border: active
-                                            ? '1px solid #0a84ff'
-                                            : '1px solid rgba(255,255,255,0.12)',
+                                            ? '1px solid var(--accent-cinnabar)'
+                                            : '1px solid var(--border-warm)',
                                           background: active
-                                            ? 'rgba(10, 132, 255, 0.22)'
-                                            : 'rgba(255,255,255,0.04)',
-                                          color: active ? '#7cc0ff' : '#939db0',
+                                            ? 'var(--border-accent-soft)'
+                                            : 'var(--border-warm)',
+                                          color: active ? 'var(--accent-cinnabar)' : 'var(--text-muted)',
                                         }}
                                       >
                                         {active ? '✓ ' : '＋ '}
@@ -1878,8 +2099,8 @@ export default function AdminConsolePage() {
                           padding: '8px 12px',
                           borderRadius: 8,
                           fontSize: 12,
-                          background: 'rgba(255,255,255,0.05)',
-                          color: providerTestMsg[prov.id]?.startsWith('✓') ? '#30d158' : '#ff9f0a',
+                          background: 'var(--border-warm)',
+                          color: providerTestMsg[prov.id]?.startsWith('✓') ? 'var(--status-green)' : 'var(--status-amber)',
                         }}
                       >
                         {providerTestMsg[prov.id] || `最近错误：${prov.lastErrorMsg}`}
@@ -1897,7 +2118,7 @@ export default function AdminConsolePage() {
                   <h2 style={{ margin: '0 0 4px', fontSize: 17 }}>
                     🎭 步骤 3 · 规定六大 AI 编剧工位分别使用哪个模型（从上方已拉取的 Gemini / GPT 模型中直接下拉选择）
                   </h2>
-                  <p style={{ margin: 0, color: '#939db0', fontSize: 13 }}>
+                  <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: 13 }}>
                     直接在此为 6 个编剧角色指定主用模型与备用模型（下拉框已自动归类为「✨ Gemini 系列」与「🤖 GPT 系列」）。
                   </p>
                 </div>
@@ -1943,9 +2164,9 @@ export default function AdminConsolePage() {
                           return (
                             <tr key={roleKey}>
                               <td style={styles.td}>
-                                <strong>{route.title}</strong>
-                                <div style={{ fontSize: 11, color: '#939db0', marginTop: 2 }}>
-                                  {route.description.slice(0, 42)}…
+                                <strong>{route.title || roleKey}</strong>
+                                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                                  {String(route.description || '').slice(0, 42)}…
                                 </div>
                               </td>
                               <td style={styles.td}>
@@ -1965,7 +2186,7 @@ export default function AdminConsolePage() {
                               </td>
                               <td style={styles.td}>
                                 <select
-                                  style={{ ...styles.input, fontFamily: 'monospace', color: '#7cc0ff', fontWeight: 600 }}
+                                  style={{ ...styles.input, fontFamily: 'monospace', color: 'var(--accent-cinnabar)', fontWeight: 600 }}
                                   value={route.primaryModel}
                                   onChange={(e) =>
                                     updateLocalRoute(roleKey, { primaryModel: e.target.value })
@@ -2052,7 +2273,7 @@ export default function AdminConsolePage() {
                                     style={{
                                       fontSize: 11,
                                       marginTop: 4,
-                                      color: stationTestMsg[roleKey].startsWith('✓') ? '#30d158' : '#ff9f0a',
+                                      color: stationTestMsg[roleKey].startsWith('✓') ? 'var(--status-green)' : 'var(--status-amber)',
                                     }}
                                   >
                                     {stationTestMsg[roleKey]}
@@ -2080,7 +2301,7 @@ export default function AdminConsolePage() {
                   <h2 style={{ margin: '0 0 4px', fontSize: 17 }}>
                     🎭 六大 AI 编剧工位模型路由与 System Prompt 配置中心
                   </h2>
-                  <p style={{ margin: 0, color: '#939db0', fontSize: 13 }}>
+                  <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: 13 }}>
                     API 渠道配置完成后，在此直接通过下拉框为每个编剧工位选择「主用模型」、「备用模型 1」、「备用模型 2」（已按 ✨ Gemini 系列 与 🤖 GPT 系列分组）。
                   </p>
                 </div>
@@ -2177,8 +2398,8 @@ export default function AdminConsolePage() {
                     <div
                       key={roleKey}
                       style={{
-                        background: '#1b202c',
-                        border: '1px solid rgba(255,255,255,0.09)',
+                        background: 'var(--bg-surface-warm)',
+                        border: '1px solid var(--border-warm)',
                         borderRadius: 16,
                         padding: 18,
                       }}
@@ -2186,7 +2407,7 @@ export default function AdminConsolePage() {
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                           <strong style={{ fontSize: 16 }}>{route.title}</strong>
-                          <span style={{ fontSize: 11, padding: '3px 9px', borderRadius: 999, background: 'rgba(10,132,255,0.18)', color: '#7cc0ff' }}>
+                          <span style={{ fontSize: 11, padding: '3px 9px', borderRadius: 999, background: 'var(--bg-nav-active)', color: 'var(--accent-cinnabar)' }}>
                             {route.badge}
                           </span>
                         </div>
@@ -2229,9 +2450,9 @@ export default function AdminConsolePage() {
                         </div>
                       </div>
 
-                      <p style={{ margin: '0 0 12px', fontSize: 12.5, color: '#939db0' }}>{route.description}</p>
+                      <p style={{ margin: '0 0 12px', fontSize: 12.5, color: 'var(--text-muted)' }}>{route.description}</p>
 
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12 }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
                         <label style={styles.label}>
                           1. 主用 API 中转接口 (Primary Relay)
                           <select
@@ -2247,7 +2468,7 @@ export default function AdminConsolePage() {
                           >
                             {systemConfig.providers.map((p) => (
                               <option key={p.id} value={p.id}>
-                                {p.name} ({p.apiKeys.length} Keys)
+                                {p.name} ({getProviderKeyCount(p)} Keys)
                               </option>
                             ))}
                           </select>
@@ -2256,7 +2477,7 @@ export default function AdminConsolePage() {
                         <label style={styles.label}>
                           2. 主用模型选择 (直接下拉选择 Gemini / GPT)
                           <select
-                            style={{ ...styles.input, fontFamily: 'monospace', color: '#7cc0ff', fontWeight: 600 }}
+                            style={{ ...styles.input, fontFamily: 'monospace', color: 'var(--accent-cinnabar)', fontWeight: 600 }}
                             value={route.primaryModel}
                             onChange={(e) => updateLocalRoute(roleKey, { primaryModel: e.target.value })}
                           >
@@ -2376,8 +2597,8 @@ export default function AdminConsolePage() {
                             padding: '8px 12px',
                             borderRadius: 8,
                             fontSize: 12,
-                            background: 'rgba(255,255,255,0.05)',
-                            color: stationTestMsg[roleKey].startsWith('✓') ? '#30d158' : '#ff9f0a',
+                            background: 'var(--border-warm)',
+                            color: stationTestMsg[roleKey].startsWith('✓') ? 'var(--status-green)' : 'var(--status-amber)',
                           }}
                         >
                           {stationTestMsg[roleKey]}
@@ -2397,7 +2618,7 @@ export default function AdminConsolePage() {
             {/* Global System & Security Config */}
             <section style={styles.card}>
               <h2 style={{ margin: '0 0 12px', fontSize: 17 }}>⚙️ 全局登录安全策略与独立生产后端对接</h2>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 14 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
                 <label style={styles.label}>
                   运行模式
                   <select
@@ -2428,15 +2649,19 @@ export default function AdminConsolePage() {
                   <input
                     type="password"
                     style={styles.input}
-                    value={systemConfig.backendToken}
+                    value={systemConfig.backendToken || ''}
                     onChange={(e) => setSystemConfig({ ...systemConfig, backendToken: e.target.value })}
-                    placeholder="Bearer Token..."
+                    placeholder={
+                      (systemConfig as any).hasBackendToken
+                        ? `已配置 (${(systemConfig as any).backendTokenMasked || '****'})，留空保持不变`
+                        : 'Bearer Token...'
+                    }
                   />
                 </label>
               </div>
 
               <div style={{ display: 'flex', gap: 24, marginTop: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#f3f5f8', cursor: 'pointer' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text-primary)', cursor: 'pointer' }}>
                   <input
                     type="checkbox"
                     checked={systemConfig.requireAuthOnFrontend}
@@ -2447,7 +2672,7 @@ export default function AdminConsolePage() {
                   强制创作者前台 (/) 必须凭「专属 Key 或 账号密码」登录后才能使用
                 </label>
 
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#f3f5f8', cursor: 'pointer' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text-primary)', cursor: 'pointer' }}>
                   <input
                     type="checkbox"
                     checked={systemConfig.allowInviteRegistration}
@@ -2492,7 +2717,7 @@ export default function AdminConsolePage() {
                   <tbody>
                     {projectsSummary.length === 0 ? (
                       <tr>
-                        <td colSpan={7} style={{ ...styles.td, textAlign: 'center', color: '#939db0' }}>
+                        <td colSpan={7} style={{ ...styles.td, textAlign: 'center', color: 'var(--text-muted)' }}>
                           暂无已创建的短剧项目
                         </td>
                       </tr>
@@ -2501,7 +2726,7 @@ export default function AdminConsolePage() {
                         <tr key={p.id}>
                           <td style={styles.td}>
                             <strong>{p.title}</strong>
-                            {p.archived && <span style={{ marginLeft: 6, fontSize: 11, color: '#ff9f0a' }}>[回收站]</span>}
+                            {p.archived && <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--status-amber)' }}>[回收站]</span>}
                           </td>
                           <td style={styles.td}>
                             <code style={styles.codeBadge}>@{p.owner}</code>
@@ -2556,7 +2781,7 @@ export default function AdminConsolePage() {
                   <tbody>
                     {auditLogs.length === 0 ? (
                       <tr>
-                        <td colSpan={7} style={{ ...styles.td, textAlign: 'center', color: '#939db0' }}>
+                        <td colSpan={7} style={{ ...styles.td, textAlign: 'center', color: 'var(--text-muted)' }}>
                           暂无 API 调用记录（可在「渠道池」或「六大工位」点击测速/试跑生成记录）
                         </td>
                       </tr>
@@ -2578,10 +2803,10 @@ export default function AdminConsolePage() {
                               style={{
                                 color:
                                   log.status === 'success'
-                                    ? '#30d158'
+                                    ? 'var(--status-green)'
                                     : log.status === 'fallback'
-                                    ? '#ff9f0a'
-                                    : '#ff453a',
+                                    ? 'var(--status-amber)'
+                                    : 'var(--status-red)',
                               }}
                             >
                               {log.status === 'success'
@@ -2609,7 +2834,7 @@ export default function AdminConsolePage() {
               <h2 style={{ margin: '0 0 6px', fontSize: 17 }}>
                 🧩 上传 / 新增提示词插件 (.md / .txt)
               </h2>
-              <p style={{ margin: '0 0 14px', color: '#939db0', fontSize: 13 }}>
+              <p style={{ margin: '0 0 14px', color: 'var(--text-muted)', fontSize: 13 }}>
                 按创作流程与主/副槽位上传 Markdown (.md) 或文本 (.txt) 提示词插件。同一槽位支持保存多份供创作者切换；未配置或停用时自动回退系统内置规则。创作者端仅可见「名称」与「简短说明」，正文仅服务端注入模型调用链路。
               </p>
 
@@ -2618,7 +2843,7 @@ export default function AdminConsolePage() {
                 style={{
                   display: 'grid',
                   gap: 12,
-                  background: '#1b202c',
+                  background: 'var(--bg-surface-warm)',
                   padding: 16,
                   borderRadius: 14,
                 }}
@@ -2716,7 +2941,7 @@ export default function AdminConsolePage() {
                 </label>
 
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
-                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#d0d7e2', cursor: 'pointer' }}>
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text-secondary)', cursor: 'pointer' }}>
                     <input
                       type="checkbox"
                       checked={skillIsDefault}
@@ -2738,7 +2963,7 @@ export default function AdminConsolePage() {
                   <h2 style={{ margin: '0 0 4px', fontSize: 17 }}>
                     🗂️ 四流程槽位与插件库管理 · 自动回退状态一览
                   </h2>
-                  <p style={{ margin: 0, color: '#939db0', fontSize: 12.5 }}>
+                  <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: 12.5 }}>
                     扒剧固定 1 个槽位；国内迭代国外、国外迭代国外与原创各支持主 / 副 2 个槽位。停用或取消默认后自动回退内置规则。
                   </p>
                 </div>
@@ -2769,8 +2994,8 @@ export default function AdminConsolePage() {
                   <div
                     key={wf.kind}
                     style={{
-                      background: '#1b202c',
-                      border: '1px solid rgba(255,255,255,0.08)',
+                      background: 'var(--bg-surface-warm)',
+                      border: '1px solid var(--border-warm)',
                       borderRadius: 16,
                       padding: 16,
                       display: 'grid',
@@ -2792,8 +3017,8 @@ export default function AdminConsolePage() {
                           <div
                             key={slotCfg.slot}
                             style={{
-                              background: '#11151e',
-                              border: '1px solid rgba(255,255,255,0.07)',
+                              background: 'var(--bg-surface-warm)',
+                              border: '1px solid var(--border-warm)',
                               borderRadius: 12,
                               padding: 14,
                               display: 'grid',
@@ -2803,9 +3028,9 @@ export default function AdminConsolePage() {
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 8 }}>
                               <div>
                                 <div style={{ fontWeight: 700, fontSize: 13.5 }}>{slotCfg.label}</div>
-                                <small style={{ color: '#939db0', fontSize: 11.5 }}>{slotCfg.hint}</small>
+                                <small style={{ color: 'var(--text-muted)', fontSize: 11.5 }}>{slotCfg.hint}</small>
                               </div>
-                              <span style={{ fontSize: 12, color: '#939db0' }}>
+                              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                                 共 {slotPlugins.length} 份插件
                               </span>
                             </div>
@@ -2818,7 +3043,7 @@ export default function AdminConsolePage() {
                                   borderRadius: 9,
                                   background: 'rgba(48, 209, 88, 0.1)',
                                   border: '1px solid rgba(48, 209, 88, 0.3)',
-                                  color: '#30d158',
+                                  color: 'var(--status-green)',
                                   fontSize: 12,
                                 }}
                               >
@@ -2830,8 +3055,8 @@ export default function AdminConsolePage() {
                                   padding: '8px 12px',
                                   borderRadius: 9,
                                   background: 'rgba(255, 159, 10, 0.1)',
-                                  border: '1px solid rgba(255, 159, 10, 0.28)',
-                                  color: '#ff9f0a',
+                                  border: '1px solid var(--status-amber-bg)',
+                                  color: 'var(--status-amber)',
                                   fontSize: 12,
                                 }}
                               >
@@ -2840,7 +3065,7 @@ export default function AdminConsolePage() {
                             )}
 
                             {slotPlugins.length === 0 ? (
-                              <div style={{ fontSize: 12.5, color: '#939db0', padding: '6px 2px' }}>
+                              <div style={{ fontSize: 12.5, color: 'var(--text-muted)', padding: '6px 2px' }}>
                                 该槽位尚未上传插件（当前 100% 使用系统内置规则）
                               </div>
                             ) : (
@@ -2849,10 +3074,10 @@ export default function AdminConsolePage() {
                                   <div
                                     key={plugin.id}
                                     style={{
-                                      background: '#171c27',
+                                      background: 'var(--bg-surface-warm)',
                                       border: plugin.isDefault && plugin.enabled
-                                        ? '1px solid rgba(10, 132, 255, 0.45)'
-                                        : '1px solid rgba(255,255,255,0.08)',
+                                        ? '1px solid var(--border-accent-soft)'
+                                        : '1px solid var(--border-warm)',
                                       borderRadius: 11,
                                       padding: 12,
                                       display: 'grid',
@@ -2864,14 +3089,14 @@ export default function AdminConsolePage() {
                                         <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
                                           <strong style={{ fontSize: 13.5 }}>{plugin.name}</strong>
                                           <span style={styles.codeBadge}>.{plugin.fileExt.toUpperCase()}</span>
-                                          <span style={{ fontSize: 11.5, color: '#939db0' }}>{plugin.fileName}</span>
+                                          <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{plugin.fileName}</span>
                                           <span
                                             style={{
                                               fontSize: 11,
                                               padding: '2px 8px',
                                               borderRadius: 999,
-                                              background: plugin.enabled ? 'rgba(48,209,88,0.14)' : 'rgba(147,157,176,0.16)',
-                                              color: plugin.enabled ? '#30d158' : '#939db0',
+                                              background: plugin.enabled ? 'var(--status-green-bg)' : 'rgba(147,157,176,0.16)',
+                                              color: plugin.enabled ? 'var(--status-green)' : 'var(--text-muted)',
                                             }}
                                           >
                                             {plugin.enabled ? '● 已启用' : '○ 已停用'}
@@ -2882,18 +3107,18 @@ export default function AdminConsolePage() {
                                                 fontSize: 11,
                                                 padding: '2px 8px',
                                                 borderRadius: 999,
-                                                background: 'rgba(10,132,255,0.18)',
-                                                color: '#7cc0ff',
+                                                background: 'var(--bg-nav-active)',
+                                                color: 'var(--accent-cinnabar)',
                                               }}
                                             >
                                               ★ 槽位默认
                                             </span>
                                           )}
                                         </div>
-                                        <div style={{ fontSize: 12, color: '#b7c0d0' }}>
+                                        <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
                                           {plugin.description || '无简短说明'}
                                         </div>
-                                        <small style={{ fontSize: 11, color: '#78849a' }}>
+                                        <small style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                                           更新于 {new Date(plugin.updatedAt).toLocaleString('zh-CN')} · 正文 {plugin.content.length} 字符
                                         </small>
                                       </div>
@@ -2973,9 +3198,9 @@ export default function AdminConsolePage() {
                                           margin: 0,
                                           padding: 12,
                                           borderRadius: 10,
-                                          background: '#0c0e14',
-                                          border: '1px solid rgba(255,255,255,0.08)',
-                                          color: '#d8e0ee',
+                                          background: 'var(--bg-surface-warm)',
+                                          border: '1px solid var(--border-warm)',
+                                          color: 'var(--text-primary)',
                                           fontSize: 12,
                                           lineHeight: 1.55,
                                           whiteSpace: 'pre-wrap',
@@ -2993,8 +3218,8 @@ export default function AdminConsolePage() {
                                         style={{
                                           padding: 12,
                                           borderRadius: 10,
-                                          background: '#10141d',
-                                          border: '1px solid rgba(10, 132, 255, 0.35)',
+                                          background: 'var(--bg-surface-warm)',
+                                          border: '1px solid var(--border-accent-soft)',
                                           display: 'grid',
                                           gap: 10,
                                         }}
@@ -3094,7 +3319,7 @@ export default function AdminConsolePage() {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 14 }}>
                 <div>
                   <h2 style={{ margin: '0 0 4px', fontSize: 17 }}>🎛️ 创作档位配置（前台脱敏映射）</h2>
-                  <p style={{ margin: 0, color: '#939db0', fontSize: 13 }}>
+                  <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: 13 }}>
                     前台创作者仅可见脱敏后的档位名称与消耗倍率，底层中转通道、模型名与路由完全在此隔离配置。
                   </p>
                 </div>
@@ -3115,7 +3340,11 @@ export default function AdminConsolePage() {
               </div>
               <div style={{ display: 'grid', gap: 14 }}>
                 {(systemConfig.creationTiers || []).map((tier, idx) => (
-                  <div key={tier.id} style={{ padding: 16, borderRadius: 12, background: 'rgba(15,23,42,0.45)', border: '1px solid #263147', display: 'grid', gap: 10 }}>
+                  <div key={tier.id} style={{ padding: 16, borderRadius: 14, background: 'var(--bg-surface-warm)', border: '1px solid var(--border-warm)', display: 'grid', gap: 10 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+                      <strong style={{ fontSize: 14 }}>{tier.name}</strong>
+                      <span style={styles.codeBadge}>{tier.costHint}</span>
+                    </div>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
                       <label style={styles.label}>
                         前台显示名称
@@ -3236,10 +3465,9 @@ export default function AdminConsolePage() {
                     onChange={(e) => setPlanForm({ ...planForm, period: e.target.value })}
                     style={styles.input}
                   >
-                    <option value="monthly">monthly（月度）</option>
-                    <option value="quarterly">quarterly（季度）</option>
-                    <option value="yearly">yearly（年度）</option>
-                    <option value="one_time">one_time（单次额度）</option>
+                    <option value="monthly">按月订阅 (monthly)</option>
+                    <option value="yearly">按年订阅 (yearly)</option>
+                    <option value="once">单次加油包 (once)</option>
                   </select>
                 </div>
                 <div>
@@ -3294,41 +3522,46 @@ export default function AdminConsolePage() {
                   <thead>
                     <tr>
                       <th style={styles.th}>套餐 ID</th>
-                      <th style={styles.th}>planName</th>
-                      <th style={styles.th}>priceUsd</th>
-                      <th style={styles.th}>creditUsd</th>
-                      <th style={styles.th}>period</th>
-                      <th style={styles.th}>status</th>
+                      <th style={styles.th}>套餐名称</th>
+                      <th style={styles.th}>售价 (USD)</th>
+                      <th style={styles.th}>到账额度</th>
+                      <th style={styles.th}>计费周期</th>
+                      <th style={styles.th}>状态</th>
                       <th style={styles.th}>操作</th>
                     </tr>
                   </thead>
                   <tbody>
                     {plansList.length === 0 ? (
                       <tr>
-                        <td colSpan={7} style={{ ...styles.td, textAlign: 'center', color: '#78716c' }}>
+                        <td colSpan={7} style={{ ...styles.td, textAlign: 'center', color: 'var(--text-muted)' }}>
                           暂无套餐配置
                         </td>
                       </tr>
                     ) : (
-                      plansList.map((p) => (
+                      plansList.map((p) => {
+                        const displayPlanName = p.name || p.planName || '';
+                        const periodLabel =
+                          p.period === 'monthly' ? '按月订阅' : p.period === 'yearly' ? '按年订阅' : p.period === 'once' ? '单次加油包' : p.period;
+                        const statusText = p.enabled === false || p.status === 'inactive' ? '已下架' : '售卖中';
+                        return (
                         <tr key={p.id}>
-                          <td style={styles.td}>{p.id}</td>
-                          <td style={styles.td}>{p.planName}</td>
+                          <td style={styles.td}><code style={styles.codeBadge}>{p.id}</code></td>
+                          <td style={styles.td}><strong>{displayPlanName}</strong></td>
                           <td style={styles.td}>${Number(p.priceUsd || 0).toFixed(2)}</td>
                           <td style={styles.td}>${Number(p.creditUsd || 0).toFixed(2)}</td>
-                          <td style={styles.td}>{p.period}</td>
-                          <td style={styles.td}>{p.status}</td>
+                          <td style={styles.td}>{periodLabel}</td>
+                          <td style={styles.td}>{statusText}</td>
                           <td style={styles.td}>
                             <button
                               type="button"
                               onClick={() =>
                                 setPlanForm({
                                   id: p.id,
-                                  planName: p.planName || '',
+                                  planName: displayPlanName,
                                   priceUsd: String(p.priceUsd ?? ''),
                                   creditUsd: String(p.creditUsd ?? ''),
                                   period: p.period || 'monthly',
-                                  status: p.status || 'active',
+                                  status: p.enabled === false || p.status === 'inactive' ? 'inactive' : 'active',
                                   description: p.description || '',
                                 })
                               }
@@ -3338,7 +3571,8 @@ export default function AdminConsolePage() {
                             </button>
                           </td>
                         </tr>
-                      ))
+                        );
+                      })
                     )}
                   </tbody>
                 </table>
@@ -3372,12 +3606,12 @@ export default function AdminConsolePage() {
                     <tr>
                       <th style={styles.th}>订单 ID</th>
                       <th style={styles.th}>用户</th>
-                      <th style={styles.th}>planName</th>
-                      <th style={styles.th}>priceUsd</th>
-                      <th style={styles.th}>creditUsd</th>
-                      <th style={styles.th}>period</th>
+                      <th style={styles.th}>套餐名称</th>
+                      <th style={styles.th}>售价 (USD)</th>
+                      <th style={styles.th}>到账额度</th>
+                      <th style={styles.th}>周期</th>
                       <th style={styles.th}>渠道槽</th>
-                      <th style={styles.th}>status</th>
+                      <th style={styles.th}>状态</th>
                       <th style={styles.th}>审核操作</th>
                     </tr>
                   </thead>
@@ -3439,17 +3673,18 @@ export default function AdminConsolePage() {
             </section>
           </div>
         )}
+        </main>
       </div>
-    </main>
+    </div>
   );
 }
 const styles: Record<string, React.CSSProperties> = {
   shell: {
     minHeight: '100vh',
-    background: 'radial-gradient(circle at 15% 0%, rgba(10, 132, 255, 0.14), transparent 38%), #0c0e12',
-    color: '#f3f5f8',
+    background: 'var(--bg-paper)',
+    color: 'var(--text-primary)',
     padding: '28px 22px 64px',
-    fontFamily: '-apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans SC", sans-serif',
+    fontFamily: 'var(--font-sans)',
   },
   topbar: {
     display: 'flex',
@@ -3457,113 +3692,123 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     flexWrap: 'wrap',
     gap: 14,
-    background: '#141821',
+    background: 'var(--bg-surface)',
     padding: '16px 22px',
-    borderRadius: 18,
-    border: '1px solid rgba(255,255,255,0.09)',
+    borderRadius: 16,
+    border: '1px solid var(--border-warm)',
   },
   badgeIcon: {
     width: 40,
     height: 40,
     borderRadius: 12,
-    background: 'linear-gradient(135deg, #0a84ff, #30d158)',
+    background: 'var(--accent-cinnabar)',
+    color: '#fffdf9',
     display: 'grid',
     placeItems: 'center',
     fontSize: 20,
   },
   kpiCard: {
-    background: '#141821',
-    border: '1px solid rgba(255,255,255,0.09)',
+    background: 'var(--bg-surface)',
+    border: '1px solid var(--border-warm)',
     borderRadius: 16,
-    padding: '15px 18px',
+    padding: '16px 18px',
+    boxShadow: 'var(--shadow-sm)',
   },
   card: {
-    background: '#141821',
-    border: '1px solid rgba(255,255,255,0.09)',
-    borderRadius: 20,
+    background: 'var(--bg-surface)',
+    border: '1px solid var(--border-warm)',
+    borderRadius: 18,
     padding: 22,
+    boxShadow: 'var(--shadow-sm)',
   },
   tabBtn: {
-    padding: '10px 16px',
+    padding: '9px 15px',
     borderRadius: 999,
-    border: '1px solid rgba(255,255,255,0.1)',
-    background: '#141821',
-    color: '#939db0',
+    border: '1px solid var(--border-warm)',
+    background: 'var(--bg-surface)',
+    color: 'var(--text-secondary)',
     fontSize: 13,
     fontWeight: 600,
     cursor: 'pointer',
   },
   tabActive: {
-    padding: '10px 16px',
+    padding: '9px 15px',
     borderRadius: 999,
-    border: '1px solid #0a84ff',
-    background: 'rgba(10, 132, 255, 0.2)',
-    color: '#7cc0ff',
+    border: '1px solid var(--border-accent-soft)',
+    background: 'var(--bg-nav-active)',
+    color: 'var(--accent-cinnabar)',
     fontSize: 13,
-    fontWeight: 600,
+    fontWeight: 700,
     cursor: 'pointer',
   },
   label: {
     display: 'grid',
     gap: 6,
     fontSize: 12,
-    color: '#939db0',
+    fontWeight: 500,
+    color: 'var(--text-secondary)',
   },
   input: {
     width: '100%',
     padding: '9px 12px',
     borderRadius: 10,
-    border: '1px solid rgba(255,255,255,0.12)',
-    background: '#0e121a',
-    color: '#f3f5f8',
+    border: '1px solid var(--border-warm)',
+    background: 'var(--bg-surface-warm)',
+    color: 'var(--text-primary)',
     fontSize: 13,
   },
   primaryBtn: {
-    padding: '10px 18px',
+    padding: '9px 18px',
     borderRadius: 999,
     border: 0,
-    background: '#0a84ff',
-    color: '#fff',
+    background: 'var(--accent-cinnabar)',
+    color: '#fffdf9',
     fontWeight: 600,
     fontSize: 13,
     cursor: 'pointer',
   },
   secondaryBtn: {
-    padding: '9px 15px',
+    padding: '8px 14px',
     borderRadius: 999,
-    border: '1px solid rgba(255,255,255,0.14)',
-    background: '#1b202c',
-    color: '#f3f5f8',
+    border: '1px solid var(--border-warm)',
+    background: 'var(--bg-surface-warm)',
+    color: 'var(--text-primary)',
     fontSize: 12.5,
+    fontWeight: 500,
     cursor: 'pointer',
   },
   smallPrimaryBtn: {
     padding: '5px 11px',
     borderRadius: 999,
     border: 0,
-    background: '#0a84ff',
-    color: '#fff',
+    background: 'var(--accent-cinnabar)',
+    color: '#fffdf9',
     fontSize: 11.5,
     fontWeight: 600,
     cursor: 'pointer',
+    whiteSpace: 'nowrap',
   },
   smallSecondaryBtn: {
     padding: '5px 10px',
     borderRadius: 999,
-    border: '1px solid rgba(255,255,255,0.14)',
-    background: '#141821',
-    color: '#d0d7e2',
+    border: '1px solid var(--border-warm)',
+    background: 'var(--bg-surface-warm)',
+    color: 'var(--text-secondary)',
     fontSize: 11.5,
+    fontWeight: 500,
     cursor: 'pointer',
+    whiteSpace: 'nowrap',
   },
   smallDangerBtn: {
     padding: '5px 10px',
     borderRadius: 999,
-    border: '1px solid rgba(255,69,58,0.35)',
-    background: 'rgba(255,69,58,0.12)',
-    color: '#ff6961',
+    border: '1px solid rgba(185, 56, 41, 0.3)',
+    background: 'var(--status-red-bg)',
+    color: 'var(--status-red)',
     fontSize: 11.5,
+    fontWeight: 600,
     cursor: 'pointer',
+    whiteSpace: 'nowrap',
   },
   table: {
     width: '100%',
@@ -3573,39 +3818,43 @@ const styles: Record<string, React.CSSProperties> = {
   th: {
     textAlign: 'left',
     padding: '10px 12px',
-    borderBottom: '1px solid rgba(255,255,255,0.09)',
-    color: '#939db0',
-    fontSize: 11.5,
+    borderBottom: '1px solid var(--border-warm)',
+    color: 'var(--text-muted)',
+    fontSize: 12,
     fontWeight: 600,
+    whiteSpace: 'nowrap',
   },
   td: {
     padding: '11px 12px',
-    borderBottom: '1px solid rgba(255,255,255,0.06)',
+    borderBottom: '1px solid var(--border-warm)',
     verticalAlign: 'middle',
+    color: 'var(--text-primary)',
   },
   codeBadge: {
-    background: 'rgba(255,255,255,0.08)',
-    padding: '3px 7px',
-    borderRadius: 6,
+    background: 'var(--bg-pill-warm)',
+    border: '1px solid var(--border-warm)',
+    padding: '3px 8px',
+    borderRadius: 7,
     fontSize: 12,
     fontFamily: 'monospace',
-    color: '#7cc0ff',
+    color: 'var(--accent-cinnabar)',
   },
   toastBox: {
     padding: '12px 16px',
     borderRadius: 12,
-    background: 'rgba(48, 209, 88, 0.15)',
-    border: '1px solid rgba(48, 209, 88, 0.4)',
-    color: '#30d158',
+    background: 'var(--status-green-bg)',
+    border: '1px solid rgba(34, 160, 107, 0.35)',
+    color: 'var(--status-green)',
     fontSize: 13,
     fontWeight: 600,
   },
   errorBox: {
     padding: '12px 16px',
     borderRadius: 12,
-    background: 'rgba(255, 69, 58, 0.15)',
-    border: '1px solid rgba(255, 69, 58, 0.4)',
-    color: '#ff6961',
+    background: 'var(--status-red-bg)',
+    border: '1px solid rgba(185, 56, 41, 0.35)',
+    color: 'var(--status-red)',
     fontSize: 13,
+    fontWeight: 500,
   },
 };
