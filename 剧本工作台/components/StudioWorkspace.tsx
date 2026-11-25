@@ -169,6 +169,9 @@ export default function StudioWorkspace() {
 
   const [directorStage, setDirectorStage] = useState<string>('');
   const [aiCommandMode, setAiCommandMode] = useState<'smart' | 'edit' | 'chat'>('smart');
+  const [showQuickActions, setShowQuickActions] = useState(false);
+  const [showAdvancedConfig, setShowAdvancedConfig] = useState(false);
+  const [showAuxTools, setShowAuxTools] = useState(false);
   const [serverElapsedBase, setServerElapsedBase] = useState<{ sec: number; at: number } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const clientIdRef = useRef<string>('');
@@ -446,6 +449,8 @@ export default function StudioWorkspace() {
       if (controller.signal.aborted || e?.name === 'AbortError') {
         return;
       }
+      setBusyText('');
+      setDirectorStage('');
       setError(sanitizeClientError(e));
     } finally {
       if (abortRef.current === controller) {
@@ -1413,26 +1418,89 @@ export default function StudioWorkspace() {
 
         {/* CENTER COLUMN: 3-Row Toolbar + Editor */}
         <section style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--warm-bg, #f9f6f0)' }}>
-          {/* Row 1: Enhancement Capsules (single-line crisp toolbar) */}
-          <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--warm-border, #e6dfd3)', display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-            <button type="button" onClick={() => { setToolModal('inspire'); setToolOutput(null); runStudioTool('inspire'); }} style={{ padding: '5px 10px', borderRadius: 999, border: 'none', background: toolModal === 'inspire' ? '#8C3B2B' : 'rgba(140,59,43,0.1)', color: toolModal === 'inspire' ? '#fff' : '#5A2B1D', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', flexShrink: 0 }}>
+          {/* Row 1: Essential Core Actions + Collapsible Auxiliary Tools */}
+          <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--warm-border, #e6dfd3)', display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', position: 'relative' }}>
+            <button type="button" onClick={() => { setShowAuxTools(false); setToolModal('inspire'); setToolOutput(null); runStudioTool('inspire'); }} style={{ padding: '5px 10px', borderRadius: 999, border: 'none', background: toolModal === 'inspire' ? '#8C3B2B' : 'rgba(140,59,43,0.1)', color: toolModal === 'inspire' ? '#fff' : '#5A2B1D', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', flexShrink: 0 }}>
               <Lightbulb size={13} /> 灵感
             </button>
-            <button type="button" disabled={busy || isCurrentLocked} onClick={() => runStudioTool('format')} style={{ padding: '5px 10px', borderRadius: 999, border: 'none', background: 'rgba(140,59,43,0.1)', color: '#5A2B1D', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', flexShrink: 0 }}>
+            <button type="button" disabled={busy || isCurrentLocked} onClick={() => { setShowAuxTools(false); runStudioTool('format'); }} style={{ padding: '5px 10px', borderRadius: 999, border: 'none', background: 'rgba(140,59,43,0.1)', color: '#5A2B1D', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', flexShrink: 0 }}>
               <Wand2 size={13} /> 一键排版
             </button>
-            <button type="button" onClick={() => { setToolModal('ai-rate'); setToolOutput(null); runStudioTool('ai_rate'); }} style={{ padding: '5px 10px', borderRadius: 999, border: 'none', background: toolModal === 'ai-rate' ? '#8C3B2B' : 'rgba(140,59,43,0.1)', color: toolModal === 'ai-rate' ? '#fff' : '#5A2B1D', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', flexShrink: 0 }}>
-              <ShieldCheck size={13} /> AI率查询
-            </button>
-            <button type="button" onClick={() => { setToolModal('trending'); setToolOutput(null); runStudioTool('trending', { platform: trendingPlatform }); }} style={{ padding: '5px 10px', borderRadius: 999, border: 'none', background: toolModal === 'trending' ? '#8C3B2B' : 'rgba(140,59,43,0.1)', color: toolModal === 'trending' ? '#fff' : '#5A2B1D', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', flexShrink: 0 }}>
-              <Flame size={13} /> 扫榜
-            </button>
-            <button type="button" onClick={() => { setToolModal('teardown'); setToolOutput(null); }} style={{ padding: '5px 10px', borderRadius: 999, border: 'none', background: toolModal === 'teardown' ? '#8C3B2B' : 'rgba(140,59,43,0.1)', color: toolModal === 'teardown' ? '#fff' : '#5A2B1D', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', flexShrink: 0 }}>
-              <BookOpen size={13} /> 拆书
-            </button>
-            <button type="button" onClick={() => importFileRef.current?.click()} style={{ padding: '5px 10px', borderRadius: 999, border: 'none', background: 'rgba(140,59,43,0.1)', color: '#5A2B1D', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', flexShrink: 0 }}>
+            <button type="button" onClick={() => { setShowAuxTools(false); importFileRef.current?.click(); }} style={{ padding: '5px 10px', borderRadius: 999, border: 'none', background: 'rgba(140,59,43,0.1)', color: '#5A2B1D', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', flexShrink: 0 }}>
               <Upload size={13} /> 本地导入
             </button>
+            <div style={{ position: 'relative' }}>
+              <button
+                type="button"
+                onClick={() => setShowAuxTools((v) => !v)}
+                style={{
+                  padding: '5px 10px',
+                  borderRadius: 999,
+                  border: '1px solid #d8cfc0',
+                  background: showAuxTools || ['ai-rate', 'trending', 'teardown'].includes(toolModal) ? '#8C3B2B' : 'var(--warm-card, #fff)',
+                  color: showAuxTools || ['ai-rate', 'trending', 'teardown'].includes(toolModal) ? '#fff' : '#5A2B1D',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  whiteSpace: 'nowrap',
+                  flexShrink: 0,
+                }}
+              >
+                <Sparkles size={13} /> 辅助工具 {showAuxTools ? '▴' : '▾'}
+              </button>
+              {showAuxTools && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: 'calc(100% + 6px)',
+                    left: 0,
+                    minWidth: 210,
+                    padding: 6,
+                    borderRadius: 12,
+                    border: '1px solid #e6dfd3',
+                    background: 'var(--warm-card, #fff)',
+                    boxShadow: '0 10px 28px rgba(44,36,32,0.12)',
+                    zIndex: 40,
+                    display: 'grid',
+                    gap: 4,
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => { setShowAuxTools(false); setToolModal('ai-rate'); setToolOutput(null); runStudioTool('ai_rate'); }}
+                    style={{ padding: '7px 10px', borderRadius: 8, border: 'none', background: 'transparent', textAlign: 'left', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 2 }}
+                  >
+                    <span style={{ fontSize: 12, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 5, color: '#2C2420' }}>
+                      <ShieldCheck size={13} /> AI率查询
+                    </span>
+                    <span style={{ fontSize: 11, opacity: 0.65 }}>本地启发式文本自然度检测（需≥120字）</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setShowAuxTools(false); setToolModal('trending'); setToolOutput(null); runStudioTool('trending', { platform: trendingPlatform }); }}
+                    style={{ padding: '7px 10px', borderRadius: 8, border: 'none', background: 'transparent', textAlign: 'left', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 2 }}
+                  >
+                    <span style={{ fontSize: 12, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 5, color: '#2C2420' }}>
+                      <Flame size={13} /> 扫榜参考
+                    </span>
+                    <span style={{ fontSize: 11, opacity: 0.65 }}>内置短剧热门题材与情绪钩子参考榜</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setShowAuxTools(false); setToolModal('teardown'); setToolOutput(null); }}
+                    style={{ padding: '7px 10px', borderRadius: 8, border: 'none', background: 'transparent', textAlign: 'left', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 2 }}
+                  >
+                    <span style={{ fontSize: 12, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 5, color: '#2C2420' }}>
+                      <BookOpen size={13} /> 快速拆书
+                    </span>
+                    <span style={{ fontSize: 11, opacity: 0.65 }}>粘贴小说/文本拆解卖点与付费卡点</span>
+                  </button>
+                </div>
+              )}
+            </div>
             <a href={`/api/upload?id=${active.id}&export=docx`} style={{ padding: '5px 11px', borderRadius: 999, background: '#8C3B2B', color: '#fff', fontSize: 12, fontWeight: 700, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 'auto', whiteSpace: 'nowrap', flexShrink: 0 }}>
               <Download size={13} /> 导出 Word
             </a>
@@ -1612,38 +1680,13 @@ export default function StudioWorkspace() {
           <div style={{ flex: 1, overflowY: 'auto', padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
             {rightTab === 'chat' && (
               <>
-                                {active.messages.length <= 1 && (
-                  <div style={{ textAlign: 'center', padding: '12px 6px' }}>
-                    <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>✦ 你的总编剧搭档</div>
-                    <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 14 }}>下一段好故事，从这里开始</div>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, textAlign: 'left' }}>
-                      {[
-                        ['梳理全剧逻辑', '找出矛盾，把事件线对上', '请通读当前已有剧集和大纲，找出前后矛盾，并梳理一条能对上的事件线。', 'chat' as DirectorTask],
-                        ['打磨这一集', '逐句看节奏、前3秒与尾钩', '请逐段打磨当前这一集，优化前3秒冲突和结尾钩子，并给出改写建议。', 'chat' as DirectorTask],
-                        ['给本集挂卡写', '承接剧情，保住文风续写', '请按当前文风续写一段承接剧情，让本集自然衔接下一集。', 'hook' as DirectorTask],
-                        ['一起找漏洞', '找出漏洞并给3个新情节改法', '请找出当前故事里的漏洞，并给出三个能长出新冲突的改法。', 'chat' as DirectorTask],
-                      ].map(([t, hint, pr, task]) => (
-                        <button
-                          key={t}
-                          type="button"
-                          disabled={busy}
-                          onClick={() => sendChat(pr, task as DirectorTask)}
-                          style={{ padding: 10, borderRadius: 10, border: '1px solid #e6dfd3', background: 'var(--warm-surface, #faf7f2)', cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.6 : 1, textAlign: 'left' }}
-                        >
-                          <div style={{ fontWeight: 700, fontSize: 12 }}>{t}</div>
-                          <div style={{ fontSize: 11, opacity: 0.68, marginTop: 2 }}>{hint}</div>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* 清晰创作流程进度卡：按当前项目类型匹配最顺手的 4 步，不强制锁死顺序 */}
+                {/* 单一清晰的「AI 导演分步引导卡」：每次只突出最推荐的下一步，不堆砌重复按钮 */}
                 {active.kind !== 'transcribe' && (() => {
                   const hasWorld = (active.worldNodes?.length || 0) > 0;
                   const hasOutline = (active.outlineNodes?.length || 0) > 0;
                   const hasChars = (active.characterNodes?.length || 0) > 0;
                   const writtenEpCount = (active.episodes || []).filter((e) => (e.body || '').trim().length > 0).length;
+                  const nextEpNum = Math.max((active.lockedEpisodes || 0) + 1, writtenEpCount + 1);
                   const worldLabel =
                     active.kind === 'domestic'
                       ? '三道门 / 世界观'
@@ -1656,106 +1699,208 @@ export default function StudioWorkspace() {
                       : active.kind === 'foreign'
                         ? '请结合原剧底稿梳理国外迭代的世界观舞台与核心冲突升级规则。'
                         : '请为本原创短剧建立清晰的世界观舞台、核心破局引擎与代价规则。';
-                  const steps: Array<{ key: string; label: string; done: boolean; task: Exclude<DirectorTask, 'chat'>; prompt: string }> = [
-                    { key: 'world', label: `① ${worldLabel}`, done: hasWorld, task: 'world', prompt: worldPrompt },
-                    { key: 'outline', label: '② 主线大纲', done: hasOutline, task: 'outline', prompt: '请生成全剧主线方案、核心爽点节奏与分幕剧情大纲。' },
-                    { key: 'chars', label: '③ 人物小传', done: hasChars, task: 'characters', prompt: '请生成男女主与核心反派的人物小传、动机与关系网。' },
-                    { key: 'ep', label: writtenEpCount > 0 ? `④ 分集正文（已写${writtenEpCount}集）` : '④ 撰写分集正文', done: writtenEpCount > 0, task: 'episode', prompt: '请撰写当前分集的完整短剧剧本正文（标准场头、△动作与强钩子结尾）。' },
+                  const steps: Array<{
+                    key: string;
+                    short: string;
+                    ctaTitle: string;
+                    ctaHint: string;
+                    done: boolean;
+                    task: Exclude<DirectorTask, 'chat'>;
+                    prompt: string;
+                  }> = [
+                    {
+                      key: 'world',
+                      short: '① 世界观',
+                      ctaTitle: `第 1 步：生成${worldLabel}`,
+                      ctaHint: '先定好故事舞台与冲突规则，生成后自动写入左侧「背景设定」。',
+                      done: hasWorld,
+                      task: 'world',
+                      prompt: worldPrompt,
+                    },
+                    {
+                      key: 'outline',
+                      short: '② 大纲',
+                      ctaTitle: '第 2 步：生成全剧主线大纲',
+                      ctaHint: '梳理全剧核心爽点与分幕节奏，生成后自动写入左侧「大纲」。',
+                      done: hasOutline,
+                      task: 'outline',
+                      prompt: '请生成全剧主线方案、核心爽点节奏与分幕剧情大纲。',
+                    },
+                    {
+                      key: 'chars',
+                      short: '③ 人物',
+                      ctaTitle: '第 3 步：生成核心人物小传',
+                      ctaHint: '立住男女主与反派的人设与关系冲突，生成后写入左侧「角色」。',
+                      done: hasChars,
+                      task: 'characters',
+                      prompt: '请生成男女主与核心反派的人物小传、动机与关系网。',
+                    },
+                    {
+                      key: 'ep',
+                      short: writtenEpCount > 0 ? `④ 正文(${writtenEpCount}集)` : '④ 正文',
+                      ctaTitle: writtenEpCount > 0 ? `继续撰写第 ${nextEpNum} 集正文` : `第 4 步：撰写第 ${nextEpNum} 集正文`,
+                      ctaHint: '按大纲和人物卡直接输出标准短剧场头、△动作与强钩子台词。',
+                      done: writtenEpCount > 0,
+                      task: 'episode',
+                      prompt: `请撰写第 ${nextEpNum} 集的完整短剧剧本正文（标准场头、△动作与强钩子结尾）。`,
+                    },
                   ];
                   const doneCount = steps.filter((s) => s.done).length;
+                  const nextStep = steps.find((s) => !s.done) || steps[3];
+
                   return (
                     <div
-                      aria-label="创作流程进度"
+                      aria-label="创作流程引导"
                       style={{
-                        padding: '10px 12px',
-                        borderRadius: 12,
+                        padding: '12px 13px',
+                        borderRadius: 14,
                         border: '1px solid #e6dfd3',
                         background: 'var(--warm-surface, #faf7f2)',
                         display: 'flex',
                         flexDirection: 'column',
-                        gap: 8,
+                        gap: 10,
                       }}
                     >
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12 }}>
                         <span style={{ fontWeight: 700, color: '#8C3B2B' }}>
-                          {KIND_LABELS[active.kind]} · 创作进度 ({doneCount}/4)
+                          ✦ AI 总编剧引导 · {KIND_LABELS[active.kind]} ({doneCount}/4)
                         </span>
                         {writtenEpCount > 0 && (
                           <a
                             href={`/api/upload?id=${active.id}&export=docx`}
                             style={{ fontSize: 11, fontWeight: 700, color: '#8C3B2B', textDecoration: 'underline' }}
                           >
-                            直接导出 Word
+                            导出 Word
                           </a>
                         )}
                       </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-                        {steps.map((s) => (
+
+                      {/* 4步紧凑进度条（每步也可直接点选跳转） */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 4 }}>
+                        {steps.map((s) => {
+                          const isNext = s.key === nextStep.key && !s.done;
+                          return (
+                            <button
+                              key={s.key}
+                              type="button"
+                              disabled={busy}
+                              onClick={() => triggerDirectorAction(s.task, s.prompt)}
+                              title={`点击直接执行：${s.ctaTitle}`}
+                              style={{
+                                padding: '5px 4px',
+                                borderRadius: 8,
+                                border: s.done
+                                  ? '1px solid #b7d7c2'
+                                  : isNext
+                                    ? '1.5px solid #8C3B2B'
+                                    : '1px solid #e6dfd3',
+                                background: s.done
+                                  ? 'rgba(34,139,34,0.08)'
+                                  : isNext
+                                    ? 'rgba(140,59,43,0.1)'
+                                    : 'var(--warm-card, #fff)',
+                                color: s.done ? '#1e6b3b' : isNext ? '#8C3B2B' : '#6e6259',
+                                fontSize: 11,
+                                fontWeight: s.done || isNext ? 700 : 500,
+                                cursor: busy ? 'not-allowed' : 'pointer',
+                                opacity: busy ? 0.55 : 1,
+                                whiteSpace: 'nowrap',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                              }}
+                            >
+                              {s.done ? '✓ ' : ''}{s.short}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {/* 唯一主推下一步行动卡片 */}
+                      <div style={{ padding: '9px 10px', borderRadius: 10, background: 'var(--warm-card, #fff)', border: '1px solid #e6dfd3', display: 'flex', flexDirection: 'column', gap: 7 }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: '#2C2420' }}>
+                          {doneCount < 4 ? `📍 建议下一步：${nextStep.ctaTitle}` : '🎉 4 步基础已完成，可继续写后续集数或直接发指令精修'}
+                        </div>
+                        <div style={{ fontSize: 11.5, color: '#6e6259', lineHeight: 1.5 }}>
+                          {nextStep.ctaHint}
+                        </div>
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                           <button
-                            key={s.key}
                             type="button"
                             disabled={busy}
-                            onClick={() => triggerDirectorAction(s.task, s.prompt)}
+                            onClick={() => triggerDirectorAction(nextStep.task, nextStep.prompt)}
                             style={{
-                              padding: '6px 8px',
-                              borderRadius: 8,
-                              border: s.done ? '1px solid #b7d7c2' : '1px dashed #D49B54',
-                              background: s.done ? 'rgba(34,139,34,0.07)' : 'var(--warm-card, #fff)',
-                              color: s.done ? '#1e6b3b' : '#2C2420',
-                              fontSize: 11,
-                              fontWeight: 600,
-                              textAlign: 'left',
+                              flex: 1,
+                              padding: '8px 12px',
+                              borderRadius: 9,
+                              border: 'none',
+                              background: '#8C3B2B',
+                              color: '#fff',
+                              fontSize: 12,
+                              fontWeight: 700,
                               cursor: busy ? 'not-allowed' : 'pointer',
-                              opacity: busy ? 0.55 : 1,
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'space-between',
-                              gap: 4,
+                              opacity: busy ? 0.6 : 1,
                             }}
                           >
-                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.label}</span>
-                            <span style={{ flexShrink: 0 }}>{s.done ? '✓' : '→'}</span>
+                            ✨ {nextStep.ctaTitle}
                           </button>
-                        ))}
+                          <button
+                            type="button"
+                            onClick={() => setShowQuickActions((v) => !v)}
+                            style={{
+                              padding: '8px 10px',
+                              borderRadius: 9,
+                              border: '1px solid #d8cfc0',
+                              background: 'var(--warm-surface, #faf7f2)',
+                              color: '#5A2B1D',
+                              fontSize: 11.5,
+                              fontWeight: 600,
+                              cursor: 'pointer',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            更多操作 {showQuickActions ? '▴' : '▾'}
+                          </button>
+                        </div>
                       </div>
+
+                      {/* 可折叠的 5 个快捷生成按钮（默认收起，保持页面整洁） */}
+                      {showQuickActions && (
+                        <div
+                          aria-label="总编剧快捷生成"
+                          style={{ display: 'flex', flexWrap: 'wrap', gap: 6, paddingTop: 2 }}
+                        >
+                          {DIRECTOR_ACTION_BUTTONS.map((btn) => (
+                            <button
+                              key={btn.task}
+                              type="button"
+                              disabled={busy}
+                              onClick={() => triggerDirectorAction(btn.task, btn.prompt)}
+                              style={{
+                                padding: '5px 10px',
+                                borderRadius: 999,
+                                border: '1px solid #D49B54',
+                                background: 'var(--warm-card, #fff)',
+                                color: '#8C3B2B',
+                                fontSize: 11.5,
+                                fontWeight: 600,
+                                cursor: busy ? 'not-allowed' : 'pointer',
+                                opacity: busy ? 0.55 : 1,
+                              }}
+                            >
+                              ✦ {btn.label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   );
                 })()}
 
-                {/* 5 个总编剧定向生成按钮（另起一行，保留暖色风格） */}
-                <div
-                  aria-label="总编剧快捷生成"
-                  style={{
-                    display: 'flex',
-                    flexWrap: 'wrap',
-                    gap: 6,
-                    padding: '6px 2px',
-                  }}
-                >
-                  {DIRECTOR_ACTION_BUTTONS.map((btn) => (
-                    <button
-                      key={btn.task}
-                      type="button"
-                      disabled={busy}
-                      onClick={() => triggerDirectorAction(btn.task, btn.prompt)}
-                      style={{
-                        padding: '6px 10px',
-                        borderRadius: 999,
-                        border: '1px solid #D49B54',
-                        background: 'var(--warm-surface, #faf7f2)',
-                        color: '#8C3B2B',
-                        fontSize: 12,
-                        fontWeight: 600,
-                        cursor: busy ? 'not-allowed' : 'pointer',
-                        opacity: busy ? 0.55 : 1,
-                      }}
-                    >
-                      ✦ {btn.label}
-                    </button>
-                  ))}
-                </div>
-
-                {active.messages.map((m) => (
+                {active.messages.map((m) => {
+                  const isSystemWelcome =
+                    m.role !== 'user' &&
+                    (/已建立！|已按你的指令更新|第一步：请核对/.test(m.text || '') || m.stageKey === 'welcome');
+                  return (
                   <div
                     key={m.id}
                     style={{
@@ -1773,11 +1918,11 @@ export default function StudioWorkspace() {
                   >
                     <div>{m.text}</div>
                     {m.role !== 'user' &&
+                      !isSystemWelcome &&
                       !m.file?.url &&
                       m.text &&
                       m.text.length >= 40 &&
-                      !(isCurrentLocked && !selectedAsset) &&
-                      !m.text.startsWith('已按你的指令更新') && (
+                      !(isCurrentLocked && !selectedAsset) && (
                         <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>
                           <button
                             type="button"
@@ -1819,7 +1964,29 @@ export default function StudioWorkspace() {
                       </a>
                     )}
                   </div>
-                ))}
+                  );
+                })}
+
+                {error && (
+                  <div
+                    role="alert"
+                    style={{
+                      padding: '10px 12px',
+                      borderRadius: 12,
+                      background: 'rgba(185,56,41,0.08)',
+                      border: '1px solid rgba(185,56,41,0.3)',
+                      color: '#991b1b',
+                      fontSize: 12,
+                      lineHeight: 1.55,
+                    }}
+                  >
+                    <div style={{ fontWeight: 700, marginBottom: 2 }}>⚠ 操作未完成</div>
+                    <div>{error}</div>
+                    <div style={{ fontSize: 11, opacity: 0.78, marginTop: 4 }}>
+                      提示：如刚上线站点，请确认已在独立后台「API 渠道池」中填入并保存了中转 API Key。
+                    </div>
+                  </div>
+                )}
 
                 {(busy || ALLOWED_STAGE_LABELS.has(busyText)) && (
                   <div
@@ -2038,58 +2205,97 @@ export default function StudioWorkspace() {
                 </button>
               )}
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-              {/* Desensitized Creation Tier Dropdown */}
-              <select
-                aria-label="创作档位"
-                disabled={busy}
-                value={selectedTier?.id || ''}
-                onChange={(e) => updateExecution({ preferredTierId: e.target.value })}
-                style={{ padding: '4px 8px', borderRadius: 999, border: '1px solid #d8cfc0', background: 'var(--warm-card, #fff)', fontSize: 11, fontWeight: 600, opacity: busy ? 0.6 : 1 }}
-              >
-                {tierCatalog.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}（{t.costHint}）
-                  </option>
-                ))}
-              </select>
-
-              {/* Thinking Level Dropdown */}
-              <select
-                aria-label="思考强度"
-                disabled={busy || (selectedTier ? !selectedTier.supportsThinking : false)}
-                value={active.thinkingLevel || 'medium'}
-                onChange={(e) => updateExecution({ thinkingLevel: e.target.value as ThinkingLevel })}
-                style={{ padding: '4px 8px', borderRadius: 999, border: '1px solid #d8cfc0', background: 'var(--warm-card, #fff)', fontSize: 11, fontWeight: 600, opacity: busy ? 0.6 : 1 }}
-              >
-                {(['off', 'low', 'medium', 'high', 'xhigh', 'max'] as ThinkingLevel[]).map((lv) => (
-                  <option key={lv} value={lv}>
-                    ⚡ 推理·{THINKING_LABELS[lv]}
-                  </option>
-                ))}
-              </select>
-
-              {/* Auto / Plan Mode Toggle */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
               <button
                 type="button"
-                disabled={busy}
-                onClick={() => updateExecution({ executionMode: active.executionMode === 'plan' ? 'auto' : 'plan' })}
-                title={active.executionMode === 'plan' ? '计划模式：仅对话规划，不写入正文' : '自动模式：允许自动写入模块'}
+                onClick={() => setShowAdvancedConfig((v) => !v)}
                 style={{
-                  padding: '4px 10px',
+                  padding: '4px 9px',
                   borderRadius: 999,
-                  border: '1px solid #8C3B2B',
-                  background: active.executionMode === 'plan' ? 'transparent' : 'rgba(140,59,43,0.12)',
-                  color: '#8C3B2B',
+                  border: '1px solid #d8cfc0',
+                  background: showAdvancedConfig ? 'rgba(140,59,43,0.1)' : 'transparent',
+                  color: '#5A2B1D',
                   fontSize: 11,
-                  fontWeight: 700,
-                  cursor: busy ? 'not-allowed' : 'pointer',
-                  opacity: busy ? 0.6 : 1,
+                  fontWeight: 600,
+                  cursor: 'pointer',
                 }}
               >
-                {active.executionMode === 'plan' ? '📋 计划模式' : '📝 自动模式'}
+                ⚙️ 创作参数：{selectedTier?.name || '标准档'} · {selectedTier?.supportsThinking === false ? '推理关闭' : `推理${THINKING_LABELS[active.thinkingLevel || 'off']}`} {showAdvancedConfig ? '▴' : '▾'}
               </button>
+              <span style={{ fontSize: 11, opacity: 0.62 }}>
+                {active.executionMode === 'plan' ? '仅规划模式' : '自动写入模式'}
+              </span>
             </div>
+
+            {showAdvancedConfig && (
+              <div
+                style={{
+                  marginTop: 8,
+                  padding: '9px 10px',
+                  borderRadius: 10,
+                  border: '1px solid #e6dfd3',
+                  background: 'var(--warm-surface, #faf7f2)',
+                  display: 'grid',
+                  gap: 8,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  <select
+                    aria-label="创作档位"
+                    disabled={busy}
+                    value={selectedTier?.id || ''}
+                    onChange={(e) => updateExecution({ preferredTierId: e.target.value })}
+                    style={{ padding: '4px 8px', borderRadius: 999, border: '1px solid #d8cfc0', background: 'var(--warm-card, #fff)', fontSize: 11, fontWeight: 600, opacity: busy ? 0.6 : 1 }}
+                  >
+                    {tierCatalog.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}（{t.costHint}）
+                      </option>
+                    ))}
+                  </select>
+
+                  <select
+                    aria-label="思考强度"
+                    disabled={busy || (selectedTier ? !selectedTier.supportsThinking : false)}
+                    value={selectedTier?.supportsThinking === false ? 'off' : active.thinkingLevel || 'off'}
+                    onChange={(e) => updateExecution({ thinkingLevel: e.target.value as ThinkingLevel })}
+                    title={selectedTier?.supportsThinking === false ? '当前档位为极速模式不支持深度推理，请先切换为标准档或深度档' : '调节 AI 思考深度'}
+                    style={{ padding: '4px 8px', borderRadius: 999, border: '1px solid #d8cfc0', background: 'var(--warm-card, #fff)', fontSize: 11, fontWeight: 600, opacity: busy || selectedTier?.supportsThinking === false ? 0.55 : 1 }}
+                  >
+                    {(['off', 'low', 'medium', 'high', 'xhigh', 'max'] as ThinkingLevel[]).map((lv) => (
+                      <option key={lv} value={lv}>
+                        ⚡ 推理·{THINKING_LABELS[lv]}
+                      </option>
+                    ))}
+                  </select>
+
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => updateExecution({ executionMode: active.executionMode === 'plan' ? 'auto' : 'plan' })}
+                    title={active.executionMode === 'plan' ? '计划模式：仅对话规划，不写入正文' : '自动模式：允许自动写入模块'}
+                    style={{
+                      padding: '4px 10px',
+                      borderRadius: 999,
+                      border: '1px solid #8C3B2B',
+                      background: active.executionMode === 'plan' ? 'transparent' : 'rgba(140,59,43,0.12)',
+                      color: '#8C3B2B',
+                      fontSize: 11,
+                      fontWeight: 700,
+                      cursor: busy ? 'not-allowed' : 'pointer',
+                      opacity: busy ? 0.6 : 1,
+                    }}
+                  >
+                    {active.executionMode === 'plan' ? '📋 计划模式' : '📝 自动模式'}
+                  </button>
+                </div>
+                {selectedTier?.supportsThinking === false && (
+                  <div style={{ fontSize: 11, color: '#92400e' }}>
+                    提示：当前所选「{selectedTier.name}」为极速档，不支持开启深度推理；切换为「标准档」或「深度档」即可自由开关推理强度。
+                  </div>
+                )}
+              </div>
+            )}
 
           </div>
         </aside>
