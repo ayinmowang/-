@@ -47,8 +47,9 @@ export default function LoginView() {
   const redirectTarget =
     nextParam.startsWith('/') && !nextParam.startsWith('//') ? nextParam : '/studio';
 
-  const [mode, setMode] = useState<LoginMode>('key');
+  const [mode, setMode] = useState<LoginMode>('password');
   const [allowInviteRegistration, setAllowInviteRegistration] = useState(true);
+  const [requireAuthOnFrontend, setRequireAuthOnFrontend] = useState(true);
   const [currentSession, setCurrentSession] = useState<{
     authenticated: boolean;
     account: PublicAccountProfile | null;
@@ -82,6 +83,7 @@ export default function LoginView() {
       .then((data) => {
         if (!active || !data) return;
         setAllowInviteRegistration(data.allowInviteRegistration !== false);
+        setRequireAuthOnFrontend(Boolean(data.requireAuthOnFrontend));
         setCurrentSession({
           authenticated: Boolean(data.authenticated),
           account: data.account ?? null,
@@ -191,10 +193,12 @@ export default function LoginView() {
           >
             {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
           </button>
-          <Link href="/studio" className="warm-cta-outline" style={{ minHeight: 36 }}>
-            <span>进入工作台</span>
-            <ArrowRight size={14} />
-          </Link>
+          {(currentSession.authenticated || !requireAuthOnFrontend) && (
+            <Link href="/studio" className="warm-cta-outline" style={{ minHeight: 36 }}>
+              <span>进入工作台</span>
+              <ArrowRight size={14} />
+            </Link>
+          )}
         </div>
       </header>
 

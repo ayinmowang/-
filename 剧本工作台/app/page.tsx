@@ -1,6 +1,8 @@
 'use client';
 
-import StudioWorkspace from '../components/StudioWorkspace';
+import { Suspense, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import LoginView from '../components/LoginView';
 
 const CREATOR_UI_REDLINE_MESSAGES = {
   PROMPT_LABEL: '提示词',
@@ -10,6 +12,32 @@ const CREATOR_UI_REDLINE_MESSAGES = {
   DISABLED_PROMPT_FALLBACK: '已停用或已移除的提示词（自动回退默认/内置）',
 } as const;
 
+void CREATOR_UI_REDLINE_MESSAGES;
+
 export default function HomePage() {
-  return <StudioWorkspace />;
+  const router = useRouter();
+
+  useEffect(() => {
+    let active = true;
+    fetch('/api/auth', { cache: 'no-store' })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!active || !data) return;
+        if (data.authenticated) {
+          router.replace('/studio');
+        }
+      })
+      .catch(() => {
+        // stay on login page
+      });
+    return () => {
+      active = false;
+    };
+  }, [router]);
+
+  return (
+    <Suspense fallback={<div style={{ minHeight: '100vh', background: 'var(--bg-canvas, #f6f2ea)' }} />}>
+      <LoginView />
+    </Suspense>
+  );
 }

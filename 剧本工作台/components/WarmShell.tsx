@@ -164,18 +164,25 @@ export default function WarmShell({
   }, []);
 
   useEffect(() => {
-    if (accountProp !== undefined) return;
+    if (accountProp) return;
     let active = true;
     fetch('/api/auth', { cache: 'no-store' })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (!active || !data) return;
+        const isAuthed = Boolean(data.authenticated);
+        const reqAuth = Boolean(data.requireAuthOnFrontend);
         setAuthState({
           loaded: true,
-          authenticated: Boolean(data.authenticated),
-          requireAuthOnFrontend: Boolean(data.requireAuthOnFrontend),
+          authenticated: isAuthed,
+          requireAuthOnFrontend: reqAuth,
           account: data.account ?? null,
         });
+        if (reqAuth && !isAuthed && typeof window !== 'undefined' && window.location.pathname !== '/login') {
+          const next = `${window.location.pathname}${window.location.search}`;
+          router.replace(`/login?next=${encodeURIComponent(next)}`);
+          return;
+        }
         if (data.authenticated && (data.account?.themePreference === 'dark' || data.account?.themePreference === 'light')) {
           const hasLocal = (() => {
             try {
